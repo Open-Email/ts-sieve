@@ -1,0 +1,32 @@
+{
+  "name": "@openemail/sieve",
+  "version": "0.0.0",
+  "description": "RFC 5228 Sieve interpreter for TypeScript, hardened for untrusted scripts and mail. Framework-agnostic: the consumer injects Message/Envelope/Policy. ReDoS-safe, dependency-free; runs in Cloudflare Workers, Node, Deno, and the browser.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
