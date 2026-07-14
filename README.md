@@ -204,18 +204,15 @@ layer; `rfc-fixes.test.ts` pins the RFC-correctness behaviours listed above.
 
 `test/dovecot/` runs the Dovecot Pigeonhole `.svtest` corpus through the
 `vnd.dovecot.testsuite` DSL — the gold-standard validation that stress-tests
-every extension far beyond the focused unit fixtures. The corpus is **not
-vendored** (it is LGPL); fetch it once, gitignored, before running those tests:
+every extension far beyond the focused unit fixtures. The corpus is **vendored**
+under `test/corpus-src/tests/` as a pinned snapshot of the LGPL-licensed upstream
+(see [`test/corpus-src/PROVENANCE.md`](test/corpus-src/PROVENANCE.md) for the
+source commit, license, and re-sync steps) — no fetch step is required, and the
+suite stays reproducible even if upstream disappears.
 
-```sh
-git clone --depth 1 --filter=blob:none --sparse \
-  https://github.com/dovecot/pigeonhole.git test/corpus-src
-cd test/corpus-src && git sparse-checkout set tests   # → test/corpus-src/tests/**/*.svtest
-```
-
-`test/corpus-src/` is listed in `.gitignore`. When the corpus is absent the
-corpus tests self-skip; the inline DSL tests (`inline.test.ts`,
-`inline-compile.test.ts`) always run. `corpus.test.ts` auto-classifies each
+When the corpus is absent the corpus tests self-skip; the inline DSL tests
+(`inline.test.ts`, `inline-compile.test.ts`) always run. `corpus.test.ts`
+auto-classifies each
 `.svtest`: in-scope files (every extension this interpreter implements) are run and must
 report zero sub-test failures; files requiring an unimplemented extension
 (`enotify`, `include`, `mime`, `duplicate`, `extlists`, `metadata`, …), the

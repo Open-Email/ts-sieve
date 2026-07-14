@@ -1,5 +1,6 @@
-// Dovecot Pigeonhole `.svtest` conformance corpus (fetched, not vendored — LGPL,
-// gitignored under test/corpus-src/). One vitest `it` per `.svtest`: in-scope
+// Dovecot Pigeonhole `.svtest` conformance corpus (vendored under
+// test/corpus-src/ — LGPL third-party data; see test/corpus-src/PROVENANCE.md).
+// One vitest `it` per `.svtest`: in-scope
 // files run through runDovecotFile and must produce zero sub-test failures;
 // files requiring an extension this interpreter doesn't implement (enotify,
 // include, mime, …) or the result-verification DSL that is out of scope here
@@ -126,7 +127,7 @@ const RUN_ALL = process.env.CORPUS_RUN_ALL === "1";
 
 describe("Dovecot Pigeonhole .svtest corpus", () => {
   if (candidates.length === 0) {
-    it.skip("corpus not fetched (see README: clone into test/corpus-src)", () => {});
+    it.skip("corpus missing (vendored under test/corpus-src/tests; see PROVENANCE.md)", () => {});
     return;
   }
 
