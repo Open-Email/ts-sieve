@@ -16,7 +16,9 @@ describe("vacation", () => {
     const d = runVac(`require ["vacation"]; vacation "I'm on vacation.";`, "sender@example.com");
     expect(d.vacationResponses.size).toBe(1);
     const r = d.vacationResponses.get("sender@example.com")!;
-    expect(r.subject).toBe("Automated reply");
+    // "" = the script set no :subject. The host substitutes RFC 5230 §5.4's
+    // "Auto: <original subject>", which needs a header the library never sees.
+    expect(r.subject).toBe("");
     expect(r.body).toBe("I'm on vacation.");
     expect(r.from).toBe("");
     expect(r.handle).toBe("");
@@ -46,8 +48,23 @@ describe("vacation", () => {
     expect(d.vacationResponses.size).toBe(0);
   });
 
-  it("empty envelope-from is a hard error", () => {
-    expect(() => runVac(`require ["vacation"]; vacation "Away.";`, "")).toThrow();
+  it("a null envelope sender records nothing and does NOT abort the script", () => {
+    // RFC 5230 §4.6: never autorespond to a bounce/autoresponder. Recording
+    // nothing is the whole effect — the script keeps running, so the actions
+    // AFTER the vacation command still apply. Throwing here used to destroy
+    // them on any host that fails open over script errors.
+    const s = load(`require ["vacation", "fileinto"]; vacation "Away."; fileinto "Archive";`, {
+      enabledExtensions: ["vacation", "fileinto"],
+    });
+    const d = newRuntimeData(
+      s,
+      new DummyPolicy(),
+      new EnvelopeStatic("", "recipient@example.com"),
+      new MessageStatic(0, new Map()),
+    );
+    expect(() => s.execute(d)).not.toThrow();
+    expect(d.vacationResponses.size).toBe(0);
+    expect(d.mailboxes).toEqual(["Archive"]);
   });
 
   it(":mime flag is recorded; require gate; :seconds rejected", () => {
