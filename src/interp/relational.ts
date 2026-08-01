@@ -1,12 +1,10 @@
 // RFC 5231 relational (:value / :count)
 // comparison kernel. CompareString is byte-wise (UTF-8 lexicographic);
-// CompareUint64 backs :count; CompareNumericValue implements RFC 4790 §9.1
-// infinity semantics (null = +infinity).
+// CompareNumericValue backs both :value and :count and implements RFC 4790
+// §9.1 infinity semantics (null = +infinity).
 
-export type Relational = "gt" | "ge" | "lt" | "le" | "eq" | "ne";
 export const RELATIONAL_OPS = new Set<string>(["gt", "ge", "lt", "le", "eq", "ne"]);
 
-const UINT64_MAX = 18446744073709551615n;
 const encoder = new TextEncoder();
 
 function applyRel(rel: string, cmp: number): boolean {
@@ -43,10 +41,6 @@ export function compareString(rel: string, a: string, b: string): boolean {
   return applyRel(rel, byteCompare(a, b));
 }
 
-export function compareUint64(rel: string, a: bigint, b: bigint): boolean {
-  return applyRel(rel, a < b ? -1 : a > b ? 1 : 0);
-}
-
 /** RFC 4790 §9.1: null operand = +infinity (a non-numeric string). */
 export function compareNumericValue(rel: string, a: bigint | null, b: bigint | null): boolean {
   let cmp: number;
@@ -55,13 +49,6 @@ export function compareNumericValue(rel: string, a: bigint | null, b: bigint | n
   else if (b === null) cmp = -1; // finite < +inf
   else cmp = a < b ? -1 : a > b ? 1 : 0;
   return applyRel(rel, cmp);
-}
-
-/** Whole-string base-10 uint64; null on non-numeric/overflow. */
-export function parseUint64(s: string): bigint | null {
-  if (!/^\d+$/.test(s)) return null;
-  const v = BigInt(s);
-  return v <= UINT64_MAX ? v : null;
 }
 
 /**

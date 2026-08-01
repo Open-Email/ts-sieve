@@ -74,10 +74,6 @@ export function applyHeaderEditsToValues(d: RuntimeData, fieldName: string, valu
   return result;
 }
 
-export function getHeaderWithEdits(d: RuntimeData, fieldName: string): string[] {
-  return applyHeaderEditsToValues(d, fieldName, d.msg.headerGet(fieldName));
-}
-
 export class CmdAddHeader implements Cmd {
   fieldName = "";
   value = "";

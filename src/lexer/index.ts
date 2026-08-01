@@ -9,5 +9,4 @@ export {
   type Position,
   type Quantifier,
   multiplier,
-  isValidIdentifier,
 } from "./token.js";

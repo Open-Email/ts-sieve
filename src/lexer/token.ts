@@ -52,19 +52,3 @@ export interface SimpleToken extends Position {
 
 export type Token = IdentifierToken | NumberToken | StringToken | SimpleToken;
 
-/**
- * RFC 5228 identifier grammar: `(ALPHA / "_") *(ALPHA / DIGIT / "_")`.
- * Used by the interpreter for variable names.
- */
-export function isValidIdentifier(s: string): boolean {
-  if (s.length === 0) return false;
-  const first = s.charCodeAt(0);
-  const isAlpha = (c: number) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
-  const isDigit = (c: number) => c >= 48 && c <= 57;
-  if (!isAlpha(first) && first !== 95 /* _ */) return false;
-  for (let i = 1; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (!isAlpha(c) && !isDigit(c) && c !== 95 /* _ */) return false;
-  }
-  return true;
-}

@@ -895,7 +895,7 @@ function loadDovecotConfigUnset(s: Script, pcmd: PCmd): Cmd {
   return cmd;
 }
 
-function loadDovecotNoop(s: Script, _pcmd: PCmd): Cmd {
+function loadDovecotNoop(_s: Script, _pcmd: PCmd): Cmd {
   // loadNoop ignores args entirely (no LoadSpec).
   return new CmdDovecotNoop();
 }

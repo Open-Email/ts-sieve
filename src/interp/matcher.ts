@@ -14,13 +14,16 @@ import {
   toLowerASCII,
 } from "./matching.js";
 import { type CompiledRegex, compileRegex, patternToRegex } from "./regex.js";
-import { compareNumericValue, compareString, parseNumericPrefix } from "./relational.js";
+import {
+  RELATIONAL_OPS,
+  compareNumericValue,
+  compareString,
+  parseNumericPrefix,
+} from "./relational.js";
 import type { RuntimeData } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
 import { expandVars } from "./variables.js";
-
-const RELATIONAL_OPS = new Set(["gt", "ge", "lt", "le", "eq", "ne"]);
 
 export class MatcherTest {
   comparator: Comparator = DefaultComparator;

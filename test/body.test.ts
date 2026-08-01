@@ -3,7 +3,7 @@
 // the guard form `if not body { test_fail }`).
 
 import { describe, expect, it } from "vitest";
-import { R, run } from "./harness.js";
+import { run } from "./harness.js";
 
 const bodyMatches = (script: string, eml: string) => run(script, eml).keep === true;
 

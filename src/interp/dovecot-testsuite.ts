@@ -26,7 +26,6 @@ import {
 import { Script } from "./script.js";
 import { expandVars } from "./variables.js";
 
-const DOVECOT_TEST_EXTENSION = "vnd.dovecot.testsuite";
 const encoder = new TextEncoder();
 
 // ---------------------------------------------------------------------------
