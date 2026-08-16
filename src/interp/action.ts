@@ -43,7 +43,7 @@ export function canonicalFlags(
  * `setflag/addflag/removeflag <variablename> …` form, so `${var}` reads back a
  * stable, deduped, space-separated flag string.
  */
-export function canonicalFlagsOrdered(
+function canonicalFlagsOrdered(
   src: string[],
   remove: string[] | null,
   aliases?: Map<string, string>,

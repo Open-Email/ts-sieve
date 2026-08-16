@@ -55,7 +55,7 @@ function modifiedJulianDay(dt: Date): number {
   return jdn - 2400001;
 }
 
-export function extractDatePart(zt: ZonedTime, part: DatePart): string {
+function extractDatePart(zt: ZonedTime, part: DatePart): string {
   const dt = new Date(zt.epochMs + zt.offsetSec * 1000);
   const y = dt.getUTCFullYear();
   const mo = dt.getUTCMonth() + 1;
@@ -119,7 +119,7 @@ function expandYear(y: number, digits: number): number {
  * Parses the common shapes of RFC 5322 date-time, plus fallback
  * layouts with a linear tokenizer (no backtracking regex over attacker input).
  */
-export function parseDateHeader(value: string): ZonedTime | null {
+function parseDateHeader(value: string): ZonedTime | null {
   if (value.includes("\r") && !value.includes("\r\n")) return null;
   let s = value.replace(/[\r\n]/g, "").trim();
   if (s === "") return null;

@@ -22,7 +22,7 @@ export interface HeaderEdit {
 const PROTECTED_HEADERS = new Set(["received", "auto-submitted"]);
 
 /** RFC 2822 field-name: 1*ftext where ftext = %d33-57 / %d59-126 (excludes ctrl, SP, ':'). */
-export function isValidHeaderName(name: string): boolean {
+function isValidHeaderName(name: string): boolean {
   if (name.length === 0) return false;
   for (let i = 0; i < name.length; i++) {
     const c = name.charCodeAt(i);
@@ -31,7 +31,7 @@ export function isValidHeaderName(name: string): boolean {
   return true;
 }
 
-export function isProtectedHeader(name: string): boolean {
+function isProtectedHeader(name: string): boolean {
   return PROTECTED_HEADERS.has(name.toLowerCase());
 }
 

@@ -40,7 +40,7 @@ const encoder = new TextEncoder();
  * is null when no blank line was present (hasBody=false) so the `body` test never
  * matches — hasBody is true only when the header block is followed by a body.
  */
-export function parseTestMessage(raw: string): MessageStatic {
+function parseTestMessage(raw: string): MessageStatic {
   const size = encoder.encode(raw).length;
   const headerLines: string[] = [];
   let body = "";

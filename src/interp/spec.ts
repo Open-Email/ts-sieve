@@ -13,7 +13,7 @@ export interface SpecTag {
   noVariables?: boolean;
 }
 
-export interface SpecPosArg {
+interface SpecPosArg {
   optional?: boolean;
   matchStr?: (val: string[]) => void;
   matchNum?: (i: number) => void;

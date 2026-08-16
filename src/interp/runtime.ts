@@ -18,7 +18,7 @@ import type { VacationResponse } from "./vacation.js";
  * (command dispatch, match keys, the regex VM's inner loop) and throws when it
  * is exhausted — a deterministic CPU cap for a Worker.
  */
-export class Budget {
+class Budget {
   constructor(public remaining: number) {}
   consume(n = 1): void {
     this.remaining -= n;

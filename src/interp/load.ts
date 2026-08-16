@@ -85,8 +85,9 @@ function at(pos: Position, message: string): SieveError {
 }
 
 // ---------------------------------------------------------------------------
-// LoadSpec — generic argument loader. Encoded-character and
-// variable-name validation are dropped (those extensions are disabled in v1).
+// LoadSpec — generic argument loader. Both `encoded-character` and `variables`
+// are supported (see supportedRequires): this branches on the former, and
+// variable-name length is enforced in interp/variables.ts.
 // ---------------------------------------------------------------------------
 
 function loadSpec(

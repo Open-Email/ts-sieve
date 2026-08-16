@@ -498,7 +498,7 @@ function classMatch(inst: { ranges: [number, number][]; negated: boolean; fold: 
 }
 
 /** Cooperative budget hook (RuntimeData.budget); throws when exhausted. */
-export interface StepBudget {
+interface StepBudget {
   consume(n?: number): void;
 }
 
