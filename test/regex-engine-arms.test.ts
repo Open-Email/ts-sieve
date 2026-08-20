@@ -215,17 +215,28 @@ describe("unicode and code points", () => {
   });
 });
 
-describe("comparator folding is one-sided for :regex", () => {
-  it("the VALUE is folded by the comparator; the PATTERN never is", () => {
-    // A real gotcha worth pinning: under the default i;ascii-casemap the value
-    // is lowercased before matching while the pattern is passed through
-    // verbatim, so an UPPERCASE literal in a :regex pattern can never match.
-    // The fix a script author wants is (?i) or a lowercase pattern.
-    expect(m("^ABC$", "ABC")).toBe(false); // value folded to "abc" ≠ pattern
+describe("casemap comparators fold :regex via the PATTERN (two-sided semantics)", () => {
+  it("an uppercase pattern matches under the default i;ascii-casemap", () => {
+    // This block once pinned the opposite: the input was lowercased while the
+    // pattern passed through verbatim, so an UPPERCASE literal in a :regex
+    // pattern could never match. That was a defect, not a contract — RFC 5228
+    // §2.7.3's i;ascii-casemap comparison is case-insensitive on BOTH sides.
+    // The fold now rides the compiled pattern ((?i), the same mechanism
+    // :matches uses) and the input is passed through untouched.
+    expect(m("^ABC$", "ABC")).toBe(true);
+    expect(m("^ABC$", "abc")).toBe(true);
     expect(m("^abc$", "ABC")).toBe(true);
-    expect(m("(?i)^ABC$", "ABC")).toBe(true);
-    // Under i;octet neither side is folded, so the uppercase pattern works.
+    expect(m("(?i)^ABC$", "ABC")).toBe(true); // explicit (?i) is redundant, never harmful
+    // Under i;octet nothing folds in either direction.
     expect(mOctet("^ABC$", "ABC")).toBe(true);
+    expect(mOctet("^ABC$", "abc")).toBe(false);
+    expect(mOctet("^abc$", "ABC")).toBe(false);
+  });
+
+  it("captures preserve the source's original case", () => {
+    // The input is no longer rewritten before matching, so a match variable
+    // carries the bytes the message actually held.
+    expect(cap("(t\\\\w+)", "Ticket 4521")).toBe("Ticket");
   });
 });
 

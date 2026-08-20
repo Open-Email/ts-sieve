@@ -634,10 +634,18 @@ function truncateToBytes(s: string, maxBytes: number): string {
 }
 
 /** Compile a regex pattern, enforcing the compile-time pattern-length cap. */
-export function compileRegex(pattern: string, opts?: { maxPatternLength?: number }): CompiledRegex {
+export function compileRegex(
+  pattern: string,
+  opts?: { maxPatternLength?: number; caseInsensitive?: boolean },
+): CompiledRegex {
   const cap = opts?.maxPatternLength ?? MAX_PATTERN_LENGTH;
   if (pattern.length > cap) throw new SieveError(`regex pattern too long: ${pattern.length} > ${cap}`);
-  const parser = new Parser(pattern, { i: false, s: false, m: false });
+  // `caseInsensitive` seeds the parser's initial flag state — the same fold an
+  // inline leading `(?i)` would set, but WITHOUT rewriting the pattern text:
+  // a textual prefix shifts parse positions, so `*abc` (a load-time refusal —
+  // nothing for the quantifier to bind) would silently become legal as
+  // `(?i)*abc`. Used by `:regex` under casemap comparators.
+  const parser = new Parser(pattern, { i: opts?.caseInsensitive ?? false, s: false, m: false });
   const { ast, ncaps } = parser.parse();
   const compiler = new Compiler();
   // A leading Save(0) is implicit via the seed caps; add trailing Match.

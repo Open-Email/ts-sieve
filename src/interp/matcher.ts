@@ -187,8 +187,20 @@ export class MatcherTest {
       this.soundKeys = this.key.map((k) => (k.includes("${") ? null : globEndsWithStar(k)));
     } else if (this.match === "regex") {
       // Same for :regex, so malformed/oversized patterns fail at load (script
-      // upload) instead of at message-delivery time.
-      this.compiledKeys = this.key.map((k) => (k.includes("${") ? null : compileRegex(k)));
+      // upload) instead of at message-delivery time. Under a casemap
+      // comparator the PATTERN compiles case-insensitively (the parser's
+      // seeded `i` flag — the same fold `:matches` rides via patternToRegex's
+      // `(?i)`), so the ORIGINAL value is matched and captured match variables
+      // keep its case. Folding only the input, as this arm once did, made any
+      // pattern containing an uppercase letter unmatchable ("^Ticket" could
+      // never match "Ticket 4521 …": the input had been lowercased and the
+      // pattern had not). The pattern text itself is never rewritten — a
+      // textual `(?i)` prefix would shift parse positions and legalize
+      // quantifier-first refusals, and lowercasing the text would corrupt
+      // escapes (`\W` → `\w` inverts the class).
+      this.compiledKeys = this.key.map((k) =>
+        k.includes("${") ? null : compileRegex(k, { caseInsensitive: this.caseFold }),
+      );
       this.soundKeys = this.key.map((k) => (k.includes("${") ? null : regexSoundOnPrefix(k)));
     }
   }
@@ -240,14 +252,14 @@ export class MatcherTest {
           unknown = true;
         }
       } else if (this.match === "regex") {
-        // :regex always uses the (unicode) engine; the value is pre-lowercased
-        // per comparator, the pattern is untouched.
-        let value = source;
-        if (this.comparator === "i;ascii-casemap") value = toLowerASCII(source);
-        else if (this.comparator === "i;unicode-casemap") value = source.toLowerCase();
-        const re = this.compiledKeys[i] ?? compileRegex(expandVars(d, key));
-        const truncated = sourceTruncated || (cap > 0 && byteLen(value) > cap);
-        const caps = re.findSubmatch(value, reOpts);
+        // :regex always uses the (unicode) engine; a casemap comparator folds
+        // via the compiled pattern (the parser's seeded `i` flag — see the
+        // precompile above), never by rewriting the input — so the ORIGINAL
+        // source is matched and captures preserve its case. i;octet stays exact.
+        const re =
+          this.compiledKeys[i] ?? compileRegex(expandVars(d, key), { caseInsensitive: this.caseFold });
+        const truncated = sourceTruncated || (cap > 0 && byteLen(source) > cap);
+        const caps = re.findSubmatch(source, reOpts);
         if (caps !== null) {
           // Search semantics: a hit inside the prefix is a hit in the whole,
           // unless the pattern can anchor to the end.
