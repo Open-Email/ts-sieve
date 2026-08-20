@@ -3,7 +3,7 @@
 // `string` test so the arms are hit exactly as delivery hits them.
 
 import { describe, expect, it } from "vitest";
-import { R, run } from "./harness.js";
+import { run } from "./harness.js";
 
 const EML = ["From: a@x", "To: b@y", "Subject: hi", "", "body"].join("\r\n");
 
