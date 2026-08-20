@@ -600,7 +600,15 @@ class Program implements CompiledRegex {
       }
       clist = nlist;
       cvisited = nvisited;
-      if (clist.length === 0) break;
+      // Stop early only once a match is in hand. An empty thread list does NOT
+      // mean the search is over: the seed thread for the next position is added
+      // above and can DIE IMMEDIATELY inside addThread when the program starts
+      // with a zero-width assertion that fails there (`\b`, `\B`, `(?m)^`).
+      // Breaking on empty therefore abandoned every later start position —
+      // `\bcat\b` found nothing in "the cat sat" because the seed at offset 1
+      // sits inside a word. Later iterations cost one empty pass each, which is
+      // the same O(n·m) bound the VM already carries.
+      if (clist.length === 0 && matched !== null) break;
     }
 
     if (matched === null) return null;
