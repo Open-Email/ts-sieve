@@ -35,6 +35,8 @@ export interface Result {
   keep: boolean;
   implicitKeep: boolean;
   flags: string[];
+  /** An "unknown" decided a branch — the actions are a best-effort reading. */
+  indeterminate: boolean;
 }
 
 /** Build an expected Result, defaulting empties (an all-empty Result). */
@@ -44,6 +46,7 @@ export const R = (o: Partial<Result>): Result => ({
   keep: o.keep ?? false,
   implicitKeep: o.implicitKeep ?? false,
   flags: o.flags ?? [],
+  indeterminate: o.indeterminate ?? false,
 });
 
 /** Parse an RFC 822 message into a case-insensitive header map + byte size + body. */
@@ -89,6 +92,8 @@ export interface RunOptions {
   to?: string;
   /** Override message size (default: eml byte length). */
   size?: number;
+  /** Mark the message body as a PREFIX of the real body (read-window cut). */
+  bodyTruncated?: boolean;
   /** Extra loader options. */
   options?: Options;
 }
@@ -105,7 +110,7 @@ export function run(scriptSrc: string, message = "", opts: RunOptions = {}): Res
     ...opts.options,
   });
   const env = new EnvelopeStatic(opts.from ?? "from@test.com", opts.to ?? "to@test.com");
-  const msg = new MessageStatic(opts.size ?? size, headers, body);
+  const msg = new MessageStatic(opts.size ?? size, headers, body, opts.bodyTruncated ?? false);
   const d = newRuntimeData(script, new DummyPolicy(), env, msg);
   script.execute(d);
   return {
@@ -114,6 +119,7 @@ export function run(scriptSrc: string, message = "", opts: RunOptions = {}): Res
     keep: d.keep,
     implicitKeep: d.implicitKeep,
     flags: d.flags,
+    indeterminate: d.indeterminate,
   };
 }
 

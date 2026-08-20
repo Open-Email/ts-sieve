@@ -7,7 +7,7 @@
 
 import { SieveError } from "../errors.js";
 import { MatcherTest } from "./matcher.js";
-import type { Cmd, RuntimeData, Test } from "./runtime.js";
+import type { Cmd, RuntimeData, Test, Tri } from "./runtime.js";
 
 const VAR_NAME_MAX_SCAN = 300; // bound the } search — real names are ≤ 32 chars
 const encoder = new TextEncoder();
@@ -154,16 +154,19 @@ export class TestString implements Test {
   readonly matcher = new MatcherTest();
   source: string[] = [];
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     if (this.matcher.isCount()) {
       let n = 0;
       for (const src of this.source) if (expandVars(d, src) !== "") n++;
       return this.matcher.countMatches(d, n);
     }
+    let unknown = false;
     for (const src of this.source) {
-      if (this.matcher.tryMatch(d, expandVars(d, src), opts)) return true;
+      const r = this.matcher.tryMatch(d, expandVars(d, src), opts);
+      if (r === true) return true;
+      if (r === "unknown") unknown = true;
     }
-    return false;
+    return unknown ? "unknown" : false;
   }
 }

@@ -14,3 +14,4 @@ export class SieveError extends Error {
     this.col = pos?.col;
   }
 }
+

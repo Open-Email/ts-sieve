@@ -16,6 +16,7 @@ export {
   type PolicyReader,
   type Cmd,
   type Test,
+  type Tri,
   type TestEnv,
   type SubTest,
   type Namespace,

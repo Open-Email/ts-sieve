@@ -8,6 +8,7 @@
 
 import { SieveError } from "../errors.js";
 import { parseNumericPrefix } from "./relational.js";
+import type { Tri } from "./runtime.js";
 
 export type Comparator = "i;octet" | "i;ascii-casemap" | "i;ascii-numeric" | "i;unicode-casemap";
 export const DefaultComparator: Comparator = "i;ascii-casemap";
@@ -83,5 +84,34 @@ export function testString(
         default:
           throw new SieveError("numeric comparator cannot be used with :contains or :matches");
       }
+  }
+}
+
+/**
+ * `:is`/`:contains` over a PREFIX of the real value (the host's body read
+ * window cut it). The real value may extend `prefix` by any suffix — including
+ * the empty one, so "truncated" only ever means MAY extend:
+ *   contains: found in the prefix → definite true (a suffix cannot unfind it);
+ *             not found → unknown (the key may sit past — or span — the cut).
+ *   is:       the real value equals the key only if the key STARTS WITH the
+ *             prefix (equality included); any other key is definite false.
+ *             i;ascii-numeric is unknown outright — the leading digit run may
+ *             extend past the cut.
+ */
+export function testStringPrefix(comparator: Comparator, match: Match, prefix: string, key: string): Tri {
+  const fold =
+    comparator === "i;octet"
+      ? (x: string) => x
+      : comparator === "i;unicode-casemap"
+        ? (x: string) => x.toLowerCase()
+        : toLowerASCII;
+  switch (match) {
+    case "contains":
+      return testString(comparator, "contains", prefix, key, {}) ? true : "unknown";
+    case "is":
+      if (comparator === "i;ascii-numeric") return "unknown";
+      return fold(key).startsWith(fold(prefix)) ? "unknown" : false;
+    default:
+      throw new SieveError(`match type '${match}' must not reach testStringPrefix`);
   }
 }

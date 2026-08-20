@@ -615,7 +615,9 @@ class Program implements CompiledRegex {
 }
 
 const encoder = new TextEncoder();
-function byteLen(s: string): number {
+/** UTF-8 byte length — the unit findSubmatch's maxInputLength cut is measured
+ * in, exported so a caller can detect that the cut applied to its input. */
+export function byteLen(s: string): number {
   return encoder.encode(s).length;
 }
 function truncateToBytes(s: string, maxBytes: number): string {

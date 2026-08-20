@@ -17,7 +17,7 @@ import { getHeader, decodeHeaderValue } from "./header.js";
 import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
-import type { RuntimeData, Test } from "./runtime.js";
+import type { RuntimeData, Test, Tri } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
 /** RFC 5260 §6 `:index`/`:last` — select the indexth field instance (1-based). */
@@ -71,7 +71,7 @@ function testAddress(
   matcher: MatcherTest,
   part: AddressPart,
   address: string,
-): boolean {
+): Tri {
   if (address === "<>") address = "";
 
   let valueToCompare = "";
@@ -134,8 +134,17 @@ export class AddressTest implements Test {
     public header: string[],
   ) {}
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     let entryCount = 0;
+    let unknown = false;
+    // Header values are complete, so unknowns here come only from the engine's
+    // match-input cap on an oversized value. "unknown" is truthy as a string —
+    // never `if (tryMatch(...))` a Tri; accumulate through this probe instead.
+    const probe = (address: string): boolean => {
+      const r = testAddress(d, this.matcher, this.addressPart, address);
+      if (r === "unknown") unknown = true;
+      return r === true;
+    };
     for (let hdr of this.header) {
       hdr = expandVars(d, hdr).toLowerCase();
       if (!allowedAddrHeaders.has(hdr)) continue;
@@ -143,7 +152,7 @@ export class AddressTest implements Test {
       const values = selectIndexed(getHeader(d, hdr), this.index, this.last);
       if (values.length === 0) {
         if (this.matcher.isCount()) continue;
-        if (testAddress(d, this.matcher, this.addressPart, "")) return true;
+        if (probe("")) return true;
         continue;
       }
 
@@ -158,7 +167,7 @@ export class AddressTest implements Test {
           (trimmed.match(/>/g) ?? []).length === 1;
         if (bareAngle) {
           if (this.matcher.isCount()) continue;
-          if (testAddress(d, this.matcher, this.addressPart, cleanValue)) return true;
+          if (probe(cleanValue)) return true;
           continue;
         }
 
@@ -167,13 +176,13 @@ export class AddressTest implements Test {
           addrList = parseAddressList(cleanValue);
         } catch {
           if (this.matcher.isCount()) continue;
-          if (testAddress(d, this.matcher, this.addressPart, cleanValue)) return true;
+          if (probe(cleanValue)) return true;
           continue;
         }
 
         if (addrList.length === 0) {
           if (this.matcher.isCount()) continue;
-          if (testAddress(d, this.matcher, this.addressPart, "")) return true;
+          if (probe("")) return true;
           continue;
         }
 
@@ -182,12 +191,12 @@ export class AddressTest implements Test {
             entryCount++;
             continue;
           }
-          if (testAddress(d, this.matcher, this.addressPart, addr.address)) return true;
+          if (probe(addr.address)) return true;
         }
       }
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
-    return false;
+    return unknown ? "unknown" : false;
   }
 }
 
@@ -198,8 +207,9 @@ export class EnvelopeTest implements Test {
     public field: string[],
   ) {}
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     let entryCount = 0;
+    let unknown = false;
     for (const field of this.field) {
       const name = expandVars(d, field).toLowerCase();
       let value: string;
@@ -230,10 +240,12 @@ export class EnvelopeTest implements Test {
         continue;
       }
 
-      if (testAddress(d, this.matcher, this.addressPart, value)) return true;
+      const r = testAddress(d, this.matcher, this.addressPart, value);
+      if (r === true) return true;
+      if (r === "unknown") unknown = true;
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
-    return false;
+    return unknown ? "unknown" : false;
   }
 }
 
@@ -268,8 +280,9 @@ export class HeaderTest implements Test {
     public header: string[],
   ) {}
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     let entryCount = 0;
+    let unknown = false;
     for (const hdr of this.header) {
       const values = selectIndexed(getHeader(d, expandVars(d, hdr)), this.index, this.last);
       for (const value of values) {
@@ -277,38 +290,53 @@ export class HeaderTest implements Test {
           entryCount++;
           continue;
         }
-        if (this.matcher.tryMatch(d, decodeHeaderValue(value), matchOpts(d))) return true;
+        const r = this.matcher.tryMatch(d, decodeHeaderValue(value), matchOpts(d));
+        if (r === true) return true;
+        if (r === "unknown") unknown = true;
       }
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
-    return false;
+    return unknown ? "unknown" : false;
   }
 }
 
+// Kleene logic (RFC 5228 booleans widened by "unknown" — see runtime.ts's Tri):
+// not(unknown) = unknown; a definite false absorbs unknowns in allof and a
+// definite true absorbs them in anyof, so evaluation continues PAST an unknown
+// member looking for the absorbing value rather than short-circuiting into a
+// guess. Only when no member decides does the unknown surface.
+
 export class NotTest implements Test {
   constructor(public test: Test) {}
-  check(d: RuntimeData): boolean {
-    return !this.test.check(d);
+  check(d: RuntimeData): Tri {
+    const r = this.test.check(d);
+    return r === "unknown" ? "unknown" : !r;
   }
 }
 
 export class AllOfTest implements Test {
   constructor(public tests: Test[]) {}
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
+    let unknown = false;
     for (const t of this.tests) {
-      if (!t.check(d)) return false;
+      const r = t.check(d);
+      if (r === false) return false;
+      if (r === "unknown") unknown = true;
     }
-    return true;
+    return unknown ? "unknown" : true;
   }
 }
 
 export class AnyOfTest implements Test {
   constructor(public tests: Test[]) {}
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
+    let unknown = false;
     for (const t of this.tests) {
-      if (t.check(d)) return true;
+      const r = t.check(d);
+      if (r === true) return true;
+      if (r === "unknown") unknown = true;
     }
-    return false;
+    return unknown ? "unknown" : false;
   }
 }
 
@@ -325,7 +353,7 @@ export class HasFlagTest implements Test {
     public variables: string[], // variable names; empty = internal flag set
   ) {}
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     let flags: string[];
     if (this.variables.length > 0) {
       const lists = this.variables.map((v) => d.variables.get(v.toLowerCase()) ?? "");
@@ -334,10 +362,13 @@ export class HasFlagTest implements Test {
       flags = d.flags;
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, flags.length);
+    let unknown = false;
     for (const f of flags) {
-      if (this.matcher.tryMatch(d, f, matchOpts(d))) return true;
+      const r = this.matcher.tryMatch(d, f, matchOpts(d));
+      if (r === true) return true;
+      if (r === "unknown") unknown = true;
     }
-    return false;
+    return unknown ? "unknown" : false;
   }
 }
 

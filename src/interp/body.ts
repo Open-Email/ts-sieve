@@ -7,7 +7,7 @@
 // linear/bounded (no backtracking regex on body content).
 
 import { MatcherTest } from "./matcher.js";
-import type { RuntimeData, Test } from "./runtime.js";
+import type { RuntimeData, Test, Tri } from "./runtime.js";
 
 // -------- byte/binary-string helpers --------
 
@@ -203,24 +203,50 @@ export class TestBody implements Test {
     return { maxMatchInputLength: d.script.opts.maxMatchInputLength };
   }
 
-  check(d: RuntimeData): boolean {
+  /**
+   * Three-valued over a truncated body (Message.bodyTruncated — the host's
+   * read window cut the raw bytes). The walk threads a per-part `cut` flag so
+   * a part that ENDS at a found boundary keeps exact match semantics — only
+   * the tail that ran into the cut is a prefix — and a definite match from any
+   * part is sound however much body was cut away. A NO-match over a truncated
+   * body is always "unknown": whole parts (even whole part TYPES the :content
+   * filter wanted) may sit past the cut, unseen. Comparisons the engine's own
+   * match-input cap truncated surface as "unknown" through tryMatch the same
+   * way, truncated body or not.
+   */
+  check(d: RuntimeData): Tri {
     const savedVars = d.matchVariables;
     try {
       const raw = d.msg.bodyRaw();
       if (raw === null) return false;
+      const bodyCut = d.msg.bodyTruncated?.() ?? false;
 
       if (this.raw) {
+        // :raw is ONE part by definition, so its count is exact even when cut.
         if (this.matcher.isCount()) return this.matcher.countMatches(d, 1);
-        return this.matcher.tryMatch(d, bytesToBinary(raw), this.matchOpts(d));
+        return this.matcher.tryMatch(d, bytesToBinary(raw), this.matchOpts(d), bodyCut);
       }
 
       const topCt = d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii";
       const topCte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
       const counter = { count: 0 };
-      const matched = this.walk(d, topCt, topCte, bytesToBinary(raw), counter);
+      const flags = { unknown: false };
+      const matched = this.walk(d, topCt, topCte, bytesToBinary(raw), counter, bodyCut, flags);
       if (matched) return true;
-      if (this.matcher.isCount()) return this.matcher.countMatches(d, counter.count);
-      return false;
+      if (this.matcher.isCount()) {
+        const res = this.matcher.countMatches(d, counter.count);
+        if (flags.unknown) {
+          // Structure ran off the cut, so the visible count is a LOWER BOUND —
+          // whole parts may sit past it. `ge`/`gt` already proven stay proven;
+          // everything else could flip. (A cut that fell inside a LEAF leaves
+          // the count exact: the tail extends a part, it does not add one.)
+          return res === true && (this.matcher.relational === "ge" || this.matcher.relational === "gt")
+            ? true
+            : "unknown";
+        }
+        return res;
+      }
+      return flags.unknown ? "unknown" : false;
     } finally {
       d.matchVariables = savedVars; // body restores match vars regardless of outcome
     }
@@ -239,15 +265,42 @@ export class TestBody implements Test {
     return false;
   }
 
-  private matchOrCount(d: RuntimeData, source: string, counter: { count: number }): boolean {
+  /** Match one source, or count it. `cut` marks the source as a prefix of the
+   * real content; an unknown from tryMatch lands in `flags`, never in the
+   * boolean (which reports DEFINITE matches only). */
+  private matchOrCount(
+    d: RuntimeData,
+    source: string,
+    counter: { count: number },
+    cut: boolean,
+    flags: { unknown: boolean },
+  ): boolean {
     if (this.matcher.isCount()) {
       counter.count++;
       return false;
     }
-    return this.matcher.tryMatch(d, source, this.matchOpts(d));
+    const r = this.matcher.tryMatch(d, source, this.matchOpts(d), cut);
+    if (r === "unknown") {
+      flags.unknown = true;
+      return false;
+    }
+    return r;
   }
 
-  private walk(d: RuntimeData, ctHeader: string, cteHeader: string, b: string, counter: { count: number }): boolean {
+  /** `cut` = this part's content string may be a PREFIX of the real content
+   * (the read-window cut fell inside it). Splitting on a FOUND boundary proves
+   * everything before that boundary complete, so only the fragment that ran to
+   * the end of a cut string inherits the flag. Returns definite matches only;
+   * unknowns accumulate in `flags`. */
+  private walk(
+    d: RuntimeData,
+    ctHeader: string,
+    cteHeader: string,
+    b: string,
+    counter: { count: number },
+    cut: boolean,
+    flags: { unknown: boolean },
+  ): boolean {
     d.budget.consume(1);
     const { mediaType, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
     const process = this.wantsPart(mediaType);
@@ -255,15 +308,17 @@ export class TestBody implements Test {
     if (mediaType.startsWith("multipart/")) {
       const boundary = params["boundary"];
       if (!boundary) {
-        return process ? this.matchOrCount(d, b, counter) : false;
+        return process ? this.matchOrCount(d, b, counter, cut, flags) : false;
       }
       const parts = splitBoundary(b, boundary);
       // parts[0] = prologue; find closing --boundary-- marker → epilogue; rest = nested
       let epilogue = "";
+      let sawClose = false;
       const nested: string[] = [];
       for (let i = 1; i < parts.length; i++) {
         let p = parts[i]!;
         if (p.startsWith("--")) {
+          sawClose = true;
           epilogue = p.slice(2);
           if (epilogue.startsWith("\r\n")) epilogue = epilogue.slice(2);
           else if (epilogue.startsWith("\n")) epilogue = epilogue.slice(1);
@@ -273,18 +328,35 @@ export class TestBody implements Test {
         else if (p.startsWith("\n")) p = p.slice(1);
         nested.push(p);
       }
+      // Which fragment ran into the cut: the epilogue when the close marker was
+      // found, the last nested part otherwise (or the prologue when no boundary
+      // was found at all — parts === [b]).
+      const prologueCut = cut && parts.length === 1;
+      const epilogueCut = cut && sawClose;
+      const lastNestedCut = cut && !sawClose;
+      // A cut multipart whose close marker never appeared may CONTINUE past the
+      // cut: whole sibling parts — even whole part TYPES a :content filter
+      // wanted — can be hidden there. Any no-match at this level is therefore
+      // unknown. (With the close marker in view the structure is complete and
+      // only the epilogue is a prefix; a cut inside a LEAF needs no flag — its
+      // comparison runs under prefix semantics, and its tail cannot hide
+      // another part.)
+      if (lastNestedCut) flags.unknown = true;
       if (process) {
         if (this.matcher.isCount()) {
           counter.count += 2;
         } else {
-          if (this.matcher.tryMatch(d, parts[0] ?? "", this.matchOpts(d))) return true;
-          if (this.matcher.tryMatch(d, epilogue, this.matchOpts(d))) return true;
+          if (this.matchOrCount(d, parts[0] ?? "", counter, prologueCut, flags)) return true;
+          if (this.matchOrCount(d, epilogue, counter, epilogueCut, flags)) return true;
         }
       }
-      for (const p of nested) {
-        const { header, body } = splitHeaderBody(p);
+      for (let i = 0; i < nested.length; i++) {
+        const partCut = lastNestedCut && i === nested.length - 1;
+        const { header, body } = splitHeaderBody(nested[i]!);
         const h = parseMimeHeader(header);
-        if (this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter)) {
+        if (
+          this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, partCut, flags)
+        ) {
           return true;
         }
       }
@@ -292,16 +364,31 @@ export class TestBody implements Test {
     }
 
     if (mediaType === "message/rfc822") {
+      const sep = b.includes("\r\n\r\n") || b.includes("\n\n");
       const { header, body } = splitHeaderBody(b);
       const hdrBytes = header + (b.includes("\r\n\r\n") ? "\r\n" : "");
-      if (process && this.matchOrCount(d, hdrBytes, counter)) return true;
+      // No separator found in a cut string ⇒ the header block itself may be a
+      // prefix; with a separator, the cut can only fall in the body (the tail).
+      if (process && this.matchOrCount(d, hdrBytes, counter, cut && !sep, flags)) return true;
       const h = parseMimeHeader(header);
-      return this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter);
+      return this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, cut, flags);
     }
 
     // leaf
     if (!process) return false;
-    const decoded = cteDecode(binaryToBytes(b), cteHeader);
+    let decoded: Uint8Array | null;
+    try {
+      decoded = cteDecode(binaryToBytes(b), cteHeader);
+    } catch (e) {
+      // A cut base64 leaf can be undecodable at the ragged edge (atob length
+      // rules) — that is "content unknown", not a script error. An untruncated
+      // leaf keeps throwing: malformed input, the host's fail-open handles it.
+      if (cut) {
+        flags.unknown = true;
+        return false;
+      }
+      throw e;
+    }
     if (decoded === null) return false; // unknown transfer-encoding → skip
     let text: string;
     if (mediaType.startsWith("text/")) {
@@ -312,7 +399,7 @@ export class TestBody implements Test {
     if (this.text && (mediaType === "text/html" || mediaType === "application/xhtml+xml")) {
       text = htmlToText(text);
     }
-    return this.matchOrCount(d, text, counter);
+    return this.matchOrCount(d, text, counter, cut, flags);
   }
 }
 

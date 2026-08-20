@@ -42,6 +42,14 @@ export interface Message {
   messageSize(): number;
   /** Raw body bytes; null when unavailable (the `body` test then never matches). */
   bodyRaw(): Uint8Array | null;
+  /**
+   * True when `bodyRaw()` is a PREFIX of the real body (the host read a bounded
+   * window of a larger message). The `body` test then evaluates three-valued:
+   * definite answers where the prefix proves them, "unknown" otherwise — which
+   * a branch resolves as not-taken while disclosing the guess on
+   * RuntimeData.indeterminate. Absent ⇒ the body is complete.
+   */
+  bodyTruncated?(): boolean;
 }
 
 export interface PolicyReader {
@@ -61,8 +69,18 @@ export interface Cmd {
   execute(d: RuntimeData): void;
 }
 
+/**
+ * Kleene three-valued test result. `"unknown"` means the answer depends on
+ * bytes outside the evaluated window (truncated body / capped match input);
+ * `not`/`allof`/`anyof` propagate it, and a branch condition that resolves to
+ * it is NOT TAKEN, with the guess disclosed on RuntimeData.indeterminate.
+ * Tests over complete inputs return plain booleans — `boolean` is assignable,
+ * so a definite test needs no ceremony.
+ */
+export type Tri = boolean | "unknown";
+
 export interface Test {
-  check(d: RuntimeData): boolean;
+  check(d: RuntimeData): Tri;
 }
 
 /**
@@ -104,6 +122,16 @@ export class RuntimeData {
   msg: Message;
 
   ifResult = false;
+
+  /**
+   * True when an "unknown" (see Tri) DECIDED a branch — the condition's value
+   * depended on bytes outside the evaluated window and the branch was not
+   * taken. The accumulated actions are then a best-effort reading, not a proven
+   * one: the host should refuse this execution's IRREVERSIBLE outcomes
+   * (discard, redirect-without-keep) and let the recoverable ones stand.
+   * Unknowns a definite value absorbed inside allof/anyof never set this.
+   */
+  indeterminate = false;
 
   redirectAddr: string[] = [];
   mailboxes: string[] = [];
@@ -177,6 +205,7 @@ export class RuntimeData {
   clone(scriptOverride?: Script): RuntimeData {
     const c = new RuntimeData(scriptOverride ?? this.script, this.policy, this.envelope, this.msg, this.budget);
     c.ifResult = this.ifResult;
+    c.indeterminate = this.indeterminate;
     c.redirectAddr = [...this.redirectAddr];
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];
@@ -242,6 +271,7 @@ export class MessageStatic implements Message {
     private readonly size: number,
     private readonly headers: Map<string, string[]>,
     private readonly body: Uint8Array | null = null,
+    private readonly truncated: boolean = false,
   ) {}
   headerGet(key: string): string[] {
     return this.headers.get(key.toLowerCase()) ?? [];
@@ -251,5 +281,8 @@ export class MessageStatic implements Message {
   }
   bodyRaw(): Uint8Array | null {
     return this.body;
+  }
+  bodyTruncated(): boolean {
+    return this.truncated;
   }
 }

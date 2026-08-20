@@ -129,6 +129,12 @@ export class CmdDeleteHeader implements Cmd {
 
   private valueMatchesPatterns(d: RuntimeData, value: string): boolean {
     const v = decodeHeaderValue(value).trim();
-    return this.matcher.tryMatch(d, v, { maxMatchInputLength: d.script.opts.maxMatchInputLength });
+    // An "unknown" (a glob over a value past the match-input cap) reads as
+    // no-match here — deleting a header on an unproven match would corrupt what
+    // every later test reads — but the guess is disclosed like a branch's:
+    // later tests may read a header this delete would have removed.
+    const r = this.matcher.tryMatch(d, v, { maxMatchInputLength: d.script.opts.maxMatchInputLength });
+    if (r === "unknown") d.indeterminate = true;
+    return r === true;
   }
 }

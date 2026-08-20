@@ -9,7 +9,7 @@
 import { SieveError } from "../errors.js";
 import { getHeader } from "./header.js";
 import { MatcherTest } from "./matcher.js";
-import type { RuntimeData, Test } from "./runtime.js";
+import type { RuntimeData, Test, Tri } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
 export type DatePart =
@@ -211,7 +211,7 @@ export class DateTest implements Test {
     return { epochMs: zt.epochMs, offsetSec: 0 }; // local ⇒ UTC on Workers
   }
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     // RAW header values (no RFC 2047 decode), but seen through the RFC 5293
     // editheader ledger so date tests observe addheader/deleteheader edits.
     const values = getHeader(d, expandVars(d, this.header));
@@ -245,7 +245,7 @@ export class CurrentDateTest implements Test {
   datePart: DatePart = "year";
   zone = "";
 
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
     let offsetSec = 0;
     if (this.zone !== "") {
       try {
