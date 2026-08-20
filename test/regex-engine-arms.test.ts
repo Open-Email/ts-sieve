@@ -238,6 +238,25 @@ describe("casemap comparators fold :regex via the PATTERN (two-sided semantics)"
     // carries the bytes the message actually held.
     expect(cap("(t\\\\w+)", "Ticket 4521")).toBe("Ticket");
   });
+
+  it("i;unicode-casemap still folds non-ASCII — via the INPUT, not the pattern", () => {
+    // The engine's `i` flag is an ASCII fold, so this comparator alone keeps
+    // lowercasing the input (its whole point is non-ASCII case); the
+    // pattern-side fold covers the ASCII letters. Residual, as before the
+    // pattern-fold fix: a non-ASCII UPPERCASE literal in the pattern.
+    const mUni = (pattern: string, value: string): boolean => {
+      const eml = ["From: a@x", "To: b@y", `X-T: ${value}`, "", "body"].join("\r\n");
+      return run(
+        `require ["regex","fileinto","comparator-i;unicode-casemap"];` +
+          ` if header :comparator "i;unicode-casemap" :regex "x-t" "${pattern}" { fileinto "X"; }`,
+        eml,
+      ).fileinto.includes("X");
+    };
+    expect(mUni("café", "CAFÉ corner")).toBe(true); // non-ASCII fold (input side)
+    expect(mUni("Cafe", "CAFE corner")).toBe(true); // ASCII fold (pattern side)
+    expect(mUni("mate", "MATE corner")).toBe(true);
+    expect(mUni("café", "cafe corner")).toBe(false); // é is not e under any fold
+  });
 });
 
 describe("search vs anchor semantics", () => {

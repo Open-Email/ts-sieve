@@ -256,10 +256,17 @@ export class MatcherTest {
         // via the compiled pattern (the parser's seeded `i` flag — see the
         // precompile above), never by rewriting the input — so the ORIGINAL
         // source is matched and captures preserve its case. i;octet stays exact.
+        // The one exception is i;unicode-casemap, which alone still folds the
+        // INPUT: the engine's `i` flag is an ASCII fold, so the pattern-side
+        // fold cannot reach É↔é, and dropping the input fold would regress the
+        // comparator whose whole point is non-ASCII case. Its residual is as
+        // before — a non-ASCII UPPERCASE literal in the pattern never matches,
+        // and captures fold to lowercase under this comparator only.
+        const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase() : source;
         const re =
           this.compiledKeys[i] ?? compileRegex(expandVars(d, key), { caseInsensitive: this.caseFold });
-        const truncated = sourceTruncated || (cap > 0 && byteLen(source) > cap);
-        const caps = re.findSubmatch(source, reOpts);
+        const truncated = sourceTruncated || (cap > 0 && byteLen(value) > cap);
+        const caps = re.findSubmatch(value, reOpts);
         if (caps !== null) {
           // Search semantics: a hit inside the prefix is a hit in the whole,
           // unless the pattern can anchor to the end.
