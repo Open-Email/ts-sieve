@@ -268,3 +268,108 @@ describe("relational and count over truncated input", () => {
     expect(r).toEqual(R({ fileinto: ["X"] }));
   });
 });
+
+describe("comparator arms of prefix semantics", () => {
+  it(":is under i;octet — case difference is definite false, exact extension is unknown", () => {
+    // Octet folding is identity, so "Hello world" can never be the value whose
+    // prefix is "hello world" — definite false even truncated.
+    const no = run('require ["body","fileinto"]; if not body :comparator "i;octet" :is "Hello world" { fileinto "X"; }', EML, CUT);
+    expect(no).toEqual(R({ fileinto: ["X"] }));
+    // "hello worldwide" extends the prefix byte-for-byte — undecidable.
+    const maybe = run('require ["body","fileinto"]; if body :comparator "i;octet" :is "hello worldwide" { fileinto "X"; }', EML, CUT);
+    expect(maybe).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it(":is under i;unicode-casemap folds before the prefix test", () => {
+    const r = run(
+      'require ["body","fileinto","comparator-i;unicode-casemap"]; if body :comparator "i;unicode-casemap" :is "HELLO WORLD extra" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it(":is under i;ascii-numeric over a truncated input is always unknown", () => {
+    // The leading digit run may extend past the cut, so no numeric comparison
+    // over a prefix is provable.
+    const r = run(
+      'require ["body","fileinto","comparator-i;ascii-numeric"]; if body :comparator "i;ascii-numeric" :is "42" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+});
+
+describe("variable-bearing patterns decide soundness per run", () => {
+  // A ${...} key cannot precompile, so the sound-on-prefix decision is made
+  // from the EXPANDED pattern at match time — these pin that arm.
+  it(":matches with an expanded trailing star that matched is definite true", () => {
+    const r = run(
+      'require ["body","fileinto","variables"]; set "t" "hello"; if body :matches "*${t}*" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(r).toEqual(R({ fileinto: ["X"] }));
+  });
+
+  it(":matches with an expanded pattern NOT ending in a star is unknown on a match", () => {
+    const r = run(
+      'require ["body","fileinto","variables"]; set "t" "world"; if body :matches "*${t}" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it(":regex with an expanded pattern compiles per run and keeps the $-rule", () => {
+    const found = run(
+      'require ["body","fileinto","variables","regex"]; set "p" "hel+o"; if body :regex "${p}" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(found).toEqual(R({ fileinto: ["X"] }));
+    const anchored = run(
+      'require ["body","fileinto","variables","regex"]; set "p" "world$"; if body :regex "${p}" { fileinto "X"; }',
+      EML,
+      CUT,
+    );
+    expect(anchored).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+});
+
+describe("cut leaves that fail to decode", () => {
+  // base64 cut to length % 4 == 1 is undecodable at the ragged edge: atob
+  // throws. Under a cut that is "content unknown"; untruncated it stays the
+  // script error the host's fail-open handles.
+  const B64_EML = [
+    "From: a@x",
+    "To: b@y",
+    "Subject: hi",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    "aGVsbG8gd",
+  ].join("\r\n");
+
+  it("a cut, undecodable base64 leaf is unknown — branch not taken, disclosed", () => {
+    const r = run('require ["body","fileinto"]; if not body :contains "tok" { fileinto "X"; }', B64_EML, CUT);
+    expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it("an untruncated undecodable base64 leaf still throws (host fail-open)", () => {
+    expect(() =>
+      run('require ["body","fileinto"]; if body :contains "tok" { fileinto "X"; }', B64_EML),
+    ).toThrow();
+  });
+});
+
+describe("branch mechanics", () => {
+  it("an elsif whose condition is definite true executes its block", () => {
+    const r = run(
+      'require ["fileinto"]; if header :is "subject" "nope" { fileinto "A"; } elsif header :is "subject" "hi" { fileinto "B"; }',
+      EML,
+    );
+    expect(r).toEqual(R({ fileinto: ["B"] }));
+  });
+});
