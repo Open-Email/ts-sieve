@@ -1,144 +1,394 @@
-// HTML → the text a reader sees, for body :text (RFC 5173 §5.2). A port of
-// go-sieve's htmltext.go over a whole string (the host already bounds the body
-// window, so nothing here needs to stream):
+// HTML → the text a reader sees, for body :text (RFC 5173 §5.2). It started as
+// a whole-string port of go-sieve's htmltext.go (the host already bounds the
+// body window, so nothing here needs to stream) and follows the WHATWG
+// tokenizer further where that matters for a filter:
 //
-// - script and style elements are dropped with their content, comments are
-//   dropped, every other tag becomes a space;
-// - what counts as a tag follows the HTML tokenizer: "<" opens one only when an
-//   ASCII letter, "/", "!" or "?" follows, so "5 < 10" is text; a tag name ends
-//   at whitespace, "/" or ">"; a tag with no ">" runs to the end of the input,
-//   as does a comment with no "-->";
-// - character references decode as Go's html.UnescapeString decodes them;
-// - runs of ASCII whitespace and Unicode space separators (so U+00A0 from
-//   &nbsp; too) collapse to one space, and white space is trimmed from both
-//   ends.
+// - every construct that DROPS content up to a far terminator — a comment, a
+//   script or style element, a raw-text element — is entered only where a
+//   browser enters it, because a sender who can open one where a browser does
+//   not hides the whole visible body from every body rule. So tags are read
+//   with the tokenizer's attribute states (a ">" inside a quoted value does
+//   not end the tag), markup inside RCDATA/RAWTEXT elements is text, and
+//   inside svg/math (until an HTML breakout tag or an integration point),
+//   script and style are ordinary elements. Where the reduction and a browser
+//   still differ, it shows MORE, never less;
+// - comments, script, style, title, iframe, noembed and noframes drop with
+//   their content; textarea and xmp keep theirs as text; plaintext runs to the
+//   end; every other tag becomes a space;
+// - character references decode as the WHATWG tokenizer decodes them (Go's
+//   html.UnescapeString too, but for its quirks — see unescapeReference);
+// - runs of ASCII white space and Unicode space separators (so U+00A0 from
+//   &nbsp; too) collapse to one space, other white space stays inside the
+//   text, and both ends are trimmed.
 //
-// One linear pass; no regular expression runs over the input except the
-// literal closing-tag search inside script/style.
+// One linear pass; the only regular expression is the literal closing-tag
+// search inside a raw-text element.
 
 import { HTML_ENTITIES, LONGEST_LEGACY_ENTITY } from "./html-entities.js";
 
-/** Whitespace held between two visible characters is bounded (go-sieve's
- * htmlPendingMax); past it, further white space is folded into what is held. */
+/** White space held between two visible characters is bounded (go-sieve's
+ * htmlPendingMax — counted here in UTF-16 units, there in UTF-8 bytes); past
+ * it, further white space is folded into what is held. */
 const PENDING_MAX = 64;
 /** A character reference is collected from "&" up to this many characters. */
 const ENTITY_MAX = 32;
 
-const LT = 0x3c;
-const GT = 0x3e;
+const TAB = 0x09;
+const LF = 0x0a;
+const FF = 0x0c;
+const CR = 0x0d;
+const SPACE = 0x20;
+const QUOT = 0x22;
 const AMP = 0x26;
+const APOS = 0x27;
+const SLASH = 0x2f;
 const SEMI = 0x3b;
+const LT = 0x3c;
+const EQ = 0x3d;
+const GT = 0x3e;
 
-export function htmlToText(s: string): string {
-  let out = "";
-  let pending = ""; // white space since the last visible character
-  let emitted = false;
+/** Elements whose content is not markup (RAWTEXT/RCDATA/script data):
+ * whether a reader sees it, and the closing tag that ends it — one that ends
+ * where a tag name can ("</script>", "</script >", "</script/>"), so
+ * "</scripts>" does not. */
+const RAW_TEXT: ReadonlyMap<string, { keep: boolean; decode: boolean; closer: RegExp }> = new Map(
+  (
+    [
+      ["script", false, false],
+      ["style", false, false],
+      ["iframe", false, false],
+      ["noembed", false, false],
+      ["noframes", false, false],
+      ["title", false, true],
+      ["textarea", true, true],
+      ["xmp", true, false],
+    ] as const
+  ).map(([name, keep, decode]) => [name, { keep, decode, closer: new RegExp(`</${name}(?=[\\t\\n\\f\\r />]|$)`, "gi") }]),
+);
 
-  const space = () => {
-    if (emitted && !pending.endsWith(" ") && pending.length < PENDING_MAX) pending += " ";
-  };
-  const visible = (ch: string) => {
+/** HTML start tags that end foreign (svg/math) content (WHATWG "in foreign
+ * content", minus <font>, which breaks out only with certain attributes —
+ * staying in foreign content there shows more, never less). </br> and </p>
+ * break out too. */
+const BREAKOUT = new Set([
+  "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3",
+  "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s",
+  "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
+]);
+
+/** Foreign elements inside which content is parsed as HTML again, by the
+ * namespace they are in. */
+const INTEGRATION_POINTS: Record<"svg" | "math", ReadonlySet<string>> = {
+  svg: new Set(["foreignobject", "desc", "title"]),
+  math: new Set(["mi", "mo", "mn", "ms", "mtext"]),
+};
+
+/**
+ * The open svg/math elements and the integration points inside them, top
+ * last: an entry in the svg or math namespace puts the tokenizer in foreign
+ * content, an integration point (namespace "html" here) back in HTML. An
+ * approximation of the tree builder's stack, kept only as far as it decides
+ * which constructs drop content. Inside foreign content a new element takes
+ * its parent's namespace, so <math><svg> is a MathML element named "svg" and
+ * its <title> is no SVG integration point. (MathML annotation-xml is not
+ * modelled: staying foreign there shows more, never less.)
+ */
+class Context {
+  private readonly stack: { ns: "svg" | "math" | "html"; name: string }[] = [];
+  /** How many entries of each name the stack holds, so an end tag with no
+   * match is ignored in O(1) — scanning the stack for it was quadratic in
+   * hostile nesting. Every other pop removes an entry pushed once: linear. */
+  private readonly counts = new Map<string, number>();
+
+  private push(ns: "svg" | "math" | "html", name: string): void {
+    this.stack.push({ ns, name });
+    this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
+  }
+
+  private pop(): string {
+    const e = this.stack.pop()!;
+    this.counts.set(e.name, this.counts.get(e.name)! - 1);
+    return e.name;
+  }
+
+  get foreign(): boolean {
+    const top = this.stack[this.stack.length - 1];
+    return top !== undefined && top.ns !== "html";
+  }
+
+  start(name: string, selfClosing: boolean): void {
+    if (selfClosing) return;
+    const top = this.stack[this.stack.length - 1];
+    if (top === undefined || top.ns === "html") {
+      if (name === "svg" || name === "math") this.push(name, name);
+    } else if (INTEGRATION_POINTS[top.ns].has(name)) {
+      this.push("html", name);
+    } else {
+      // Every foreign element is tracked, so a foreign end tag pops to the
+      // element it names, as the tree builder does ("</noembed>" inside
+      // <math><noembed><mi> leaves the integration point).
+      this.push(top.ns, name);
+    }
+  }
+
+  /** Leave foreign content back to the nearest integration point (or HTML). */
+  breakOut(): void {
+    while (this.foreign) this.pop();
+  }
+
+  end(name: string): void {
+    // Pop to the most recent element of that name; an unmatched end tag is
+    // ignored.
+    if (!this.counts.get(name)) return;
+    while (this.pop() !== name) {
+      // popping
+    }
+  }
+}
+
+/** Accumulates visible text under the white-space rules. */
+class TextOut {
+  out = "";
+  private pending = ""; // white space since the last visible character
+  private emitted = false;
+
+  space(): void {
+    if (this.emitted && !this.pending.endsWith(" ") && this.pending.length < PENDING_MAX) this.pending += " ";
+  }
+
+  /** One code point. */
+  char(ch: string): void {
     const cp = ch.codePointAt(0)!;
     if (isCollapsedSpace(cp)) {
-      space();
+      this.space();
     } else if (isOtherSpace(cp)) {
       // Kept in the middle of the text, trimmed from the ends.
-      if (emitted && pending.length < PENDING_MAX) pending += ch;
+      if (this.emitted && this.pending.length < PENDING_MAX) this.pending += ch;
     } else {
-      out += pending + ch;
-      pending = "";
-      emitted = true;
+      this.visible(ch);
     }
-  };
-  const visibleAll = (text: string) => {
-    for (const ch of text) visible(ch);
-  };
+  }
 
-  const n = s.length;
-  let i = 0;
-  while (i < n) {
-    const c = s.charCodeAt(i);
-    if (c === LT) {
-      if (i + 1 < n && opensTag(s.charCodeAt(i + 1))) {
-        i = skipTag(s, i + 1, space);
+  /** Visible characters (no white space among them). */
+  visible(text: string): void {
+    this.out += this.pending + text;
+    this.pending = "";
+    this.emitted = true;
+  }
+
+  /** The text s[from, to), character references decoded when `decode`. Runs
+   * of ordinary characters are copied whole. */
+  text(s: string, from: number, to: number, decode: boolean): void {
+    let i = from;
+    while (i < to) {
+      const c = s.charCodeAt(i);
+      if (decode && c === AMP) {
+        let j = i + 1;
+        while (j < to && j - i < ENTITY_MAX && isEntityChar(s.charCodeAt(j))) j++;
+        if (j < to && s.charCodeAt(j) === SEMI) j++;
+        for (const ch of unescapeReference(s.slice(i, j))) this.char(ch);
+        i = j;
         continue;
       }
-      visible("<");
-      i++;
-    } else if (c === AMP) {
-      let j = i + 1;
-      while (j < n && j - i < ENTITY_MAX && isEntityChar(s.charCodeAt(j))) j++;
-      if (j < n && s.charCodeAt(j) === SEMI) j++;
-      visibleAll(unescapeReference(s.slice(i, j)));
-      i = j;
-    } else {
-      const cp = s.codePointAt(i)!;
-      const ch = String.fromCodePoint(cp);
-      visible(ch);
+      let j = i;
+      while (j < to && isOrdinary(s.charCodeAt(j), decode)) j++;
+      if (j > i) {
+        this.visible(s.slice(i, j));
+        i = j;
+        continue;
+      }
+      const ch = String.fromCodePoint(s.codePointAt(i)!);
+      this.char(ch);
       i += ch.length;
     }
   }
-  return out; // pending white space is the trailing white space, and goes
+}
+
+export function htmlToText(s: string): string {
+  const w = new TextOut();
+  const ctx = new Context();
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const lt = s.indexOf("<", i);
+    const end = lt === -1 ? n : lt;
+    if (end > i) w.text(s, i, end, true);
+    if (lt === -1) break;
+    if (lt + 1 < n && opensTag(s.charCodeAt(lt + 1))) {
+      i = markup(s, lt + 1, w, ctx);
+    } else {
+      w.char("<");
+      i = lt + 1;
+    }
+  }
+  return w.out; // pending white space is the trailing white space, and goes
 }
 
 /**
- * Consume a tag, comment, or script/style element starting right after its
- * "<" (at `j`), calling `space` for each construct; returns the index after it
- * — `s.length` when it never closes, as the tokenizer drops an open construct.
+ * Consume the construct whose "<" sits just before `j`, writing what it shows
+ * to `w`; returns the index after it — `s.length` when it never closes, as the
+ * tokenizer drops an open construct at the end of the input.
  */
-function skipTag(s: string, j: number, space: () => void): number {
+function markup(s: string, j: number, w: TextOut, ctx: Context): number {
   const n = s.length;
-  if (s.startsWith("!--", j)) {
-    const k = j + 3;
-    // "<!-->" and "<!--->" are closed at once (HTML tokenizer).
-    if (s.charCodeAt(k) === GT) return closed(k + 1, space);
-    if (s.startsWith("->", k)) return closed(k + 2, space);
-    // "-->" closes a comment, as does the "--!>" the tokenizer accepts. One
-    // forward walk over "--": two independent indexOf searches would rescan to
-    // the end of the input for every comment lacking the rarer form.
-    for (let p = s.indexOf("--", k); p !== -1; p = s.indexOf("--", p + 1)) {
-      if (s.charCodeAt(p + 2) === GT) return closed(p + 3, space);
-      if (s.charCodeAt(p + 2) === 0x21 /* ! */ && s.charCodeAt(p + 3) === GT) return closed(p + 4, space);
+  const c = s.charCodeAt(j);
+  if (c === 0x21 /* ! */) {
+    if (s.startsWith("!--", j)) return comment(s, j + 3, w);
+    if (ctx.foreign && s.startsWith("![CDATA[", j)) {
+      // A CDATA section is text in foreign content (a bogus comment outside).
+      const close = s.indexOf("]]>", j + 8);
+      w.text(s, j + 8, close === -1 ? n : close, false);
+      return close === -1 ? n : close + 3;
     }
+    return bogusComment(s, j, w);
+  }
+  if (c === 0x3f /* ? */) return bogusComment(s, j, w);
+  if (c === SLASH) {
+    const d = s.charCodeAt(j + 1);
+    if (d === GT) return j + 2; // "</>" is dropped
+    if (!isAsciiAlpha(d)) return bogusComment(s, j, w);
+    const tag = scanTag(s, j + 1);
+    if (tag.next === -1) return n;
+    w.space();
+    if (ctx.foreign && (tag.name === "br" || tag.name === "p")) ctx.breakOut();
+    else ctx.end(tag.name);
+    return tag.next;
+  }
+  // A start tag.
+  const tag = scanTag(s, j);
+  if (tag.next === -1) return n;
+  w.space();
+  if (ctx.foreign && BREAKOUT.has(tag.name)) ctx.breakOut();
+  if (tag.name === "plaintext") {
+    w.text(s, tag.next, n, false);
     return n;
   }
-  let k = j;
-  while (k < n && !endsTagName(s.charCodeAt(k))) k++;
-  const name = k - j === 6 || k - j === 5 ? s.slice(j, k).toLowerCase() : "";
-  const gt = s.indexOf(">", k);
-  if (gt === -1) return n; // attributes are never text
-  space();
-  if (name !== "script" && name !== "style") return gt + 1;
-  // The element's content is dropped up to its closing tag, which has to end
-  // where a tag name can ("</script>", "</script >", "</script/>"), so
-  // "</scripts>" does not end it.
-  const end = new RegExp(`</${name}(?=[ \\t\\n\\f\\r/>]|$)`, "gi");
-  end.lastIndex = gt + 1;
-  const m = end.exec(s);
+  const raw = RAW_TEXT.get(tag.name);
+  // The elements whose content is DROPPED are ordinary inside svg/math. Those
+  // whose content is KEPT stay raw text there too: in foreign content a
+  // browser parses that content as markup and shows less of it, so where the
+  // reduction cannot tell the two apart, it shows more, never less.
+  if (ctx.foreign || tag.name === "svg" || tag.name === "math") {
+    if (raw === undefined || !raw.keep) {
+      ctx.start(tag.name, tag.selfClosing);
+      return tag.next;
+    }
+  }
+  if (raw === undefined) return tag.next;
+  // The content runs to the element's own closing tag. A self-closing flag
+  // does not stop it: "<script/>" still starts a script element.
+  raw.closer.lastIndex = tag.next;
+  const m = raw.closer.exec(s);
+  const contentEnd = m === null ? n : m.index;
+  if (raw.keep) w.text(s, tag.next, contentEnd, raw.decode);
   if (m === null) return n;
-  const close = s.indexOf(">", m.index + m[0].length);
-  return close === -1 ? n : closed(close + 1, space);
+  const close = scanTag(s, m.index + 2);
+  if (close.next === -1) return n;
+  w.space();
+  return close.next;
 }
 
-function closed(next: number, space: () => void): number {
-  space();
+/** "<!--" … "-->" (or "--!>"); "<!-->" and "<!--->" close at once. `k` is just
+ * after "<!--". */
+function comment(s: string, k: number, w: TextOut): number {
+  const n = s.length;
+  if (s.charCodeAt(k) === GT) return closed(k + 1, w);
+  if (s.startsWith("->", k)) return closed(k + 2, w);
+  // One forward walk over "--": two independent indexOf searches would rescan
+  // to the end of the input for every comment lacking the rarer form.
+  for (let p = s.indexOf("--", k); p !== -1; p = s.indexOf("--", p + 1)) {
+    if (s.charCodeAt(p + 2) === GT) return closed(p + 3, w);
+    if (s.charCodeAt(p + 2) === 0x21 /* ! */ && s.charCodeAt(p + 3) === GT) return closed(p + 4, w);
+  }
+  return n;
+}
+
+/** A declaration, processing instruction or malformed end tag: up to the
+ * first ">" — the tokenizer reads no quoting in any of them. */
+function bogusComment(s: string, j: number, w: TextOut): number {
+  const gt = s.indexOf(">", j);
+  return gt === -1 ? s.length : closed(gt + 1, w);
+}
+
+function closed(next: number, w: TextOut): number {
+  w.space();
   return next;
 }
 
-/** windows-1252 for the C1 range, as the HTML tokenizer (and Go) map a
- * numeric reference in 0x80–0x9F. */
+/**
+ * Read a start or end tag from its name (at `k`) to its ">", through the
+ * tokenizer's attribute states, so a ">" inside a quoted value does not end
+ * it — while "<a =\"x>", "<a b==\">" and "<a/=\"x>" still end at the first
+ * ">", as they do in a browser. `next` is the index after the ">", -1 when
+ * the input ends inside the tag.
+ */
+function scanTag(s: string, k: number): { name: string; next: number; selfClosing: boolean } {
+  const n = s.length;
+  let p = k;
+  while (p < n && !endsTagName(s.charCodeAt(p))) p++;
+  const name = p - k <= 16 ? s.slice(k, p).toLowerCase() : "";
+  for (;;) {
+    // Before attribute name.
+    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
+    if (p >= n) return { name, next: -1, selfClosing: false };
+    let c = s.charCodeAt(p);
+    if (c === GT) return { name, next: p + 1, selfClosing: false };
+    if (c === SLASH) {
+      if (s.charCodeAt(p + 1) === GT) return { name, next: p + 2, selfClosing: true };
+      p++; // anything else after "/" is read as before an attribute name
+      continue;
+    }
+    // Attribute name; its first character is part of it even when it is "=".
+    p++;
+    while (p < n) {
+      c = s.charCodeAt(p);
+      if (isSpaceCode(c) || c === SLASH || c === GT || c === EQ) break;
+      p++;
+    }
+    // After attribute name.
+    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
+    if (p >= n) return { name, next: -1, selfClosing: false };
+    if (s.charCodeAt(p) !== EQ) continue; // "/", ">" or the next name
+    p++;
+    // Before attribute value.
+    while (p < n && isSpaceCode(s.charCodeAt(p))) p++;
+    if (p >= n) return { name, next: -1, selfClosing: false };
+    c = s.charCodeAt(p);
+    if (c === QUOT || c === APOS) {
+      const close = s.indexOf(c === QUOT ? '"' : "'", p + 1);
+      if (close === -1) return { name, next: -1, selfClosing: false };
+      p = close + 1;
+      continue; // after a quoted value, anything is read as before a name
+    }
+    if (c === GT) return { name, next: p + 1, selfClosing: false };
+    // Unquoted value: up to white space or ">".
+    while (p < n) {
+      c = s.charCodeAt(p);
+      if (isSpaceCode(c) || c === GT) break;
+      p++;
+    }
+  }
+}
+
+/** windows-1252 for the C1 range, as the HTML tokenizer (and Go) map a numeric
+ * reference in 0x80–0x9F; the five code points windows-1252 leaves undefined
+ * map to themselves. */
 const C1_REPLACEMENT = [
-  0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0xfffd,
-  0x017d, 0xfffd, 0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a,
-  0x0153, 0xfffd, 0x017e, 0x0178,
+  0x20ac, 0x0081, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008d,
+  0x017d, 0x008f, 0x0090, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a,
+  0x0153, 0x009d, 0x017e, 0x0178,
 ];
 
 /**
  * Decode one collected reference ("&" + name or "#"-number + optional ";"),
- * returning the text it stands for — itself when it is not one. Mirrors Go's
- * html.unescapeEntity: a full name (";" included when present) is looked up
- * first; failing that, the longest legacy name that prefixes it decodes and
- * the rest stays text ("&notit;" → "¬it;").
+ * returning the text it stands for — itself when it is not one. A full name
+ * (";" included when present) is looked up first; failing that, the longest
+ * legacy name that prefixes it decodes and the rest stays text ("&notit;" →
+ * "¬it;"). This is the WHATWG tokenizer's behaviour, which Go's
+ * html.UnescapeString follows except for four quirks this does not copy: Go
+ * leaves a one-digit decimal reference without ";" undecoded ("&#5x"), turns
+ * "&#x;" into U+FFFD, wraps numbers past 32 bits ("&#4294967361;" → "A"), and
+ * lacks &nGt; and &nLt;.
  */
 function unescapeReference(ref: string): string {
   if (ref.length < 2) return ref;
@@ -165,15 +415,19 @@ function unescapeReference(ref: string): string {
 }
 
 function opensTag(c: number): boolean {
-  return (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || c === 0x2f || c === 0x21 || c === 0x3f;
+  return isAsciiAlpha(c) || c === SLASH || c === 0x21 /* ! */ || c === 0x3f; /* ? */
 }
 
 function endsTagName(c: number): boolean {
-  return c === GT || c === 0x2f || isSpaceCode(c);
+  return c === GT || c === SLASH || isSpaceCode(c);
+}
+
+function isAsciiAlpha(c: number): boolean {
+  return (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a);
 }
 
 function isSpaceCode(c: number): boolean {
-  return c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d;
+  return c === SPACE || c === TAB || c === LF || c === FF || c === CR;
 }
 
 function isDigit(c: number): boolean {
@@ -185,7 +439,14 @@ function isHexDigit(c: number): boolean {
 }
 
 function isEntityChar(c: number): boolean {
-  return isDigit(c) || (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) || c === 0x23;
+  return isDigit(c) || isAsciiAlpha(c) || c === 0x23;
+}
+
+/** A UTF-16 unit that is neither white space of either kind nor, when
+ * references decode, "&" — copied as is (surrogate pairs included). */
+function isOrdinary(c: number, decode: boolean): boolean {
+  if (c < 0x80) return c > SPACE ? !(decode && c === AMP) : !isSpaceCode(c) && c !== 0x0b;
+  return !isCollapsedSpace(c) && !isOtherSpace(c);
 }
 
 /** White space that collapses to one space: ASCII white space as regexp's \s

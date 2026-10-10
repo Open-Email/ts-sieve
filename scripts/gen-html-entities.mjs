@@ -7,12 +7,20 @@
 // The download is data, never code: every name must be [A-Za-z0-9]+ with an
 // optional ";" and every value is written as \u{...} escapes.
 
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
 const SOURCE = "https://html.spec.whatwg.org/entities.json";
+// The list the committed table was generated from. A changed upstream list
+// fails here, so updating the table is a reviewed decision: check the diff,
+// then update this hash.
+const SHA256 = "d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6";
 const res = await fetch(SOURCE);
 if (!res.ok) throw new Error(`${SOURCE}: HTTP ${res.status}`);
-const data = await res.json();
+const raw = Buffer.from(await res.arrayBuffer());
+const digest = createHash("sha256").update(raw).digest("hex");
+if (digest !== SHA256) throw new Error(`${SOURCE} changed: sha256 ${digest}, expected ${SHA256}`);
+const data = JSON.parse(raw.toString("utf8"));
 
 const rows = [];
 for (const [key, { codepoints }] of Object.entries(data)) {
