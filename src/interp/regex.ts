@@ -616,10 +616,19 @@ class Program implements CompiledRegex {
     for (let i = 0; i < nslots; i += 2) {
       const a = matched[i]!;
       const b = matched[i + 1]!;
-      out.push(a >= 0 && b >= 0 ? String.fromCodePoint(...input.slice(a, b)) : "");
+      out.push(a >= 0 && b >= 0 ? fromCodePoints(input, a, b) : "");
     }
     return out;
   }
+}
+
+/** A capture as a string. Spread in chunks: one spread of the whole capture
+ * overflows the call stack once it passes ~100k code points, and the input is
+ * unbounded unless the host sets maxMatchInputLength. */
+function fromCodePoints(cps: number[], start: number, end: number): string {
+  let s = "";
+  for (let i = start; i < end; i += 0x8000) s += String.fromCodePoint(...cps.slice(i, Math.min(end, i + 0x8000)));
+  return s;
 }
 
 const encoder = new TextEncoder();

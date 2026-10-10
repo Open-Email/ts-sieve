@@ -339,9 +339,11 @@ describe("variable-bearing patterns decide soundness per run", () => {
 });
 
 describe("cut leaves that fail to decode", () => {
-  // base64 cut to length % 4 == 1 is undecodable at the ragged edge: atob
-  // throws. Under a cut that is "content unknown"; untruncated it stays the
-  // script error the host's fail-open handles.
+  // base64 cut to length % 4 == 1 has a dangling character at the ragged edge.
+  // The decoder drops it and decodes the rest: under a cut the prefix decides
+  // only what it can prove, and untruncated it is matched like any other part.
+  // It never throws — a throw would skip every rule of the script (see
+  // hostile-content.test.ts).
   const B64_EML = [
     "From: a@x",
     "To: b@y",
@@ -357,10 +359,16 @@ describe("cut leaves that fail to decode", () => {
     expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
   });
 
-  it("an untruncated undecodable base64 leaf still throws (host fail-open)", () => {
-    expect(() =>
-      run('require ["body","fileinto"]; if body :contains "tok" { fileinto "X"; }', B64_EML),
-    ).toThrow();
+  it("an untruncated base64 leaf with a dangling character matches what decodes", () => {
+    expect(run('require ["body","fileinto"]; if body :contains "hello" { fileinto "X"; }', B64_EML)).toEqual(
+      R({ fileinto: ["X"] }),
+    );
+  });
+
+  it("a cut base64 leaf matches definitely on its decoded prefix", () => {
+    expect(run('require ["body","fileinto"]; if body :contains "hello" { fileinto "X"; }', B64_EML, CUT)).toEqual(
+      R({ fileinto: ["X"] }),
+    );
   });
 });
 

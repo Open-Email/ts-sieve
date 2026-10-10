@@ -54,7 +54,10 @@ or load failure — including a `require` for an extension you did not enable �
 so a user uploading a script learns exactly what won't run *before* mail
 arrives. `execute()` throws `SieveError` on runtime errors (budget exhaustion,
 too many redirects, an envelope-less `vacation`, …); treat that as "script
-failed, fall back to implicit keep".
+failed, fall back to implicit keep". Malformed *mail* never throws — broken
+transfer encodings decode leniently, and MIME structure past the caps below is
+"unknown" — because a throw skips every rule, and a sender who could trigger
+one could bypass the recipient's filtering at will.
 
 ### What the host implements
 
@@ -180,8 +183,9 @@ on them and this one follows the RFC strictly:
   headers (From/To/Cc/…); other header names are silently skipped per RFC 5228
   §5.1's "MUST restrict" guidance.
 - The `body` walker is an approximation of a full MIME parser (byte-exact
-  boundaries, last-value headers); pathological nesting is bounded by the
-  execution budget.
+  boundaries, last-value headers). It descends at most 32 levels and visits at
+  most 1024 parts; a no-match that depends on structure past either cap is
+  "unknown" (`indeterminate`), as for a body the host's read window cut.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of
