@@ -338,7 +338,7 @@ describe("variable-bearing patterns decide soundness per run", () => {
   });
 });
 
-describe("cut leaves that fail to decode", () => {
+describe("cut base64 leaves", () => {
   // base64 cut to length % 4 == 1 has a dangling character at the ragged edge.
   // The decoder drops it and decodes the rest: under a cut the prefix decides
   // only what it can prove, and untruncated it is matched like any other part.
@@ -354,7 +354,7 @@ describe("cut leaves that fail to decode", () => {
     "aGVsbG8gd",
   ].join("\r\n");
 
-  it("a cut, undecodable base64 leaf is unknown — branch not taken, disclosed", () => {
+  it("a cut base64 leaf whose prefix does not prove a match is unknown — branch not taken, disclosed", () => {
     const r = run('require ["body","fileinto"]; if not body :contains "tok" { fileinto "X"; }', B64_EML, CUT);
     expect(r).toEqual(R({ implicitKeep: true, indeterminate: true }));
   });

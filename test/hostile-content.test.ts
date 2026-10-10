@@ -41,12 +41,14 @@ describe("malformed base64 decodes leniently", () => {
   });
 });
 
-/** `depth` nested multipart/mixed levels with `leaf` as the innermost text. */
+/** `depth` nested multipart/mixed levels with `leaf` as the innermost text,
+ * which therefore sits at depth + 1. Boundaries "q<i>q" never prefix each
+ * other ("b1" would prefix "b10"), so the nesting is what it claims to be. */
 function nested(depth: number, leaf: string): string {
   let body = "";
-  for (let i = 0; i < depth; i++) body += `--b${i}\r\nContent-Type: multipart/mixed; boundary=b${i + 1}\r\n\r\n`;
-  body += `--b${depth}\r\nContent-Type: text/plain\r\n\r\n${leaf}\r\n--b${depth}--\r\n`;
-  return `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+  for (let i = 0; i < depth; i++) body += `--q${i}q\r\nContent-Type: multipart/mixed; boundary=q${i + 1}q\r\n\r\n`;
+  body += `--q${depth}q\r\nContent-Type: text/plain\r\n\r\n${leaf}\r\n--q${depth}q--\r\n`;
+  return `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=q0q\r\n\r\n${body}`;
 }
 
 /** One multipart/mixed with `n` text/plain parts; part `at` (0-based) holds `leaf`. */
@@ -56,9 +58,28 @@ function siblings(n: number, at: number, leaf: string): string {
   return `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`;
 }
 
+// Dovecot's message parser limits (100 nested, 10000 parts in total — added
+// for CVE-2020-12100). Legitimate mail stays far inside them; past them the
+// structure is unknown, which lets a rule not fire but never throws.
 describe("MIME nesting and part count are capped", () => {
   it("ordinary nesting is walked to the leaf", () => {
     expect(run('require "body"; if body :contains "needle" { keep; }', nested(10, "needle"))).toEqual(kept);
+  });
+
+  it("a leaf at depth 100 is walked; one at depth 101 is unknown", () => {
+    expect(run('require "body"; if body :contains "needle" { keep; }', nested(99, "needle"))).toEqual(kept);
+    expect(run('require "body"; if body :contains "needle" { keep; }', nested(100, "needle"))).toEqual(
+      R({ implicitKeep: true, indeterminate: true }),
+    );
+  });
+
+  it("the 10000th part is walked; the 10001st is unknown", () => {
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(10_001, 9_999, "needle"))).toEqual(
+      kept,
+    );
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(10_001, 10_000, "needle"))).toEqual(
+      R({ implicitKeep: true, indeterminate: true }),
+    );
   });
 
   it("nesting far past the cap neither throws nor matches: it is unknown", () => {
@@ -74,11 +95,11 @@ describe("MIME nesting and part count are capped", () => {
   });
 
   it("parts before the part cap match definitely", () => {
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(2000, 5, "needle"))).toEqual(kept);
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(12_000, 5, "needle"))).toEqual(kept);
   });
 
   it("a part past the part cap is unknown, not a definite miss", () => {
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(2000, 1999, "needle"))).toEqual(
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(12_000, 11_999, "needle"))).toEqual(
       R({ implicitKeep: true, indeterminate: true }),
     );
   });
