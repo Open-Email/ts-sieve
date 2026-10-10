@@ -33,7 +33,7 @@ import { decodeEncodedChars } from "./encoded.js";
 import { MailboxExistsTest } from "./mailbox.js";
 import { MatcherTest } from "./matcher.js";
 import { CmdVacation } from "./vacation.js";
-import { CmdSet, SET_MODIFIERS, TestString } from "./variables.js";
+import { CmdSet, SET_MODIFIERS, TestString, unusableVarRef } from "./variables.js";
 import type { AddressPart } from "./matching.js";
 import type { Cmd, Test } from "./runtime.js";
 import type { Script } from "./script.js";
@@ -100,9 +100,22 @@ function loadSpec(
 ): void {
   const pos = spec.pos ?? [];
   // RFC 5228 §2.4.2.4: decode ${hex:}/${unicode:} in string args at load time.
-  const dec: (v: string[]) => string[] = s.requiresExtension("encoded-character")
+  const decode: (v: string[]) => string[] = s.requiresExtension("encoded-character")
     ? (v) => v.map(decodeEncodedChars)
     : (v) => v;
+  // Then refuse a variable reference the script cannot read (RFC 5229 §3),
+  // unless the argument takes no variables (comparator and match-type tags,
+  // testsuite variable names).
+  const dec = (v: string[], a: PArg, noVariables?: boolean): string[] => {
+    const out = decode(v);
+    if (!noVariables) {
+      for (const value of out) {
+        const why = unusableVarRef(s, value);
+        if (why !== null) throw at(a, why);
+      }
+    }
+    return out;
+  };
   let lastTag: SpecTag | null = null;
   let nextPosArg = 0;
 
@@ -111,7 +124,7 @@ function loadSpec(
       case "string": {
         if (lastTag && lastTag.needsValue) {
           if (lastTag.matchNum) throw at(a, "LoadSpec: tagged argument requires a number, got string");
-          else if (lastTag.matchStr) lastTag.matchStr(dec([a.value]));
+          else if (lastTag.matchStr) lastTag.matchStr(dec([a.value], a, lastTag.noVariables));
           else throw new SieveError("missing matcher for SpecTag");
           lastTag = null;
           continue;
@@ -120,7 +133,7 @@ function loadSpec(
         const p = pos[nextPosArg]!;
         if ((p.minStrCount ?? 0) > 1) throw at(a, "LoadSpec: string-list required, got single string");
         if (p.matchNum) throw at(a, "LoadSpec: argument requires a number, got string-list");
-        else if (p.matchStr) p.matchStr(dec([a.value]));
+        else if (p.matchStr) p.matchStr(dec([a.value], a, p.noVariables));
         else throw new SieveError("no pos matcher");
         nextPosArg++;
         break;
@@ -135,7 +148,7 @@ function loadSpec(
             ) {
               throw at(a, "LoadSpec: wrong amount of string arguments");
             }
-            lastTag.matchStr(dec(a.value));
+            lastTag.matchStr(dec(a.value, a, lastTag.noVariables));
           } else throw new SieveError("missing matcher for SpecTag");
           lastTag = null;
           continue;
@@ -149,7 +162,7 @@ function loadSpec(
           throw at(a, "LoadSpec: wrong amount of string arguments");
         }
         if (p.matchNum) throw at(a, "LoadSpec: argument requires a number, got string-list");
-        else if (p.matchStr) p.matchStr(dec(a.value));
+        else if (p.matchStr) p.matchStr(dec(a.value, a, p.noVariables));
         else throw new SieveError("no pos matcher");
         nextPosArg++;
         break;

@@ -472,3 +472,52 @@ describe("RFC 5322 group syntax in the address test", () => {
     expect(run('if address :is "to" "Smith" { keep; }', msg("To", "Smith; John <j@x.example>"))).toEqual(notKept);
   });
 });
+
+// RFC 5229 §3: "References to namespaces without a prior require statement for
+// the relevant extension MUST cause an error." Checked when the script loads,
+// in every string a command or test receives (go-sieve 78c72f5; Pigeonhole's
+// "referring to variable in unknown namespace"). ${envelope.from} used to load
+// and expand without require "envelope", and ${foo.bar} to expand to "".
+describe("RFC 5229 §3 namespace references are checked at load", () => {
+  const refused: [string, string, RegExp][] = [
+    ["fileinto", 'require ["fileinto","variables"]; fileinto "${envelope.from}";', /\$\{envelope\.from\} needs require "envelope"/],
+    ["redirect", 'require "variables"; redirect "${envelope.to}";', /\$\{envelope\.to\} needs require "envelope"/],
+    ["vacation :subject", 'require ["vacation","variables"]; vacation :subject "${envelope.from}" "away";', /needs require "envelope"/],
+    ["fileinto :flags list", 'require ["fileinto","imap4flags","variables"]; fileinto :flags ["\\\\Seen", "${envelope.from}"] "x";', /needs require "envelope"/],
+    ["addheader", 'require ["editheader","variables"]; addheader "X-A" "${envelope.from}";', /needs require "envelope"/],
+    ["set value", 'require "variables"; set "a" "${envelope.from}";', /needs require "envelope"/],
+    ["test key", 'require ["fileinto","variables"]; if header :is "subject" "${envelope.from}" { fileinto "x"; }', /needs require "envelope"/],
+    ["string test source", 'require "variables"; if string "${envelope.auth}" "x" { keep; }', /needs require "envelope"/],
+    ["unknown namespace", 'require ["fileinto","variables"]; fileinto "${foo.bar}";', /unknown namespace "foo"/],
+  ];
+  for (const [name, script, err] of refused) {
+    it(`refuses ${name}`, () => {
+      expect(() => compile(script)).toThrow(err);
+    });
+  }
+
+  it("reports where the reference is", () => {
+    try {
+      compile('require ["fileinto","variables"];\nfileinto "${foo.bar}";');
+      expect.unreachable();
+    } catch (e) {
+      expect((e as { line?: number }).line).toBe(2);
+    }
+  });
+
+  const accepted = [
+    'require ["fileinto","variables","envelope"]; fileinto "${envelope.from}";',
+    'require ["fileinto","variables"]; set "box" "Lists"; fileinto "${box}";',
+    'require ["fileinto","variables"]; if header :matches "subject" "*" { fileinto "${1}"; }',
+    'require ["fileinto","variables"]; fileinto "${ENVELOPE_LIKE}";',
+    // Without the variables extension "${envelope.from}" is literal text.
+    'require "fileinto"; fileinto "${envelope.from}";',
+    // Not a variable reference at all (invalid name): literal text.
+    'require ["fileinto","variables"]; fileinto "${foo.}";',
+  ];
+  for (const script of accepted) {
+    it(`accepts ${script}`, () => {
+      expect(() => compile(script)).not.toThrow();
+    });
+  }
+});
