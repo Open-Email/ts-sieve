@@ -244,15 +244,18 @@ function splitHeaderBody(b: string): { header: string; body: string } {
 
 /**
  * Bounds on the MIME structure the body test walks (RFC 5703 §11: part
- * matching must not deny service): Dovecot's message-parser limits, 100
- * nested and 10000 parts in total (added for CVE-2020-12100), which mail
- * Dovecot accepts sits inside by definition. Without them a nesting bomb
- * overflowed the call stack — a throw, which the host's fail-open turns into
- * "skip every rule" — and re-scanned the remaining body once per level. Past
- * them a no-match is "unknown": the rule does not fire, but nothing throws.
+ * matching must not deny service). Without them a nesting bomb overflowed the
+ * call stack — a throw, which the host's fail-open turns into "skip every
+ * rule" — and re-scanned the remaining body once per level. Past them a
+ * no-match is "unknown": the rule does not fire, but nothing throws.
+ *
+ * Depth is Dovecot's message-parser limit (100, added for CVE-2020-12100);
+ * nesting is cheap in steps. Parts stay at 1024, not Dovecot's 10000: every
+ * body test charges every part, so 10000 tiny parts under a handful of body
+ * rules exhaust a host's step budget, and that throws.
  */
 const MAX_MIME_DEPTH = 100;
-const MAX_MIME_PARTS = 10_000;
+const MAX_MIME_PARTS = 1024;
 
 export class TestBody implements Test {
   readonly matcher = new MatcherTest();

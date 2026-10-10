@@ -58,9 +58,11 @@ function siblings(n: number, at: number, leaf: string): string {
   return `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`;
 }
 
-// Dovecot's message parser limits (100 nested, 10000 parts in total — added
-// for CVE-2020-12100). Legitimate mail stays far inside them; past them the
-// structure is unknown, which lets a rule not fire but never throws.
+// Depth: Dovecot's message-parser limit (100, added for CVE-2020-12100).
+// Parts: 1024 — Dovecot allows 10000, but there is no step budget behind its
+// limit, and here every body test charges every part: 10000 tiny parts under
+// a handful of body rules would exhaust a host's budget and throw. Past either
+// cap the structure is unknown, which lets a rule not fire but never throws.
 describe("MIME nesting and part count are capped", () => {
   it("ordinary nesting is walked to the leaf", () => {
     expect(run('require "body"; if body :contains "needle" { keep; }', nested(10, "needle"))).toEqual(kept);
@@ -73,12 +75,21 @@ describe("MIME nesting and part count are capped", () => {
     );
   });
 
-  it("the 10000th part is walked; the 10001st is unknown", () => {
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(10_001, 9_999, "needle"))).toEqual(
-      kept,
-    );
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(10_001, 10_000, "needle"))).toEqual(
+  it("the 1024th part is walked; the 1025th is unknown", () => {
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(1025, 1023, "needle"))).toEqual(kept);
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(1025, 1024, "needle"))).toEqual(
       R({ implicitKeep: true, indeterminate: true }),
+    );
+  });
+
+  it("many tiny parts under many body rules stay inside a host's step budget", () => {
+    // Core's budget. Ten body rules over 10000 empty parts used to throw
+    // "budget exceeded" — skipping every rule, the header one included.
+    const rules = Array.from({ length: 10 }, (_, i) => `if body :contains "w${i}" { fileinto "B${i}"; }`).join(" ");
+    const script = `require ["body","fileinto"]; ${rules} if header :contains "subject" "hi" { fileinto "H"; }`;
+    const eml = siblings(10_000, 0, "x").replace("From: a@x", "From: a@x\r\nSubject: hi");
+    expect(run(script, eml, { options: { maxExecSteps: 200_000 } })).toEqual(
+      R({ fileinto: ["H"], indeterminate: true }),
     );
   });
 
@@ -95,11 +106,11 @@ describe("MIME nesting and part count are capped", () => {
   });
 
   it("parts before the part cap match definitely", () => {
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(12_000, 5, "needle"))).toEqual(kept);
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(2000, 5, "needle"))).toEqual(kept);
   });
 
   it("a part past the part cap is unknown, not a definite miss", () => {
-    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(12_000, 11_999, "needle"))).toEqual(
+    expect(run('require "body"; if body :contains "needle" { keep; }', siblings(2000, 1999, "needle"))).toEqual(
       R({ implicitKeep: true, indeterminate: true }),
     );
   });

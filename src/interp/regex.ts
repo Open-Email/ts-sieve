@@ -624,8 +624,8 @@ class Program implements CompiledRegex {
 
 /** A capture as a string. Spread in chunks: one spread of the whole capture
  * overflows the call stack once it passes ~100k code points, which the input
- * can be — it is cut at MAX_INPUT_LENGTH (256 KiB) unless the host sets a
- * smaller maxMatchInputLength. */
+ * can be — it is cut at MAX_INPUT_LENGTH (256 KiB) unless the host sets
+ * maxMatchInputLength, which replaces that default whatever its size. */
 function fromCodePoints(cps: number[], start: number, end: number): string {
   let s = "";
   for (let i = start; i < end; i += 0x8000) s += String.fromCodePoint(...cps.slice(i, Math.min(end, i + 0x8000)));

@@ -53,14 +53,14 @@ d.redirectAddr;  // []
 or load failure — including a `require` for an extension you did not enable —
 so a user uploading a script learns exactly what won't run *before* mail
 arrives. `execute()` throws `SieveError` on runtime errors (budget exhaustion,
-too many redirects, an envelope-less `vacation`, …); treat that as "script
+too many redirects, …); treat that as "script
 failed, fall back to implicit keep". Because a throw skips every rule, the
 `body` test does not throw on malformed MIME: broken transfer encodings decode
 leniently, and structure past the caps below is "unknown". Other paths from
 message content to a throw remain and are tracked as issues (step-budget
-exhaustion over several large parts, `addheader` of a captured value with a
-line break, a `:regex`/`:matches` key built from message data that does not
-compile).
+exhaustion by large parts under `:matches`/`:regex` or by many rules over many
+parts, `addheader` of a captured value with a line break, a `:regex`/`:matches`
+key built from message data that does not compile).
 
 ### What the host implements
 
@@ -186,8 +186,8 @@ on them and this one follows the RFC strictly:
   headers (From/To/Cc/…); other header names are silently skipped per RFC 5228
   §5.1's "MUST restrict" guidance.
 - The `body` walker is an approximation of a full MIME parser (byte-exact
-  boundaries, last-value headers). It descends at most 100 levels and visits
-  at most 10000 parts (Dovecot's limits); a no-match that depends on structure
+  boundaries, last-value headers). It descends at most 100 levels (Dovecot's
+  limit) and visits at most 1024 parts; a no-match that depends on structure
   past either cap is "unknown" (`indeterminate`), as for a body the host's read
   window cut.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
