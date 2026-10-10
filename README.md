@@ -89,7 +89,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `fileinto` | 5228 | plus `:flags`, `:copy`, `:create` (gated on their extensions) |
 | `envelope` | 5228 | parts: `from`, `to`, `auth` |
 | `copy` | 3894 | `:copy` on `fileinto`/`redirect` |
-| `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` |
+| `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` (tokenizer rules: script/style and comments dropped, every WHATWG character reference decoded) |
 | `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace |
 | `vacation` | 5230 | records intent only — see table above |
 | `relational` | 5231 | `:value`/`:count` on `address`/`envelope`/`header`/`string`/`hasflag`/`date`/`currentdate`/`body` |
