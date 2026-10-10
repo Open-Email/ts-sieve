@@ -1,7 +1,12 @@
 // RFC 5429 reject / ereject. The action cancels the implicit keep and records
-// the refusal; how the message is refused (a 5xx over SMTP/LMTP, a DSN, an MDN,
-// or not delivering it at all) is the host's decision, read from
-// RuntimeData.rejected, rejectReason and rejectExtended.
+// the refusal in RuntimeData.rejected, rejectReason and rejectExtended; the
+// host refuses the message. The RFC's order: refuse in the protocol (a 5xx at
+// SMTP/LMTP time) where possible; failing that, a DSN (ereject) or a failure
+// MDN (reject) to the envelope sender — not for a null or forged sender, nor,
+// for reject, likely spam. RFC 5429 §2.1 makes ereject unavailable where
+// protocol-level refusal is, so a host that can only drop the message (one
+// that runs after the message was accepted) departs from it, and §4 warns that
+// the sender is then never told.
 
 import { SieveError } from "../errors.js";
 import type { Cmd, RuntimeData } from "./runtime.js";
@@ -36,7 +41,7 @@ export function checkRejectConflicts(d: RuntimeData): void {
   if (d.keep) conflict = "keep";
   else if (d.mailboxes.length > 0) conflict = "fileinto";
   else if (d.redirectAddr.length > 0) conflict = "redirect";
-  else if (d.vacationResponses.size > 0) conflict = "vacation";
+  else if (d.vacationRan) conflict = "vacation";
   else return;
   throw new SieveError(`reject/ereject action conflicts with the ${conflict} action`);
 }

@@ -69,14 +69,14 @@ failed, fall back to implicit keep".
 
 | Field | Meaning |
 | --- | --- |
-| `implicitKeep` | `true` unless a canonical action (`fileinto`/`redirect`/`discard` without `:copy`) cancelled it. If `implicitKeep \|\| keep`, deliver to INBOX. |
+| `implicitKeep` | `true` unless a canonical action (`fileinto`/`redirect`/`discard` without `:copy`, `reject`/`ereject`) cancelled it. If `implicitKeep \|\| keep`, deliver to INBOX. |
 | `keep` | An explicit `keep;` ran. |
 | `mailboxes` / `mailboxesCreate` | `fileinto` targets (deduped); the subset flagged `:create` (RFC 5490) should be auto-created. |
 | `redirectAddr` | `redirect` targets that passed your policy (capped by `maxRedirects`). |
 | `flags` | The final IMAP flag set (RFC 5232), canonicalised: lowercased, deduped, sorted. |
 | `headerEdits` | The RFC 5293 `addheader`/`deleteheader` ledger. Tests inside the script already see the edits; apply the ledger yourself if the *stored* message should change. |
 | `vacationResponses` | RFC 5230 vacation **intents**, keyed by envelope-from. The host owns the actual send, the `:days`/`:handle` dedup database, and the RFC 5230 §4.5 loop-prevention checks (`Auto-Submitted`, list headers, "am I in To/Cc?"). |
-| `rejected` / `rejectReason` / `rejectExtended` | RFC 5429: a `reject` (or, with `rejectExtended`, an `ereject`) ran, with its reason after variable expansion; the implicit keep is cancelled. How the message is refused — a 5xx, a DSN, an MDN, or simply not delivering it — is the host's decision. |
+| `rejected` / `rejectReason` / `rejectExtended` | RFC 5429: a `reject` (or, with `rejectExtended`, an `ereject`) ran, with its reason after variable expansion; the implicit keep is cancelled. The host refuses the message — RFC 5429 asks for a protocol-level 5xx where possible, else a DSN (ereject) or failure MDN (reject), never to a null or forged sender; a host that can only drop it departs from the RFC (§2.1: no ereject without protocol refusal) and leaves the sender uninformed. `rejectReason` is **untrusted text**: variables can carry decoded CR/LF and non-ASCII from the message, so a host writing it into an SMTP reply must apply §2.5's multi-line and §2.1.1's ASCII rules. Header edits (`headerEdits`) must not reach a generated MDN/DSN (§2.4). Treat a reject like a discard when `indeterminate` is set. |
 
 ## Supported extensions
 
@@ -93,7 +93,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` |
 | `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace |
 | `vacation` | 5230 | records intent only — see table above |
-| `reject` / `ereject` | 5429 | records the refusal only — see table above. §2.4 is enforced after the script runs, whatever the order: a second reject, or a reject next to `vacation`, `keep`, `fileinto` or `redirect` (`:copy` included), is a runtime error |
+| `reject` / `ereject` | 5429 | records the refusal only — see table above. §2.4 is enforced: a second reject fails when it runs, and a reject next to `vacation`, `keep`, `fileinto` or `redirect` (`:copy` included) fails once the script has run, whatever the order (in a testsuite script, at the end of each `test` block) |
 | `relational` | 5231 | `:value`/`:count` on `address`/`envelope`/`header`/`string`/`hasflag`/`date`/`currentdate`/`body` |
 | `imap4flags` | 5232 | `setflag`/`addflag`/`removeflag` (incl. the `<variablename>` form), `hasflag` (incl. the variable-list form, with per-flag membership matching), `:flags` on `keep`/`fileinto` |
 | `subaddress` | 5233 | `:user`/`:detail` (separator `+`) |

@@ -8,15 +8,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
+import { runDovecotInline } from "./dovecot/harness.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
 const EXT = ALL_EXTENSIONS;
 const MSG = "From: stephan@example.org\r\nTo: nico@frop.example.org\r\nSubject: Test\r\n\r\nTest.\r\n";
 
-function exec(script: string, message = MSG): RuntimeData {
+function exec(script: string, message = MSG, from = "sirius@example.org"): RuntimeData {
   const { headers, size, body } = parseEml(message);
   const s = load(script, { enabledExtensions: EXT });
-  const env = new EnvelopeStatic("sirius@example.org", "timo@example.net");
+  const env = new EnvelopeStatic(from, "timo@example.net");
   const d = newRuntimeData(s, new DummyPolicy(), env, new MessageStatic(size, headers, body));
   s.execute(d);
   return d;
@@ -28,7 +29,12 @@ describe("reject", () => {
     expect(() => load('require "ereject"; reject "no";', { enabledExtensions: EXT })).toThrow(/missing require 'reject'/);
   });
 
+  it("is gated by enabledExtensions", () => {
+    expect(() => load('require "reject"; reject "no";', { enabledExtensions: ["fileinto"] })).toThrow(/reject/);
+  });
+
   it("takes exactly one string", () => {
+    expect(() => load('require "reject"; reject "a" "b";', { enabledExtensions: EXT })).toThrow(/too many arguments/);
     expect(() => load('require "reject"; reject;', { enabledExtensions: EXT })).toThrow(/argument is required/);
     expect(() => load('require "reject"; reject ["a", "b"];', { enabledExtensions: EXT })).toThrow(
       /wrong amount of string arguments/,
@@ -95,7 +101,28 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
   });
 
   it("flags are not a conflict", () => {
-    expect(exec('require ["reject","imap4flags"]; addflag "\\\\Seen"; reject "a";').rejected).toBe(true);
+    const d = exec('require ["reject","imap4flags"]; addflag "\\\\Seen"; reject "a";');
+    expect(d.rejected).toBe(true);
+    expect(d.flags).toEqual(["\\seen"]);
+  });
+
+  it("reject then vacation conflicts too", () => {
+    expect(() => exec('require ["reject","vacation"]; reject "a"; vacation "away";')).toThrow(
+      /conflicts with the vacation action/,
+    );
+  });
+
+  it("vacation conflicts even when it records no response", () => {
+    // A null envelope sender gets no auto-reply, but the action still ran.
+    expect(() => exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "")).toThrow(
+      /conflicts with the vacation action/,
+    );
+  });
+
+  it("ereject conflicts with delivering actions as reject does", () => {
+    expect(() => exec('require ["ereject","fileinto"]; ereject "a"; fileinto "X";')).toThrow(
+      /conflicts with the fileinto action/,
+    );
   });
 
   it("is checked after stop as well", () => {
@@ -103,11 +130,27 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
   });
 });
 
-describe("Pigeonhole reject/execute/basic.sieve", () => {
-  const src = fs.readFileSync(
-    path.resolve(__dirname, "corpus-src/tests/extensions/reject/execute/basic.sieve"),
-    "utf8",
-  );
+const CORPUS = path.resolve(__dirname, "corpus-src/tests");
+const hasCorpus = fs.existsSync(CORPUS);
+
+describe.skipIf(!hasCorpus)("Pigeonhole reject fixtures", () => {
+  const fixtures = [
+    "execute/errors/conflict-reject-keep.sieve",
+    "execute/errors/conflict-reject-fileinto.sieve",
+    "execute/errors/conflict-reject-redirect.sieve",
+    "execute/errors/action-duplicates.sieve",
+    "extensions/vacation/errors/conflict-reject.sieve",
+  ];
+  for (const f of fixtures) {
+    it(`${f} fails at run time`, () => {
+      const src = fs.readFileSync(path.join(CORPUS, f), "utf8");
+      expect(() => exec(src)).toThrow(/conflicts with the|more than one reject/);
+    });
+  }
+});
+
+describe.skipIf(!hasCorpus)("Pigeonhole reject/execute/basic.sieve", () => {
+  const src = fs.readFileSync(path.join(CORPUS, "extensions/reject/execute/basic.sieve"), "utf8");
 
   it("rejects a matching message and stops before keep", () => {
     const d = exec(src);
@@ -121,6 +164,18 @@ describe("Pigeonhole reject/execute/basic.sieve", () => {
     const d = exec(src, "From: a@x.example\r\nTo: b@y.example\r\nSubject: hi\r\n\r\nhi\r\n");
     expect(d.rejected).toBe(false);
     expect(d.keep).toBe(true);
+  });
+});
+
+describe("vnd.dovecot.testsuite", () => {
+  it("attributes a conflict to the test block it happens in", () => {
+    const r = runDovecotInline(`
+require "vnd.dovecot.testsuite";
+require "reject";
+test "A" { reject "x"; keep; }
+`);
+    expect(r.failures.map((f) => f.name)).toEqual(["A"]);
+    expect(r.report()).toMatch(/conflicts with the keep action/);
   });
 });
 

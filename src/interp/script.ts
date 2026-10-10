@@ -91,7 +91,9 @@ export class Script {
     } catch (e) {
       if (!(e instanceof StopSignal)) throw e;
     }
-    checkRejectConflicts(d);
+    // A testsuite script checks each `test` block instead, so a conflict is
+    // reported against the block it happens in.
+    if (!this.requiresExtension("vnd.dovecot.testsuite")) checkRejectConflicts(d);
   }
 }
 
