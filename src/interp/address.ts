@@ -2,9 +2,9 @@
 // parseEnvelopeAddress.
 //
 // Header address lists are parsed by a compact RFC 5322 address-list parser
-// covering the common forms (display-name <addr>, bare addr, quoted names, comma
-// lists); anything it can't parse falls back (in the caller) to literal matching
-// on parse error.
+// covering the common forms (display-name <addr>, bare <addr>, bare addr, quoted
+// names, groups, comma lists); anything it can't parse falls back (in the
+// caller) to literal matching on parse error.
 
 import { SieveError } from "../errors.js";
 
@@ -34,12 +34,22 @@ export function stripRFC2822Comments(addr: string): string {
   return addr.replace(/\([^)]*\)/g, "").trim();
 }
 
-/** Split a header value on top-level commas, honouring quotes and angle brackets. */
+/**
+ * Split a header value on top-level commas, honouring quotes and angle brackets.
+ * RFC 5322 §3.4 group syntax (`display-name ":" [group-list] ";"`) yields its
+ * members: the display name before a top-level ":" is dropped — RFC 5228 §5.1,
+ * the address test never acts on group names — and the ";" closes the group.
+ * A display-name phrase holds no unquoted "@", "<" or ">", so a ":" after any
+ * of them is not a group but part of an address (an IPv6 domain-literal) or
+ * trailing junk; and a ";" outside a group is not a separator.
+ */
 function splitAddressList(s: string): string[] {
   const parts: string[] = [];
   let cur = "";
   let inQuote = false;
   let inAngle = false;
+  let inGroup = false;
+  let addressy = false; // cur holds an unquoted "@", "<" or ">"
   for (let i = 0; i < s.length; i++) {
     const c = s[i]!;
     if (c === '"' && !inAngle) {
@@ -47,14 +57,26 @@ function splitAddressList(s: string): string[] {
       cur += c;
     } else if (c === "<" && !inQuote) {
       inAngle = true;
+      addressy = true;
       cur += c;
     } else if (c === ">" && !inQuote) {
       inAngle = false;
+      addressy = true;
       cur += c;
     } else if (c === "," && !inQuote && !inAngle) {
       parts.push(cur);
       cur = "";
+      addressy = false;
+    } else if (c === ":" && !inQuote && !inAngle && !addressy) {
+      cur = ""; // the group's display name
+      inGroup = true;
+    } else if (c === ";" && !inQuote && !inAngle && inGroup) {
+      parts.push(cur); // end of group
+      cur = "";
+      addressy = false;
+      inGroup = false;
     } else {
+      if (c === "@" && !inQuote) addressy = true;
       cur += c;
     }
   }
