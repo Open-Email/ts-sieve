@@ -381,3 +381,82 @@ describe("branch mechanics", () => {
     expect(r).toEqual(R({ fileinto: ["B"] }));
   });
 });
+
+// The multipart splitter over a CUT body (read-window prefix). Whatever a cut
+// leaves at the end of the window — the start of a delimiter line, a delimiter
+// without its line end, the CR of a CRLF — may turn out to be structure once
+// the rest of the message is known, so no definite answer may depend on it:
+// for each case the full message contradicts the answer an unsound split gave.
+describe("multipart structure over a cut body", () => {
+  const mp = (body: string) =>
+    `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary="b"\r\n\r\n${body}`;
+  const unknown = R({ implicitKeep: true, indeterminate: true });
+  const kept = R({ keep: true, implicitKeep: true });
+
+  it("a cut right after '\\r\\n--b' does not end the part there", () => {
+    // Full: "--bye now" is content of the part, which is not "abc".
+    const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b");
+    expect(run('require "body"; if body :content "text/plain" :is "abc" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(
+      run('require ["body","relational"]; if body :content "text/plain" :count "ge" "2" { keep; }', cut, CUT),
+    ).toEqual(unknown);
+  });
+
+  it("a partial delimiter at the cut is not content", () => {
+    // Full: "\r\n--b--" closes the part, whose content is just "abc".
+    const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-");
+    expect(run('require "body"; if body :content "text/plain" :contains "--b-" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
+      unknown,
+    );
+    // What the prefix does prove still matches.
+    expect(run('require "body"; if body :content "text/plain" :contains "abc" { keep; }', cut, CUT)).toEqual(kept);
+  });
+
+  it("a cut inside a delimiter line's padding leaves no partial delimiter as content", () => {
+    // Full: "--b \r\n" is a delimiter, the part's content is "abc".
+    const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b ");
+    expect(run('require "body"; if body :content "text/plain" :contains "--b" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
+      unknown,
+    );
+    const close = mp("pro\r\n--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-- \t");
+    expect(run('require "body"; if body :content "text/plain" :contains "--b--" { keep; }', close, CUT)).toEqual(
+      unknown,
+    );
+  });
+
+  it("a last part cut inside its own header is not matched under a guessed type", () => {
+    // Full: the second part is image/png, so no text/plain part exists.
+    const cut = mp(
+      "--b\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n--b\r\nContent-Transfer-Enc",
+    );
+    expect(run('require "body"; if body :content "text/plain" :matches "*" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(
+      run('require ["body","relational"]; if body :text :count "ge" "2" { keep; }', cut, CUT),
+    ).toEqual(unknown);
+  });
+
+  it("the epilogue is unknown until the close delimiter is seen", () => {
+    // A non-empty prologue, so only the epilogue can decide :is "".
+    const cut = mp("preamble\r\n--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n");
+    expect(run('require "body"; if body :content "multipart" :is "" { keep; }', cut, CUT)).toEqual(unknown);
+    // A CR at the cut after the close may be the start of its line break.
+    const atCr = mp("preamble\r\n--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b--\r");
+    expect(run('require "body"; if not body :content "multipart" :is "" { keep; }', atCr, CUT)).toEqual(unknown);
+  });
+
+  it("a nested message/rfc822 cut inside its header is unknown, not a miss", () => {
+    const eml = [
+      "From: a@x",
+      "To: b@y",
+      "Content-Type: message/rfc822",
+      "",
+      "From: c@z",
+      "Content-Type: text/pl",
+    ].join("\r\n");
+    expect(run('require "body"; if body :content "text/plain" :contains "secret" { keep; }', eml, CUT)).toEqual(
+      unknown,
+    );
+  });
+});
