@@ -6,6 +6,7 @@ import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import { parse } from "../parser/parse.js";
 import { loadBlock } from "./load.js";
+import { checkRejectConflicts } from "./reject.js";
 import { type Cmd, type RuntimeData, StopSignal, type TestEnv } from "./runtime.js";
 
 export interface Options {
@@ -88,9 +89,9 @@ export class Script {
         c.execute(d);
       }
     } catch (e) {
-      if (e instanceof StopSignal) return;
-      throw e;
+      if (!(e instanceof StopSignal)) throw e;
     }
+    checkRejectConflicts(d);
   }
 }
 

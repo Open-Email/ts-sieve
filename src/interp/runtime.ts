@@ -140,6 +140,12 @@ export class RuntimeData {
   keep = false;
   implicitKeep = true;
 
+  /** RFC 5429: a reject (or, with rejectExtended, an ereject) ran, with this
+   * reason after variable expansion. Refusing the message is the host's call. */
+  rejected = false;
+  rejectReason = "";
+  rejectExtended = false;
+
   flagAliases: Map<string, string> = new Map();
 
   /** Optional host hook for `mailboxexists` (undefined ⇒ optimistic "exists"). */
@@ -212,6 +218,9 @@ export class RuntimeData {
     c.flags = [...this.flags];
     c.keep = this.keep;
     c.implicitKeep = this.implicitKeep;
+    c.rejected = this.rejected;
+    c.rejectReason = this.rejectReason;
+    c.rejectExtended = this.rejectExtended;
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
