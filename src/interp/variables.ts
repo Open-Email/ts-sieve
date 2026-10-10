@@ -8,6 +8,7 @@
 import { SieveError } from "../errors.js";
 import { MatcherTest } from "./matcher.js";
 import type { Cmd, RuntimeData, Test, Tri } from "./runtime.js";
+import type { Script } from "./script.js";
 
 const VAR_NAME_MAX_SCAN = 300; // bound the } search — real names are ≤ 32 chars
 const encoder = new TextEncoder();
@@ -30,6 +31,10 @@ function resolveVar(d: RuntimeData, name: string): string {
   const ns = lower.slice(0, dot);
   const rest = lower.slice(dot + 1);
   if (ns === "envelope") {
+    // The load check refuses this namespace without require "envelope", but a
+    // late require "variables" (RFC 5228 §3.2's require-first is not enforced)
+    // slips past it — so the runtime refuses to read it too.
+    if (!d.script.requiresExtension("envelope")) return "";
     if (rest === "from") return d.envelope.envelopeFrom();
     if (rest === "to") return d.envelope.envelopeTo();
     if (rest === "auth") return d.envelope.authUsername();
@@ -38,35 +43,74 @@ function resolveVar(d: RuntimeData, name: string): string {
   return ""; // unknown namespace
 }
 
+/**
+ * The name of the variable reference whose "${" sits at `i`, given `close`, the
+ * first "}" at or after i + 2 (-1: none) — or null when there is none: an
+ * invalid name, or one longer than VAR_NAME_MAX_SCAN, is literal text.
+ * Callers keep `close` across positions (nextClose), so a string full of "${"
+ * is scanned once, not VAR_NAME_MAX_SCAN characters per "${".
+ */
+function varRefName(s: string, i: number, close: number): string | null {
+  if (close === -1 || close - (i + 2) >= VAR_NAME_MAX_SCAN) return null;
+  const name = s.slice(i + 2, close);
+  return isValidVarName(name) ? name : null;
+}
+
+/** The first "}" at or after `from`, reusing `close` while it still qualifies
+ * (it is the first one after an earlier, smaller `from`). -2: not searched. */
+function nextClose(s: string, from: number, close: number): number {
+  return close === -1 || close >= from ? close : s.indexOf("}", from);
+}
+
 /** Substitute ${name}/${N}. Identity when `variables` is not required. */
 export function expandVars(d: RuntimeData, s: string): string {
   if (!d.script.requiresExtension("variables") || !s.includes("${")) return s;
   let out = "";
   let i = 0;
+  let close = -2;
   const n = s.length;
   while (i < n) {
     if (s.charCodeAt(i) === 36 /* $ */ && s.charCodeAt(i + 1) === 123 /* { */) {
-      const limit = Math.min(n, i + 2 + VAR_NAME_MAX_SCAN);
-      let close = -1;
-      for (let j = i + 2; j < limit; j++) {
-        if (s.charCodeAt(j) === 125 /* } */) {
-          close = j;
-          break;
-        }
-      }
-      if (close !== -1) {
-        const name = s.slice(i + 2, close);
-        if (isValidVarName(name)) {
-          out += resolveVar(d, name);
-          i = close + 1;
-          continue;
-        }
+      close = nextClose(s, i + 2, close);
+      const name = varRefName(s, i, close);
+      if (name !== null) {
+        out += resolveVar(d, name);
+        i = close + 1;
+        continue;
       }
     }
     out += s[i];
     i++;
   }
   return out;
+}
+
+/**
+ * RFC 5229 §3: "References to namespaces without a prior require statement for
+ * the relevant extension MUST cause an error." Returns why a string's first
+ * unreadable reference cannot be read — a namespace whose extension the script
+ * did not require, or one no extension defines — or null when every reference
+ * is readable. Match variables (${1}) and user variables always are; without
+ * `variables` required, "${...}" is literal text and nothing is checked.
+ */
+export function unusableVarRef(script: Script, s: string): string | null {
+  if (!script.requiresExtension("variables") || !s.includes("${")) return null;
+  let close = -2;
+  for (let i = s.indexOf("${"); i !== -1; i = s.indexOf("${", i + 1)) {
+    close = nextClose(s, i + 2, close);
+    if (close === -1) break; // no "}" left: no reference either
+    const name = varRefName(s, i, close);
+    if (name === null) continue;
+    const dot = name.indexOf(".");
+    if (dot === -1) continue;
+    const ns = name.slice(0, dot).toLowerCase();
+    if (ns === "envelope") {
+      if (!script.requiresExtension("envelope")) return `variable \${${name}} needs require "envelope"`;
+      continue;
+    }
+    return `variable \${${name}} is in the unknown namespace "${ns}"`;
+  }
+  return null;
 }
 
 export function expandVarsList(d: RuntimeData, list: string[]): string[] {

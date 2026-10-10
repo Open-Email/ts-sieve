@@ -53,8 +53,14 @@ d.redirectAddr;  // []
 or load failure — including a `require` for an extension you did not enable —
 so a user uploading a script learns exactly what won't run *before* mail
 arrives. `execute()` throws `SieveError` on runtime errors (budget exhaustion,
-too many redirects, an envelope-less `vacation`, …); treat that as "script
-failed, fall back to implicit keep".
+too many redirects, …); treat that as "script
+failed, fall back to implicit keep". Because a throw skips every rule, the
+`body` test does not throw on malformed MIME: broken transfer encodings decode
+leniently, and structure past the caps below is "unknown". Other paths from
+message content to a throw remain and are tracked as issues (step-budget
+exhaustion by large parts under `:matches`/`:regex` or by many rules over many
+parts, `addheader` of a captured value with a line break, a `:regex`/`:matches`
+key built from message data that does not compile).
 
 ### What the host implements
 
@@ -91,7 +97,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `envelope` | 5228 | parts: `from`, `to`, `auth` |
 | `copy` | 3894 | `:copy` on `fileinto`/`redirect` |
 | `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` |
-| `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace |
+| `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace (needs `require "envelope"`; any other namespace is refused at load, RFC 5229 §3) |
 | `vacation` | 5230 | records intent only — see table above |
 | `reject` / `ereject` | 5429 | records the refusal only — see table above. §2.4 is enforced: a second reject fails when it runs, and a reject next to `vacation`, `keep`, `fileinto` or `redirect` (`:copy` included) fails once the script has run, whatever the order (in a testsuite script, at the end of each `test` block) |
 | `relational` | 5231 | `:value`/`:count` on `address`/`envelope`/`header`/`string`/`hasflag`/`date`/`currentdate`/`body` |
@@ -173,7 +179,9 @@ on them and this one follows the RFC strictly:
 - **Errors throw** (`SieveError` with `line`/`col`) rather than being returned
   alongside a value.
 - The address-list parser is a compact RFC 5322 subset (no external MIME
-  dependency); unparseable values fall back to literal matching.
+  dependency): display-name and bare `<addr>` forms, quoted names, and groups,
+  whose members are matched and whose name never is (RFC 5228 §5.1);
+  unparseable values fall back to literal matching.
 
 ## Known limitations
 
@@ -182,8 +190,10 @@ on them and this one follows the RFC strictly:
   headers (From/To/Cc/…); other header names are silently skipped per RFC 5228
   §5.1's "MUST restrict" guidance.
 - The `body` walker is an approximation of a full MIME parser (byte-exact
-  boundaries, last-value headers); pathological nesting is bounded by the
-  execution budget.
+  boundaries, last-value headers). It descends at most 100 levels (Dovecot's
+  limit) and visits at most 1024 parts; a no-match that depends on structure
+  past either cap is "unknown" (`indeterminate`), as for a body the host's read
+  window cut.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of
@@ -204,7 +214,10 @@ layer; `rfc-fixes.test.ts` pins the RFC-correctness behaviours listed above.
 
 ### Dovecot Pigeonhole conformance corpus
 
-`test/dovecot/` runs the Dovecot Pigeonhole `.svtest` corpus through the
+`test/dovecot/` runs the Dovecot Pigeonhole `.svtest` corpus (and its
+`.svtest.in` templates verbatim, which leaves their `#UTF8#` lines as comments:
+three assertions that a non-ASCII local part is invalid, which this RFC 6532
+interpreter does not share) through the
 `vnd.dovecot.testsuite` DSL — the gold-standard validation that stress-tests
 every extension far beyond the focused unit fixtures. The corpus is **vendored**
 under `test/corpus-src/tests/` as a pinned snapshot of the LGPL-licensed upstream
@@ -222,6 +235,6 @@ action-result DSL this interpreter does not implement
 (`test_result_execute`/`test_message`), or a
 Pigeonhole-only feature (`test_error` detail counts, `test_config_set` keys other
 than `sieve_variables_max_variable_size`, the imap4flags variable-name form) are
-skipped with a recorded reason. **42 in-scope corpus files pass**, covering core,
+skipped with a recorded reason. **43 in-scope corpus files pass**, covering core,
 comparators, match-types, and the `body`, `date`, `encoded-character`, `envelope`,
 `index`, `regex`, `relational`, `subaddress`, and `variables` extensions.
