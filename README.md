@@ -96,7 +96,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `envelope` | 5228 | parts: `from`, `to`, `auth` |
 | `copy` | 3894 | `:copy` on `fileinto`/`redirect` |
 | `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` |
-| `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace |
+| `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace (needs `require "envelope"`; any other namespace is refused at load, RFC 5229 §3) |
 | `vacation` | 5230 | records intent only — see table above |
 | `relational` | 5231 | `:value`/`:count` on `address`/`envelope`/`header`/`string`/`hasflag`/`date`/`currentdate`/`body` |
 | `imap4flags` | 5232 | `setflag`/`addflag`/`removeflag` (incl. the `<variablename>` form), `hasflag` (incl. the variable-list form, with per-flag membership matching), `:flags` on `keep`/`fileinto` |
