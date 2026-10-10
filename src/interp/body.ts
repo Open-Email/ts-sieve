@@ -55,10 +55,59 @@ function qpDecode(bytes: Uint8Array): Uint8Array {
   return Uint8Array.from(out);
 }
 
+const B64_PAD = -2;
+const B64_SKIP = -1;
+const B64 = (() => {
+  const t = new Int8Array(256).fill(B64_SKIP);
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  for (let i = 0; i < alphabet.length; i++) t[alphabet.charCodeAt(i)] = i;
+  t[0x3d /* = */] = B64_PAD;
+  return t;
+})();
+
+/**
+ * Lenient base64: never throws, because malformed mail must not fail the
+ * script (a thrown execute() skips every rule — see the host's fail-open).
+ * Characters outside the alphabet are skipped; "=" ends the current quantum,
+ * keeping the octets it completes, and decoding resumes after it, so padded
+ * segments concatenated by a broken mailer read as one stream; a dangling
+ * single character (length 4n+1) carries no whole octet and is dropped. A
+ * prefix of the encoding therefore decodes to a prefix of the content, which
+ * the truncation semantics rely on.
+ */
 function base64Decode(bytes: Uint8Array): Uint8Array {
-  const clean = bytesToBinary(bytes).replace(/[^A-Za-z0-9+/=]/g, "");
-  const bin = atob(clean);
-  return binaryToBytes(bin);
+  const out = new Uint8Array(Math.floor((bytes.length * 3) / 4) + 3);
+  let o = 0;
+  let quad = 0;
+  let n = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const v = B64[bytes[i]!]!;
+    if (v === B64_SKIP) continue;
+    if (v === B64_PAD) {
+      if (n === 2) out[o++] = quad >> 4;
+      else if (n === 3) {
+        out[o++] = quad >> 10;
+        out[o++] = (quad >> 2) & 0xff;
+      }
+      quad = 0;
+      n = 0;
+      continue;
+    }
+    quad = (quad << 6) | v;
+    if (++n === 4) {
+      out[o++] = quad >> 16;
+      out[o++] = (quad >> 8) & 0xff;
+      out[o++] = quad & 0xff;
+      quad = 0;
+      n = 0;
+    }
+  }
+  if (n === 2) out[o++] = quad >> 4;
+  else if (n === 3) {
+    out[o++] = quad >> 10;
+    out[o++] = (quad >> 2) & 0xff;
+  }
+  return out.subarray(0, o);
 }
 
 /** Returns transfer-decoded bytes, or null on an unknown encoding (skip part). */
@@ -193,6 +242,21 @@ function splitHeaderBody(b: string): { header: string; body: string } {
 
 // -------- the body test --------
 
+/**
+ * Bounds on the MIME structure the body test walks (RFC 5703 §11: part
+ * matching must not deny service). Without them a nesting bomb overflowed the
+ * call stack — a throw, which the host's fail-open turns into "skip every
+ * rule" — and re-scanned the remaining body once per level. Past them a
+ * no-match is "unknown": the rule does not fire, but nothing throws.
+ *
+ * Depth is Dovecot's message-parser limit (100, added for CVE-2020-12100);
+ * nesting is cheap in steps. Parts stay at 1024, not Dovecot's 10000: every
+ * body test charges every part, so 10000 tiny parts under a handful of body
+ * rules exhaust a host's step budget, and that throws.
+ */
+const MAX_MIME_DEPTH = 100;
+const MAX_MIME_PARTS = 1024;
+
 export class TestBody implements Test {
   readonly matcher = new MatcherTest();
   raw = false;
@@ -229,9 +293,9 @@ export class TestBody implements Test {
 
       const topCt = d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii";
       const topCte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
-      const counter = { count: 0 };
+      const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
-      const matched = this.walk(d, topCt, topCte, bytesToBinary(raw), counter, bodyCut, flags);
+      const matched = this.walk(d, topCt, topCte, bytesToBinary(raw), counter, bodyCut, flags, 0);
       if (matched) return true;
       if (this.matcher.isCount()) {
         const res = this.matcher.countMatches(d, counter.count);
@@ -271,7 +335,7 @@ export class TestBody implements Test {
   private matchOrCount(
     d: RuntimeData,
     source: string,
-    counter: { count: number },
+    counter: { count: number; parts: number },
     cut: boolean,
     flags: { unknown: boolean },
   ): boolean {
@@ -297,11 +361,18 @@ export class TestBody implements Test {
     ctHeader: string,
     cteHeader: string,
     b: string,
-    counter: { count: number },
+    counter: { count: number; parts: number },
     cut: boolean,
     flags: { unknown: boolean },
+    depth: number,
   ): boolean {
     d.budget.consume(1);
+    // Structure past the caps is not examined, so a miss there is not proven:
+    // "unknown", exactly as for a part the host's read window cut away.
+    if (depth > MAX_MIME_DEPTH) {
+      flags.unknown = true;
+      return false;
+    }
     const { mediaType, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
     const process = this.wantsPart(mediaType);
 
@@ -351,11 +422,24 @@ export class TestBody implements Test {
         }
       }
       for (let i = 0; i < nested.length; i++) {
+        if (++counter.parts > MAX_MIME_PARTS) {
+          flags.unknown = true;
+          return false;
+        }
         const partCut = lastNestedCut && i === nested.length - 1;
         const { header, body } = splitHeaderBody(nested[i]!);
         const h = parseMimeHeader(header);
         if (
-          this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, partCut, flags)
+          this.walk(
+            d,
+            h.get("content-type") ?? "",
+            h.get("content-transfer-encoding") ?? "",
+            body,
+            counter,
+            partCut,
+            flags,
+            depth + 1,
+          )
         ) {
           return true;
         }
@@ -370,25 +454,28 @@ export class TestBody implements Test {
       // No separator found in a cut string ⇒ the header block itself may be a
       // prefix; with a separator, the cut can only fall in the body (the tail).
       if (process && this.matchOrCount(d, hdrBytes, counter, cut && !sep, flags)) return true;
+      if (++counter.parts > MAX_MIME_PARTS) {
+        flags.unknown = true;
+        return false;
+      }
       const h = parseMimeHeader(header);
-      return this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, cut, flags);
+      return this.walk(
+        d,
+        h.get("content-type") ?? "",
+        h.get("content-transfer-encoding") ?? "",
+        body,
+        counter,
+        cut,
+        flags,
+        depth + 1,
+      );
     }
 
     // leaf
     if (!process) return false;
-    let decoded: Uint8Array | null;
-    try {
-      decoded = cteDecode(binaryToBytes(b), cteHeader);
-    } catch (e) {
-      // A cut base64 leaf can be undecodable at the ragged edge (atob length
-      // rules) — that is "content unknown", not a script error. An untruncated
-      // leaf keeps throwing: malformed input, the host's fail-open handles it.
-      if (cut) {
-        flags.unknown = true;
-        return false;
-      }
-      throw e;
-    }
+    // Decoding never throws (see base64Decode): a cut leaf decodes to a prefix
+    // of its content, which matchOrCount then reads under prefix semantics.
+    const decoded = cteDecode(binaryToBytes(b), cteHeader);
     if (decoded === null) return false; // unknown transfer-encoding → skip
     let text: string;
     if (mediaType.startsWith("text/")) {
