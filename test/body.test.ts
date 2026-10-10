@@ -161,8 +161,32 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
   });
 
   it("transport padding after the boundary still delimits", () => {
-    const eml = mp("b", "--b  \r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n--b-- \r\n");
+    const eml = mp("b", "--b  \r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n--b-- \t\r\nepilogue\r\n");
     expect(hit('body :content "text/html" :contains "<p>x</p>"', eml)).toBe(true);
+    expect(hit('body :content "multipart" :is "epilogue\r\n"', eml)).toBe(true);
+  });
+
+  it("text after padding on a delimiter line makes it content, not a delimiter", () => {
+    const eml = mp("sep", "--sep\r\nContent-Type: text/plain\r\n\r\nabove\r\n--sep is the separator\r\nbelow\r\n--sep--\r\n");
+    expect(hit('body :content "text/plain" :contains "below"', eml)).toBe(true);
+  });
+
+  it("'--' after the boundary closes only where the line ends", () => {
+    // Outer "b", nested "b--x": "--b--x" is the nested delimiter, not the outer close.
+    const eml = mp(
+      "b",
+      '--b\r\nContent-Type: multipart/alternative; boundary="b--x"\r\n\r\n' +
+        "--b--x\r\nContent-Type: text/plain\r\n\r\ninner\r\n--b--x--\r\n" +
+        "--b\r\nContent-Type: text/plain\r\n\r\nouter\r\n--b--\r\n",
+    );
+    expect(hit('body :content "text/plain" :is "inner"', eml)).toBe(true);
+    expect(hit('body :content "text/plain" :is "outer"', eml)).toBe(true);
+  });
+
+  it("a delimiter at the very end of a complete body ends the part", () => {
+    expect(hit('body :content "text/plain" :is "x"', mp("b", "--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b"))).toBe(
+      true,
+    );
   });
 
   it("a CR before the delimiter belongs to the delimiter, not the part", () => {
@@ -173,6 +197,9 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
   it("a header block ended by a mixed CRLF + LF blank line still separates", () => {
     const eml = mp("b", "--b\r\nContent-Type: text/plain\r\n\nbody text\r\n--b--\r\n");
     expect(hit('body :content "text/plain" :is "body text"', eml)).toBe(true);
+    // The first blank line ends the header even when a CRLF one comes later.
+    const later = mp("b", "--b\r\nContent-Type: text/html\r\n\nfoo\r\n\r\nbar\r\n--b--\r\n");
+    expect(hit('body :content "text/html" :contains "foo"', later)).toBe(true);
   });
 
   it("the closing delimiter of a prefix-boundary nested part is not the outer close", () => {
@@ -184,5 +211,8 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
     );
     expect(hit('body :content "text/plain" :is "two"', eml)).toBe(true);
     expect(hit('body :content "text/plain" :is "one"', eml)).toBe(true);
+    expect(
+      run('require ["body","relational"]; if body :content "text/plain" :count "eq" "2" { keep; }', eml).keep,
+    ).toBe(true);
   });
 });

@@ -323,7 +323,7 @@ export class TestBody implements Test {
       if (!boundary) {
         return process ? this.matchOrCount(d, b, counter, cut, flags) : false;
       }
-      const parts = splitBoundary(b, boundary);
+      const parts = splitBoundary(b, boundary, cut);
       // parts[0] = prologue; find closing --boundary-- marker → epilogue; rest = nested
       let epilogue = "";
       let sawClose = false;
@@ -341,7 +341,9 @@ export class TestBody implements Test {
       // found, the last nested part otherwise (or the prologue when no boundary
       // was found at all — parts === [b]).
       const prologueCut = cut && parts.length === 1;
-      const epilogueCut = cut && sawClose;
+      // Before the close marker is seen the epilogue is unseen, after it the
+      // epilogue runs into the cut: a prefix either way.
+      const epilogueCut = cut;
       const lastNestedCut = cut && !sawClose;
       // A cut multipart whose close marker never appeared may CONTINUE past the
       // cut: whole sibling parts — even whole part TYPES a :content filter
@@ -377,6 +379,9 @@ export class TestBody implements Test {
       // No separator found in a cut string ⇒ the header block itself may be a
       // prefix; with a separator, the cut can only fall in the body (the tail).
       if (process && this.matchOrCount(d, headerRaw, counter, cut && !sep, flags)) return true;
+      // A cut inside the nested header hides the entity's real type and
+      // structure, so nothing walked below it can prove a miss.
+      if (cut && !sep) flags.unknown = true;
       const h = parseMimeHeader(header);
       return this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, cut, flags);
     }
@@ -417,23 +422,31 @@ export class TestBody implements Test {
  *
  * One scan for the LF form, taking a CR before it as part of the delimiter:
  * scanning for CRLF first skipped an earlier bare-LF delimiter in a body with
- * mixed line endings, merging two parts. A match counts only where it ENDS a
- * delimiter line (RFC 2046 §5.1.1), so boundary "b" does not split the lines
- * of a nested part whose boundary is "b-alt", nor a content line "--bye".
+ * mixed line endings, merging two parts. A match counts only where a delimiter
+ * LINE can end (see delimiterEnds). That is stricter than RFC 2046 §5.1.1,
+ * which lets the boundary merely start the line and instead forbids a sender
+ * to nest a boundary the outer one prefixes (§5.1) — but mail breaks that
+ * rule, and go-sieve, Go's, Python's and Thunderbird's parsers are strict the
+ * same way: boundary "b" does not split the lines of a nested part whose
+ * boundary is "b-alt", nor a content line "--bye".
+ *
+ * `cut`: `b` is a prefix of the real content. The end of the input then ends
+ * no delimiter line (the rest of the line is unseen), and the last fragment
+ * loses any tail that could still turn out to be a delimiter.
  */
-function splitBoundary(b: string, boundary: string): string[] {
+function splitBoundary(b: string, boundary: string, cut: boolean): string[] {
   const dash = `\n--${boundary}`;
   const parts: string[] = [];
   let pos = 0;
-  if (b.startsWith(`--${boundary}`) && delimiterEnds(b, boundary.length + 2)) {
+  if (b.startsWith(`--${boundary}`) && delimiterEnds(b, boundary.length + 2, cut)) {
     parts.push("");
     pos = boundary.length + 2;
   }
   for (;;) {
     let idx = b.indexOf(dash, pos);
-    while (idx !== -1 && !delimiterEnds(b, idx + dash.length)) idx = b.indexOf(dash, idx + 1);
+    while (idx !== -1 && !delimiterEnds(b, idx + dash.length, cut)) idx = b.indexOf(dash, idx + 1);
     if (idx === -1) {
-      parts.push(b.slice(pos));
+      parts.push(cut ? trimDelimiterTail(b, pos, boundary) : b.slice(pos));
       return parts;
     }
     const end = idx > pos && b.charCodeAt(idx - 1) === 13 /* \r */ ? idx - 1 : idx;
@@ -442,14 +455,17 @@ function splitBoundary(b: string, boundary: string): string[] {
   }
 }
 
-/** Whether the text at `end`, right after a boundary, can end a delimiter
- * line: the closing "--", transport padding, the line break, or the end of the
- * input. A lone "-" cannot ("b-alt" is another boundary). */
-function delimiterEnds(b: string, end: number): boolean {
-  if (end >= b.length) return true;
-  const c = b.charCodeAt(end);
-  if (c === 13 || c === 10 || c === 32 || c === 9) return true;
-  return c === 45 /* - */ && b.charCodeAt(end + 1) === 45;
+/** Whether the text at `end`, right after a boundary, ends a delimiter line:
+ * an optional closing "--", optional transport padding, then the line break —
+ * or the end of a complete input. A lone "-" cannot ("b-alt" is another
+ * boundary), and neither can text after the padding or the "--". */
+function delimiterEnds(b: string, end: number, cut: boolean): boolean {
+  let i = end;
+  if (b.charCodeAt(i) === 45 /* - */ && b.charCodeAt(i + 1) === 45) i += 2;
+  while (b.charCodeAt(i) === 32 || b.charCodeAt(i) === 9) i++;
+  if (i >= b.length) return !cut;
+  const c = b.charCodeAt(i);
+  return c === 13 || c === 10;
 }
 
 /** Drop a delimiter line's transport padding (LWSP) and line break. */
@@ -459,4 +475,23 @@ function skipDelimiterLineEnd(p: string): string {
   if (p.charCodeAt(i) === 13 && p.charCodeAt(i + 1) === 10) return p.slice(i + 2);
   if (p.charCodeAt(i) === 10) return p.slice(i + 1);
   return i > 0 ? p.slice(i) : p;
+}
+
+/**
+ * The last fragment of a CUT body, without the tail that could still turn out
+ * to be a delimiter: a final line that is a prefix of "--boundary--", with the
+ * line break before it, or a lone trailing CR. A shorter prefix of the real
+ * content is still a prefix, so this only costs precision.
+ */
+function trimDelimiterTail(b: string, pos: number, boundary: string): string {
+  const lf = b.lastIndexOf("\n");
+  // The first line of a fragment after a delimiter is that delimiter line's
+  // rest, never a content line; only the whole input (pos 0) starts on one.
+  const lineStart = lf >= pos ? lf + 1 : pos === 0 ? 0 : -1;
+  if (lineStart !== -1 && `--${boundary}--`.startsWith(b.slice(lineStart))) {
+    let end = lineStart === 0 ? 0 : lineStart - 1;
+    if (end > pos && b.charCodeAt(end - 1) === 13 /* \r */) end--;
+    return b.slice(pos, Math.max(end, pos));
+  }
+  return b.charCodeAt(b.length - 1) === 13 /* \r */ ? b.slice(pos, -1) : b.slice(pos);
 }
