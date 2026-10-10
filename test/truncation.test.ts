@@ -405,10 +405,27 @@ describe("multipart structure over a cut body", () => {
     expect(run('require "body"; if body :content "text/plain" :contains "abc" { keep; }', cut, CUT)).toEqual(kept);
   });
 
-  it("a cut between the last delimiter and its closing '--' adds no part", () => {
-    const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b");
+  it("a cut inside a delimiter line's padding leaves no partial delimiter as content", () => {
+    // Full: "--b \r\n" is a delimiter, the part's content is "abc".
+    const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b ");
+    expect(run('require "body"; if body :content "text/plain" :contains "--b" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
+      unknown,
+    );
+    const close = mp("pro\r\n--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-- \t");
+    expect(run('require "body"; if body :content "text/plain" :contains "--b--" { keep; }', close, CUT)).toEqual(
+      unknown,
+    );
+  });
+
+  it("a last part cut inside its own header is not matched under a guessed type", () => {
+    // Full: the second part is image/png, so no text/plain part exists.
+    const cut = mp(
+      "--b\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n--b\r\nContent-Transfer-Enc",
+    );
+    expect(run('require "body"; if body :content "text/plain" :matches "*" { keep; }', cut, CUT)).toEqual(unknown);
     expect(
-      run('require ["body","relational"]; if body :content "text" :count "eq" "1" { keep; }', cut, CUT),
+      run('require ["body","relational"]; if body :text :count "ge" "2" { keep; }', cut, CUT),
     ).toEqual(unknown);
   });
 

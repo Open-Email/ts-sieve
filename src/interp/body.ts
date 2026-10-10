@@ -363,7 +363,11 @@ export class TestBody implements Test {
       }
       for (let i = 0; i < nested.length; i++) {
         const partCut = lastNestedCut && i === nested.length - 1;
-        const { header, body } = splitHeaderBody(nested[i]!);
+        const { header, body, sep } = splitHeaderBody(nested[i]!);
+        // A last part cut inside its own header has no known type yet: it
+        // would default to text/plain and be matched and counted as one. The
+        // multipart is already unknown (lastNestedCut), so it is skipped.
+        if (partCut && !sep) continue;
         const h = parseMimeHeader(header);
         if (
           this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, partCut, flags)
@@ -479,19 +483,32 @@ function skipDelimiterLineEnd(p: string): string {
 
 /**
  * The last fragment of a CUT body, without the tail that could still turn out
- * to be a delimiter: a final line that is a prefix of "--boundary--", with the
- * line break before it, or a lone trailing CR. A shorter prefix of the real
- * content is still a prefix, so this only costs precision.
+ * to be a delimiter: a final line that could still become a delimiter line
+ * (see couldBeDelimiterLine), with the line break before it, or a lone
+ * trailing CR. A shorter prefix of the real content is still a prefix, so this
+ * only costs precision.
  */
 function trimDelimiterTail(b: string, pos: number, boundary: string): string {
   const lf = b.lastIndexOf("\n");
   // The first line of a fragment after a delimiter is that delimiter line's
   // rest, never a content line; only the whole input (pos 0) starts on one.
   const lineStart = lf >= pos ? lf + 1 : pos === 0 ? 0 : -1;
-  if (lineStart !== -1 && `--${boundary}--`.startsWith(b.slice(lineStart))) {
+  if (lineStart !== -1 && couldBeDelimiterLine(b.slice(lineStart), boundary)) {
     let end = lineStart === 0 ? 0 : lineStart - 1;
     if (end > pos && b.charCodeAt(end - 1) === 13 /* \r */) end--;
     return b.slice(pos, Math.max(end, pos));
   }
   return b.charCodeAt(b.length - 1) === 13 /* \r */ ? b.slice(pos, -1) : b.slice(pos);
+}
+
+/** Whether a final, cut line could still turn out to be a delimiter line: a
+ * prefix of "--boundary--", or "--boundary" with an optional "--" and then
+ * only padding, whose line break may lie past the cut. */
+function couldBeDelimiterLine(line: string, boundary: string): boolean {
+  if (`--${boundary}--`.startsWith(line)) return true;
+  if (!line.startsWith(`--${boundary}`)) return false;
+  let i = boundary.length + 2;
+  if (line.charCodeAt(i) === 45 /* - */ && line.charCodeAt(i + 1) === 45) i += 2;
+  while (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9) i++;
+  return i >= line.length;
 }
