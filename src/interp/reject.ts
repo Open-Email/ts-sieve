@@ -4,9 +4,9 @@
 // SMTP/LMTP time) where possible; failing that, a DSN (ereject) or a failure
 // MDN (reject) to the envelope sender — not for a null or forged sender, nor,
 // for reject, likely spam. RFC 5429 §2.1 makes ereject unavailable where
-// protocol-level refusal is, so a host that can only drop the message (one
-// that runs after the message was accepted) departs from it, and §4 warns that
-// the sender is then never told.
+// protocol-level refusal is not possible, so a host that can only drop the
+// message (one that runs after the message was accepted) departs from it, and
+// §4 warns that the sender is then never told.
 
 import { SieveError } from "../errors.js";
 import type { Cmd, RuntimeData } from "./runtime.js";

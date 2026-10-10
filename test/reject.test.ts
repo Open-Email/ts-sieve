@@ -177,9 +177,24 @@ test "A" { reject "x"; keep; }
     expect(r.failures.map((f) => f.name)).toEqual(["A"]);
     expect(r.report()).toMatch(/conflicts with the keep action/);
   });
+
+  it("checks a block that ends in stop too", () => {
+    const r = runDovecotInline(`
+require "vnd.dovecot.testsuite";
+require "reject";
+test "A" { reject "x"; keep; stop; }
+`);
+    expect(r.failures.map((f) => f.name)).toEqual(["A"]);
+  });
 });
 
 describe("RuntimeData.clone()", () => {
+  it("carries a vacation that ran into a sub-run's conflict check", () => {
+    const d = exec('require "vacation"; vacation "away";');
+    const s = load('require "reject"; reject "no";', { enabledExtensions: EXT });
+    expect(() => s.execute(d.clone(s))).toThrow(/conflicts with the vacation action/);
+  });
+
   it("carries the refusal into a sub-run", () => {
     const d = exec('require "ereject"; ereject "why";');
     const c = d.clone();
