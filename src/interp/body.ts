@@ -183,12 +183,25 @@ function parseMimeHeader(block: string): Map<string, string> {
   return h;
 }
 
-function splitHeaderBody(b: string): { header: string; body: string } {
-  let idx = b.indexOf("\r\n\r\n");
-  if (idx !== -1) return { header: b.slice(0, idx), body: b.slice(idx + 4) };
-  idx = b.indexOf("\n\n");
-  if (idx !== -1) return { header: b.slice(0, idx), body: b.slice(idx + 2) };
-  return { header: b, body: "" };
+/**
+ * Split an entity at the blank line ending its header, reading line by line so
+ * a part with NO header fields (it starts with the blank line — RFC 2046 §5.1
+ * allows one) keeps its first body line, and a CRLF/LF mix still separates.
+ * `header` excludes the final line break, `headerRaw` keeps it; `sep` says
+ * whether a blank line was found at all (without one, everything is header).
+ */
+function splitHeaderBody(b: string): { header: string; headerRaw: string; body: string; sep: boolean } {
+  let pos = 0;
+  for (;;) {
+    const nl = b.indexOf("\n", pos);
+    if (nl === -1) return { header: b, headerRaw: b, body: "", sep: false };
+    const lineEnd = nl > pos && b.charCodeAt(nl - 1) === 13 /* \r */ ? nl - 1 : nl;
+    if (lineEnd === pos) {
+      const headerRaw = b.slice(0, pos);
+      return { header: headerRaw.replace(/\r?\n$/, ""), headerRaw, body: b.slice(nl + 1), sep: true };
+    }
+    pos = nl + 1;
+  }
 }
 
 // -------- the body test --------
@@ -316,17 +329,13 @@ export class TestBody implements Test {
       let sawClose = false;
       const nested: string[] = [];
       for (let i = 1; i < parts.length; i++) {
-        let p = parts[i]!;
+        const p = parts[i]!;
         if (p.startsWith("--")) {
           sawClose = true;
-          epilogue = p.slice(2);
-          if (epilogue.startsWith("\r\n")) epilogue = epilogue.slice(2);
-          else if (epilogue.startsWith("\n")) epilogue = epilogue.slice(1);
+          epilogue = skipDelimiterLineEnd(p.slice(2));
           break;
         }
-        if (p.startsWith("\r\n")) p = p.slice(2);
-        else if (p.startsWith("\n")) p = p.slice(1);
-        nested.push(p);
+        nested.push(skipDelimiterLineEnd(p));
       }
       // Which fragment ran into the cut: the epilogue when the close marker was
       // found, the last nested part otherwise (or the prologue when no boundary
@@ -364,12 +373,10 @@ export class TestBody implements Test {
     }
 
     if (mediaType === "message/rfc822") {
-      const sep = b.includes("\r\n\r\n") || b.includes("\n\n");
-      const { header, body } = splitHeaderBody(b);
-      const hdrBytes = header + (b.includes("\r\n\r\n") ? "\r\n" : "");
+      const { header, headerRaw, body, sep } = splitHeaderBody(b);
       // No separator found in a cut string ⇒ the header block itself may be a
       // prefix; with a separator, the cut can only fall in the body (the tail).
-      if (process && this.matchOrCount(d, hdrBytes, counter, cut && !sep, flags)) return true;
+      if (process && this.matchOrCount(d, headerRaw, counter, cut && !sep, flags)) return true;
       const h = parseMimeHeader(header);
       return this.walk(d, h.get("content-type") ?? "", h.get("content-transfer-encoding") ?? "", body, counter, cut, flags);
     }
@@ -403,29 +410,53 @@ export class TestBody implements Test {
   }
 }
 
+/**
+ * Split a multipart body at its delimiters: [prologue, ...chunks]. Each chunk
+ * starts right after "--" boundary — so a close starts "--", and a part starts
+ * with the rest of its delimiter line (see skipDelimiterLineEnd).
+ *
+ * One scan for the LF form, taking a CR before it as part of the delimiter:
+ * scanning for CRLF first skipped an earlier bare-LF delimiter in a body with
+ * mixed line endings, merging two parts. A match counts only where it ENDS a
+ * delimiter line (RFC 2046 §5.1.1), so boundary "b" does not split the lines
+ * of a nested part whose boundary is "b-alt", nor a content line "--bye".
+ */
 function splitBoundary(b: string, boundary: string): string[] {
   const dash = `\n--${boundary}`;
-  const dash2 = `\r\n--${boundary}`;
   const parts: string[] = [];
-  let current = b;
-  if (current.startsWith(`--${boundary}`)) {
+  let pos = 0;
+  if (b.startsWith(`--${boundary}`) && delimiterEnds(b, boundary.length + 2)) {
     parts.push("");
-    current = current.slice(boundary.length + 2);
+    pos = boundary.length + 2;
   }
   for (;;) {
-    let idx = current.indexOf(dash2);
+    let idx = b.indexOf(dash, pos);
+    while (idx !== -1 && !delimiterEnds(b, idx + dash.length)) idx = b.indexOf(dash, idx + 1);
     if (idx === -1) {
-      idx = current.indexOf(dash);
-      if (idx === -1) {
-        parts.push(current);
-        break;
-      }
-      parts.push(current.slice(0, idx));
-      current = current.slice(idx + dash.length);
-    } else {
-      parts.push(current.slice(0, idx));
-      current = current.slice(idx + dash2.length);
+      parts.push(b.slice(pos));
+      return parts;
     }
+    const end = idx > pos && b.charCodeAt(idx - 1) === 13 /* \r */ ? idx - 1 : idx;
+    parts.push(b.slice(pos, end));
+    pos = idx + dash.length;
   }
-  return parts;
+}
+
+/** Whether the text at `end`, right after a boundary, can end a delimiter
+ * line: the closing "--", transport padding, the line break, or the end of the
+ * input. A lone "-" cannot ("b-alt" is another boundary). */
+function delimiterEnds(b: string, end: number): boolean {
+  if (end >= b.length) return true;
+  const c = b.charCodeAt(end);
+  if (c === 13 || c === 10 || c === 32 || c === 9) return true;
+  return c === 45 /* - */ && b.charCodeAt(end + 1) === 45;
+}
+
+/** Drop a delimiter line's transport padding (LWSP) and line break. */
+function skipDelimiterLineEnd(p: string): string {
+  let i = 0;
+  while (i < p.length && (p.charCodeAt(i) === 32 || p.charCodeAt(i) === 9)) i++;
+  if (p.charCodeAt(i) === 13 && p.charCodeAt(i + 1) === 10) return p.slice(i + 2);
+  if (p.charCodeAt(i) === 10) return p.slice(i + 1);
+  return i > 0 ? p.slice(i) : p;
 }
