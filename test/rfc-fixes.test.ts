@@ -497,12 +497,45 @@ describe("RFC 5229 §3 namespace references are checked at load", () => {
   }
 
   it("reports where the reference is", () => {
+    let err: unknown;
     try {
       compile('require ["fileinto","variables"];\nfileinto "${foo.bar}";');
-      expect.unreachable();
     } catch (e) {
-      expect((e as { line?: number }).line).toBe(2);
+      err = e;
     }
+    expect(err).toMatchObject({ line: 2, col: 10 });
+  });
+
+  it("is case-insensitive in the namespace", () => {
+    expect(() => compile('require ["fileinto","variables"]; fileinto "${ENVELOPE.from}";')).toThrow(
+      /needs require "envelope"/,
+    );
+  });
+
+  it("checks after encoded-character decoding", () => {
+    expect(() =>
+      compile('require ["fileinto","variables","encoded-character"]; fileinto "${hex:24}{foo.bar}";'),
+    ).toThrow(/unknown namespace "foo"/);
+    expect(() => compile('require ["fileinto","variables"]; fileinto "${hex:24}{foo.bar}";')).not.toThrow();
+  });
+
+  it("expands the envelope namespace once envelope is required", () => {
+    expect(
+      run('require ["fileinto","variables","envelope"]; fileinto "${envelope.from}";', eml, { from: "a@b.example" }),
+    ).toEqual(R({ fileinto: ["a@b.example"] }));
+  });
+
+  // RFC 5228 §3.2 puts require first, which this interpreter does not enforce:
+  // a late require "variables" slips past the load check (nothing is checked
+  // while variables is not yet required), so the runtime must not hand out
+  // envelope data the script never required either.
+  it("a late require \"variables\" reads nothing from an unrequired envelope", () => {
+    expect(
+      run('require "fileinto"; fileinto "x${envelope.from}y"; require "variables";', eml, { from: "a@b.example" }),
+    ).toEqual(R({ fileinto: ["xy"] }));
+    expect(run('require "fileinto"; fileinto "x${foo.bar}y"; require "variables";', eml)).toEqual(
+      R({ fileinto: ["xy"] }),
+    );
   });
 
   const accepted = [
