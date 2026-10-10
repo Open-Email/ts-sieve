@@ -159,18 +159,9 @@ export class AddressTest implements Test {
       for (const value of values) {
         const cleanValue = stripRFC2822Comments(value);
 
-        const trimmed = cleanValue.trim();
-        const bareAngle =
-          trimmed.startsWith("<") &&
-          trimmed.endsWith(">") &&
-          (trimmed.match(/</g) ?? []).length === 1 &&
-          (trimmed.match(/>/g) ?? []).length === 1;
-        if (bareAngle) {
-          if (this.matcher.isCount()) continue;
-          if (probe(cleanValue)) return true;
-          continue;
-        }
-
+        // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
+        // §3.4: name-addr = [display-name] angle-addr), and a non-ASCII local
+        // part is accepted in it as in every other form (RFC 6532).
         let addrList: { address: string }[];
         try {
           addrList = parseAddressList(cleanValue);
