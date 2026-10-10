@@ -171,7 +171,9 @@ on them and this one follows the RFC strictly:
 - **Errors throw** (`SieveError` with `line`/`col`) rather than being returned
   alongside a value.
 - The address-list parser is a compact RFC 5322 subset (no external MIME
-  dependency); unparseable values fall back to literal matching.
+  dependency): display-name and bare `<addr>` forms, quoted names, and groups,
+  whose members are matched and whose name never is (RFC 5228 §5.1);
+  unparseable values fall back to literal matching.
 
 ## Known limitations
 
@@ -202,7 +204,10 @@ layer; `rfc-fixes.test.ts` pins the RFC-correctness behaviours listed above.
 
 ### Dovecot Pigeonhole conformance corpus
 
-`test/dovecot/` runs the Dovecot Pigeonhole `.svtest` corpus through the
+`test/dovecot/` runs the Dovecot Pigeonhole `.svtest` corpus (and its
+`.svtest.in` templates verbatim, which leaves their `#UTF8#` lines as comments:
+three assertions that a non-ASCII local part is invalid, which this RFC 6532
+interpreter does not share) through the
 `vnd.dovecot.testsuite` DSL — the gold-standard validation that stress-tests
 every extension far beyond the focused unit fixtures. The corpus is **vendored**
 under `test/corpus-src/tests/` as a pinned snapshot of the LGPL-licensed upstream
@@ -220,6 +225,6 @@ action-result DSL this interpreter does not implement
 (`test_result_execute`/`test_message`), or a
 Pigeonhole-only feature (`test_error` detail counts, `test_config_set` keys other
 than `sieve_variables_max_variable_size`, the imap4flags variable-name form) are
-skipped with a recorded reason. **42 in-scope corpus files pass**, covering core,
+skipped with a recorded reason. **43 in-scope corpus files pass**, covering core,
 comparators, match-types, and the `body`, `date`, `encoded-character`, `envelope`,
 `index`, `regex`, `relational`, `subaddress`, and `variables` extensions.
