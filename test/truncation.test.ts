@@ -398,7 +398,7 @@ describe("multipart structure over a cut body", () => {
     // Full: "\r\n--b--" closes the part, whose content is just "abc".
     const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-");
     expect(run('require "body"; if body :content "text/plain" :contains "--b-" { keep; }', cut, CUT)).toEqual(unknown);
-    expect(run('require "body"; if body :content "text/plain" :contains "abc\\r\\n" { keep; }', cut, CUT)).toEqual(
+    expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
       unknown,
     );
     // What the prefix does prove still matches.
