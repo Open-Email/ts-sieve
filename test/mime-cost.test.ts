@@ -8,7 +8,7 @@
 // reads only the text before the first ";", and each part examined and each
 // value read costs steps.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
 import { ALL_EXTENSIONS, parseEml, run } from "./harness.js";
 
@@ -27,6 +27,24 @@ function chain(depth: number, leaves: number, bigLen: number): string {
   return `From: a@x\r\nTo: b@y\r\nSubject: hi\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
 }
 
+// These runs are heavy, and slower still under CI's coverage instrumentation.
+vi.setConfig({ testTimeout: 60_000 });
+
+/** The wall-clock bound for the cases that took 6–26 s before their fix:
+ * loose enough for an instrumented CI run, far below the regression. Cheaper
+ * defences are pinned by the steps they charge (stepsOf), not by time. */
+const SLOW = 5000;
+
+/** The steps one execution consumes, with a budget it cannot exhaust. */
+function stepsOf(script: string, eml: string): number {
+  const LIMIT = 100_000_000;
+  const { headers, size, body } = parseEml(eml);
+  const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: LIMIT, maxMatchInputLength: 16 * 1024 });
+  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+  s.execute(d);
+  return LIMIT - d.budget.remaining;
+}
+
 function within(ms: number, f: () => unknown): void {
   const t0 = performance.now();
   f();
@@ -38,19 +56,19 @@ describe("loops over a deep tree with a huge header value", () => {
   const req = 'require ["mime","foreverypart","fileinto"];';
 
   it("two nested loops, :anychild :contenttype", () => {
-    within(2000, () =>
+    within(SLOW, () =>
       run(`${req} foreverypart { foreverypart { if header :mime :anychild :contenttype "content-type" "application/pdf" { fileinto "A"; } } } fileinto "After";`, big, CORE),
     );
   });
 
   it("three nested loops, :type", () => {
-    within(2000, () =>
+    within(SLOW, () =>
       run(`${req} foreverypart { foreverypart { foreverypart { if header :mime :type "content-type" "application" { fileinto "A"; } } } } fileinto "After";`, big, CORE),
     );
   });
 
   it("the default MIMEOPT decodes each value once, however many loops read it", () => {
-    within(2000, () =>
+    within(SLOW, () =>
       run(`${req} foreverypart { foreverypart { if header :mime :anychild :contains "content-type" "pdf" { fileinto "A"; } } } fileinto "After";`, big, CORE),
     );
   });
@@ -66,7 +84,7 @@ describe("each kind of work is charged on its own", () => {
     body += `--b98\r\nContent-Type: text/plain; x="=?utf-8?Q?${"=41".repeat(330_000)}?="\r\n\r\nx\r\n`;
     for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
     const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
-    within(1500, () =>
+    within(SLOW, () =>
       run(`${req} foreverypart { foreverypart { if header :mime :anychild :param "x" "content-type" "zz" { fileinto "A"; } } } fileinto "After";`, eml, CORE),
     );
   });
@@ -77,20 +95,21 @@ describe("each kind of work is charged on its own", () => {
     body += `--b98\r\nContent-Type: text/plain\r\nX-Big: ${"a".repeat(1_000_000)}@b\r\n\r\nx\r\n`;
     for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
     const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
-    within(600, () =>
-      run(`${req} foreverypart { foreverypart { foreverypart { if address :mime :is "x-big" "z@b" { fileinto "A"; } } } } fileinto "After";`, eml, CORE),
-    );
+    // One read of the 1 MB value: a step per 64 characters.
+    expect(stepsOf('require "mime"; if address :mime :anychild :is "x-big" "z@b" { keep; }', eml)).toBeGreaterThan(1_000_000 >> 6);
   });
 });
 
 describe("many parts, four nested loops", () => {
   it("absent headers are still charged per part", () => {
     const small = chain(98, 200, 0);
+    // Every part in scope costs a step: one :anychild test over ~300 parts.
+    expect(stepsOf('require "mime"; if exists :mime :anychild "x-none" { keep; }', small)).toBeGreaterThan(290);
     const names = Array.from({ length: 8 }, (_, i) => `"x-none-${i}"`).join(",");
     const script = `require ["mime","foreverypart","fileinto"];
       foreverypart { foreverypart { foreverypart { foreverypart { if header :mime :anychild :contains [${names}] "z" { fileinto "A"; } } } } }
       fileinto "After";`;
-    within(1000, () => expect(run(script, small, CORE).fileinto).toEqual(["After"]));
+    within(SLOW, () => expect(run(script, small, CORE).fileinto).toEqual(["After"]));
   });
 });
 
@@ -119,7 +138,7 @@ describe("what loops can make an execution hold", () => {
     const script = `require ["foreverypart","mime","variables","fileinto"];
       if header :matches "subject" "*" { set "a" "\${1}"; }
       foreverypart { foreverypart { if string :is "${refs}" "zz" { fileinto "A"; } } } fileinto "After";`;
-    within(2000, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
+    within(SLOW, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
   });
 
   it("the fold cache holds a bounded amount", () => {
@@ -145,7 +164,7 @@ describe("what loops can make an execution hold", () => {
       // Every read replayed the whole edit list, copying the result per add:
       // quadratic per read and uncharged, multiplied by the loops (20 s).
       const script = `require ["foreverypart","mime","fileinto","editheader","relational","comparator-i;ascii-numeric"]; ${body} fileinto "After";`;
-      within(1500, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
+      within(SLOW, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
     });
   }
 
