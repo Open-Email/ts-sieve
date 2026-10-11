@@ -249,6 +249,19 @@ function repeatedWithin(ms: number, times: number, f: () => void): void {
   expect(performance.now() - t0).toBeLessThan(ms);
 }
 
+/** The patterns indexOf was asked to find in `body` while `f` ran, in order.
+ * (The spy's record is cleared when it is restored, so it is read first.) */
+function searchedIn(body: string, f: () => void): string[] {
+  const indexOf = vi.spyOn(String.prototype, "indexOf");
+  try {
+    f();
+    const { calls, contexts } = indexOf.mock;
+    return calls.filter((_, k) => String(contexts[k]) === body).map(([pattern]) => String(pattern));
+  } finally {
+    indexOf.mockRestore();
+  }
+}
+
 describe("the splitter's cost", () => {
   it("searches a part for a short boundary whole: one indexOf, not one per line", () => {
     // indexOf skips most of these 4 MB when it looks for the whole delimiter
@@ -260,19 +273,36 @@ describe("the splitter's cost", () => {
     const boundary = "0123456789abcdefghijklmnopqrstuv";
     const part = "\r\n".repeat(3 << 19) + "\r\n--".repeat(1 << 18);
     const body = `--${boundary}\r\n\r\n${part}\r\n--${boundary}--\r\n`;
-    const indexOf = vi.spyOn(String.prototype, "indexOf");
-    let parts: string[];
-    let reads: number;
-    try {
-      parts = splitMultipart(body, boundary, false).parts.map((p) => p.body);
-      reads = indexOf.mock.contexts.filter((c) => String(c) === body).length;
-    } finally {
-      indexOf.mockRestore();
-    }
+    let parts: string[] = [];
+    const searched = searchedIn(body, () => (parts = splitMultipart(body, boundary, false).parts.map((p) => p.body)));
     expect(parts).toEqual([part]);
-    // At least one, so the count sees the search; the rest read its lines.
-    expect(reads).toBeGreaterThan(0);
-    expect(reads).toBeLessThan(10);
+    // One search for the whole delimiter, by indexOf; the rest read lines.
+    expect(searched.filter((p) => p === `\r\n--${boundary}`)).toHaveLength(1);
+    expect(searched.length).toBeLessThan(10);
+  });
+
+  it("hands indexOf the whole delimiter up to 250 bytes, and no more of a longer one", () => {
+    // V8's indexOf finds a pattern of up to 250 bytes in linear time, and
+    // past that in time that grows with the pattern (#68): 0.005 ms a
+    // megabyte of near-matches of a 246-byte boundary, 0.3 ms of a 247-byte
+    // one, 500 ms of a 4091-byte one. A head of 300 bytes took 31 times the
+    // time of one of 246 over near-matches of that head, one of 1000, 290.
+    for (const [length, whole] of [
+      [246, true],
+      [247, false],
+      [4091, false],
+    ] as const) {
+      const boundary = "q".repeat(length);
+      const near = `\r\n--${boundary.slice(0, -1)}#`;
+      const body = `--${boundary}\r\n\r\n${near.repeat(8)}\r\n--${boundary}--\r\n`;
+      let parts: string[] = [];
+      const searched = searchedIn(body, () => (parts = splitMultipart(body, boundary, false).parts.map((p) => p.body)));
+      expect(parts).toEqual([near.repeat(8)]);
+      const longest = Math.max(...searched.map((p) => p.length));
+      expect(longest, `${length}`).toBeGreaterThan(100);
+      expect(longest, `${length}`).toBeLessThanOrEqual(250);
+      expect(searched.filter((p) => p === `\r\n--${boundary}`), `${length}`).toHaveLength(whole ? 1 : 0);
+    }
   });
 
   it("is linear in a part full of near-matches of a long boundary", () => {
