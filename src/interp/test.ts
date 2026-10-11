@@ -322,6 +322,8 @@ export class EnvelopeTest implements Test {
 }
 
 export class ExistsTest implements Test {
+  /** It sets no captures (see setsCaptures). */
+  readonly setsCaptures = false;
   /** RFC 5703 §4.3 :mime / :anychild; null without :mime. */
   mime: MimeOpts | null = null;
 
@@ -351,12 +353,16 @@ export class ExistsTest implements Test {
 }
 
 export class FalseTest implements Test {
+  /** It sets no captures (see setsCaptures). */
+  readonly setsCaptures = false;
   check(): boolean {
     return false;
   }
 }
 
 export class TrueTest implements Test {
+  /** It sets no captures (see setsCaptures). */
+  readonly setsCaptures = false;
   check(): boolean {
     return true;
   }
@@ -453,7 +459,8 @@ function countOver(d: RuntimeData, matcher: MatcherTest, count: number, open: bo
 // guess. Only when no member decides does the unknown surface.
 
 /** Whether a test can leave captures the script sees: the body test restores
- * its own. A test that does not say is assumed to. */
+ * its own, exists, size and the like set none, and not, allof and anyof answer
+ * for their members. A test that does not say is assumed to. */
 export function setsCaptures(t: Test): boolean {
   return (t as { setsCaptures?: boolean }).setsCaptures !== false;
 }
@@ -476,6 +483,10 @@ function member(d: RuntimeData, t: Test): Tri {
 
 export class NotTest implements Test {
   constructor(public test: Test) {}
+  /** Its test's (see setsCaptures). */
+  get setsCaptures(): boolean {
+    return setsCaptures(this.test);
+  }
   check(d: RuntimeData): Tri {
     const r = this.test.check(d);
     return r === "unknown" ? "unknown" : !r;
@@ -484,6 +495,10 @@ export class NotTest implements Test {
 
 export class AllOfTest implements Test {
   constructor(public tests: Test[]) {}
+  /** Whether a member may (see setsCaptures). */
+  get setsCaptures(): boolean {
+    return this.tests.some(setsCaptures);
+  }
   check(d: RuntimeData): Tri {
     let unknown = false;
     for (const t of this.tests) {
@@ -497,6 +512,10 @@ export class AllOfTest implements Test {
 
 export class AnyOfTest implements Test {
   constructor(public tests: Test[]) {}
+  /** Whether a member may (see setsCaptures). */
+  get setsCaptures(): boolean {
+    return this.tests.some(setsCaptures);
+  }
   check(d: RuntimeData): Tri {
     let unknown = false;
     for (const t of this.tests) {
@@ -546,6 +565,8 @@ export class HasFlagTest implements Test {
 }
 
 export class SizeTest implements Test {
+  /** It sets no captures (see setsCaptures). */
+  readonly setsCaptures = false;
   constructor(
     public size: number,
     public over: boolean,

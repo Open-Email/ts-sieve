@@ -221,9 +221,14 @@ export class CmdDovecotTestSet implements Cmd {
       case "envelope.auth":
         d.envelope = new EnvelopeStatic(d.envelope.envelopeFrom(), d.envelope.envelopeTo(), value);
         break;
-      default:
-        // Any other name: store the RAW value (no lowercase, no length check).
-        d.variables.set(this.variableName, this.variableValue);
+      default: {
+        // Any other name: store the RAW value (no length check), under the
+        // name as variables reads it, and whole: no mark left from an
+        // earlier value (#62).
+        const name = this.variableName.toLowerCase();
+        d.variables.set(name, this.variableValue);
+        d.varMarks.delete(name);
+      }
     }
   }
 }
