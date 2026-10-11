@@ -17,7 +17,7 @@ import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
 import { type MimeOpts, partHeader } from "./mime.js";
-import type { RuntimeData, Test, Tri } from "./runtime.js";
+import { doubtCaptures, type RuntimeData, type Test, type Tri } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
 /** RFC 5260 §6 `:index`/`:last` — select the indexth field instance (1-based). */
@@ -444,7 +444,10 @@ export class AllOfTest implements Test {
     for (const t of this.tests) {
       const r = t.check(d);
       if (r === false) return false;
-      if (r === "unknown") unknown = true;
+      if (r === "unknown") {
+        unknown = true;
+        doubtCaptures(d);
+      }
     }
     return unknown ? "unknown" : true;
   }
@@ -457,7 +460,10 @@ export class AnyOfTest implements Test {
     for (const t of this.tests) {
       const r = t.check(d);
       if (r === true) return true;
-      if (r === "unknown") unknown = true;
+      if (r === "unknown") {
+        unknown = true;
+        doubtCaptures(d);
+      }
     }
     return unknown ? "unknown" : false;
   }
