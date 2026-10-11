@@ -366,6 +366,18 @@ describe("a first part whose header runs over the budget: where core's reader st
     expect(child(body, ':matches "START*"')).toEqual(YES);
   });
 
+  it("a CR at the end of the piece that runs the budget out is read, but the piece was buffered whole", () => {
+    const body = filled("--b\r\nX-A: ", 1_250_000, [[at - 1, "\r"], [at, "START"]]);
+    expect(child(body, ':matches "START*"')).toEqual(YES);
+  });
+
+  it("short lines that run the budget out on the body's last line: the reader read everything", () => {
+    // "X-Pad: 1" costs 10, each folded line 73: the 14364th runs it out.
+    let body = "--b\r\nX-Pad: 1\r\n";
+    for (let i = 0; i < 14364; i++) body += ` ${"a".repeat(70)}\r\n`;
+    expect(bodyTest('body :content "text/plain" :is ""', body)).toEqual(YES);
+  });
+
   it("short lines: where the reader stopped hangs on its buffering, so the child's text is unknown", () => {
     let body = "--b\r\nX-Pad: 1\r\n";
     while (body.length < 1_150_000) body += ` ${"a".repeat(70)}\r\n`;
