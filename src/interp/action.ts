@@ -82,23 +82,31 @@ export class CmdStop implements Cmd {
   }
 }
 
-/** Each list's members, for addOnce. */
+/** Each list's members, by the key the list is read with (see memberSet). */
 const members = new WeakMap<string[], Set<string>>();
 
 /**
- * Append v to list: "added", or "held" when it is there, or "full" when it is
- * not and the list holds `max`. A Set answers, not a scan of the list: in a
+ * The keys of a list's members, answering membership without a scan: in a
  * loop, a message can drive fileinto to 100,000 distinct names, and scanning
- * for each took 37 s at core's options. The Set is rebuilt when the list's
- * length shows it changed outside this function (a host, or a clone, may push
- * to it or replace it).
+ * for each took 37 s at core's options. Rebuilt when the list's length shows
+ * it changed outside the commands that append to it (a host, or a clone, may
+ * push to it or replace it). A list is always read with the same `key`.
  */
-function addOnce(list: string[], v: string, max = Number.POSITIVE_INFINITY): "added" | "held" | "full" {
+function memberSet(list: string[], key: (v: string) => string): Set<string> {
   let seen = members.get(list);
   if (seen === undefined || seen.size !== list.length) {
-    seen = new Set(list);
+    seen = new Set(list.map(key));
     members.set(list, seen);
   }
+  return seen;
+}
+
+const same = (v: string) => v;
+
+/** Append v to list: "added", or "held" when it is there, or "full" when it is
+ * not and the list holds `max`. */
+function addOnce(list: string[], v: string, max = Number.POSITIVE_INFINITY): "added" | "held" | "full" {
+  const seen = memberSet(list, same);
   if (seen.has(v)) return "held";
   if (list.length >= max) return "full";
   seen.add(v);
@@ -114,6 +122,9 @@ export class CmdFileInto implements Cmd {
 
   execute(d: RuntimeData): void {
     const mailbox = expandVars(d, this.mailbox);
+    // A repeat files nothing new (RFC 5228 §2.10.3), but its :create and
+    // :flags apply as a first fileinto's would: the last flag list wins (RFC
+    // 5232 §5).
     const added = addOnce(d.mailboxes, mailbox, d.script.opts.maxFileintos);
     if (added === "full") {
       // Dropped, with nothing else it would have done: inside a loop the
@@ -122,8 +133,6 @@ export class CmdFileInto implements Cmd {
       return;
     }
     if (!this.copy) d.implicitKeep = false;
-    // Filed once (RFC 5228 §2.10.3): :create and :flags are the first's.
-    if (added === "held") return;
     if (this.create) addOnce(d.mailboxesCreate, mailbox);
     if (this.flags !== null) {
       const flags = expandVarsList(d, this.flags);
@@ -134,15 +143,16 @@ export class CmdFileInto implements Cmd {
 }
 
 /**
- * The address a redirect names, to tell a repeat: the addr-spec inside angle
- * brackets when there are any, its domain lowercased. The local part is the
- * receiving domain's to interpret, and is not folded.
+ * What tells a redirect address's repeats: a bare address, its domain
+ * lowercased (the local part is the receiving domain's to interpret). Anything
+ * else, a display name, angle brackets, a quoted local part, a comment or a
+ * group, is its own key: reading those by slicing merged different addresses,
+ * and a host may read only the bare form, so a merge that keeps the other
+ * spelling can lose the recipient. A missed merge costs one more target.
  */
 function redirectKey(addr: string): string {
-  let a = addr.trim();
-  const lt = a.indexOf("<");
-  const gt = a.lastIndexOf(">");
-  if (lt !== -1 && gt > lt) a = a.slice(lt + 1, gt).trim();
+  const a = addr.trim();
+  if (/[\s<>"()\\,;:[\]]/.test(a)) return addr;
   const at = a.lastIndexOf("@");
   return at === -1 ? a : a.slice(0, at) + a.slice(at).toLowerCase();
 }
@@ -150,14 +160,19 @@ function redirectKey(addr: string): string {
 export class CmdRedirect implements Cmd {
   addr = "";
   copy = false; // RFC 3894 :copy
+  /** redirectKey(addr), for when the address is the literal itself. */
+  private literalKey: string | null = null;
 
   execute(d: RuntimeData): void {
     const addr = expandVars(d, this.addr);
     // An address is redirected to once (as in Pigeonhole), and a repeat is no
     // new target: a loop redirecting once per matching part is not limited by
-    // how many match. The host's policy is not asked again; it may count.
-    const key = redirectKey(addr);
-    if (d.redirectAddr.some((a) => redirectKey(a) === key)) {
+    // how many match. The host's policy is not asked again for an address it
+    // allowed (one it refused is held nowhere, and is asked again).
+    // A literal's key is computed once; an expansion was charged by its size.
+    const key = addr === this.addr ? (this.literalKey ??= redirectKey(addr)) : redirectKey(addr);
+    const held = memberSet(d.redirectAddr, redirectKey);
+    if (held.has(key)) {
       if (!this.copy) d.implicitKeep = false;
       return;
     }
@@ -168,6 +183,7 @@ export class CmdRedirect implements Cmd {
       return;
     }
     if (!d.policy.redirectAllowed(d, addr)) return;
+    held.add(key);
     d.redirectAddr.push(addr);
     if (!this.copy) d.implicitKeep = false;
   }

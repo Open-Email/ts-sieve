@@ -52,8 +52,8 @@ d.redirectAddr;  // []
 `load()` throws a `SieveError` (with `line`/`col` when known) on any lex, parse,
 or load failure — including a `require` for an extension you did not enable —
 so a user uploading a script learns exactly what won't run *before* mail
-arrives. `execute()` throws `SieveError` on runtime errors (too many
-redirects, a `maxExecSteps` smaller than the script's own commands, …); treat
+arrives. `execute()` throws `SieveError` on runtime errors (conflicting
+reject actions, a `maxExecSteps` smaller than the script's own commands, …); treat
 that as "script failed, fall back to implicit keep". Because a throw skips every
 rule, message content must not cause one: the `body` test does not throw on
 malformed MIME (broken transfer encodings decode leniently, and structure past
@@ -64,9 +64,11 @@ runs; if the expanded text does not compile, or is past the pattern-length
 cap, the comparison is "unknown" rather than an error. An `envelope`
 envelope-part built from a variable that names no part the test reads has no
 value, like a missing header. No other value from the message is known to
-reach a throw; the runtime errors left (too many redirects, conflicting
-reject actions, a `maxExecSteps` below the commands a run dispatches) are the
-script's own, reached by the branches a message picks.
+reach a throw; the runtime errors left (conflicting reject actions, a
+`maxExecSteps` below the commands a run dispatches) are the script's own,
+reached by the branches a message picks, except that inside a `foreverypart`
+loop a message decides how many rejects run (#49). Past `maxRedirects` or
+`maxFileintos` a target is dropped and disclosed, not thrown.
 
 ### What the host implements
 
@@ -84,7 +86,7 @@ script's own, reached by the branches a message picks.
 | `implicitKeep` | `true` unless a canonical action (`fileinto`/`redirect`/`discard` without `:copy`, `reject`/`ereject`) cancelled it. If `implicitKeep \|\| keep`, deliver to INBOX. |
 | `keep` | An explicit `keep;` ran. |
 | `mailboxes` / `mailboxesCreate` | `fileinto` targets (deduped, at most `maxFileintos`); the subset flagged `:create` (RFC 5490) should be auto-created. |
-| `redirectAddr` | `redirect` targets that passed your policy: one per address (display name, angle brackets and the domain's case aside), at most `maxRedirects`. A repeat is not shown to the policy again. |
+| `redirectAddr` | `redirect` targets that passed your policy: one per address (a bare address's domain case aside; any other form is its own spelling), at most `maxRedirects`. An address the policy allowed is not shown to it again; one it refused is asked again. |
 | `flags` | The final IMAP flag set (RFC 5232), canonicalised: lowercased, deduped, sorted. |
 | `headerEdits` | The RFC 5293 `addheader`/`deleteheader` ledger. Tests inside the script already see the edits; apply the ledger yourself if the *stored* message should change. An added value holds no CR, LF or NUL, but is otherwise as the script built it: fold and encode it when you serialise it (it may pass RFC 5322's 998-octet line limit, carry non-ASCII text, or Unicode separators such as U+2028). |
 | `indeterminate` | An "unknown" decided a branch: a comparison over a cut input, structure past the MIME caps, a key that did not compile, or a test out of its budget share. Also set when a variable's value was cut to `maxVariableLen` (it holds a prefix with nothing to say so; a `set` of a literal, with no `${…}`, is cut the same way on every message and is not disclosed), and when a `fileinto` or `redirect` past its limit was dropped. The actions are a best-effort reading: refuse the irreversible ones (discard, redirect without keep, reject) and let the rest stand. |

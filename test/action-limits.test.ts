@@ -74,9 +74,8 @@ describe("redirect", () => {
     expect(run(script, parts(20))).toEqual(R({ redirect: ["sec@x.com"], fileinto: ["After"] }));
   });
 
-  it("an address is the same whatever its display name, brackets or domain case", () => {
-    const script = 'redirect "stephan@example.com"; redirect "Stephan Bosch <stephan@EXAMPLE.com>"; redirect " <stephan@example.com> ";';
-    expect(run(script).redirect).toEqual(["stephan@example.com"]);
+  it("an address is the same whatever its domain's case", () => {
+    expect(run('redirect "stephan@example.com"; redirect "stephan@EXAMPLE.com";').redirect).toEqual(["stephan@example.com"]);
     // The local part is the receiving domain's to interpret: not folded.
     expect(run('redirect "a@x.com"; redirect "A@x.com";').redirect).toEqual(["a@x.com", "A@x.com"]);
   });
@@ -116,5 +115,87 @@ describe("a repeated fileinto", () => {
   it("without :copy still cancels the implicit keep", () => {
     const r = run('require ["fileinto","copy"]; fileinto :copy "A"; fileinto "A";');
     expect([r.fileinto, r.implicitKeep]).toEqual([["A"], false]);
+  });
+});
+
+/** Run a script with no message, returning the RuntimeData. */
+function exec(script: string, opts: { maxFileintos?: number; maxRedirects?: number } = {}): RuntimeData {
+  const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...opts });
+  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(0, new Map(), null));
+  s.execute(d);
+  return d;
+}
+
+describe("a repeat at the limit, and :copy", () => {
+  it("a fileinto repeat at the limit is held, not dropped", () => {
+    const d = exec('require ["fileinto"]; fileinto "A"; fileinto "B"; fileinto "A";', { maxFileintos: 2 });
+    expect([d.mailboxes, d.indeterminate]).toEqual([["A", "B"], false]);
+  });
+
+  it("a redirect repeat at the limit is held, not dropped", () => {
+    const d = exec('redirect "a@x.com"; redirect "a@x.com";', { maxRedirects: 1 });
+    expect([d.redirectAddr, d.indeterminate]).toEqual([["a@x.com"], false]);
+  });
+
+  it("a redirect dropped at the limit leaves the implicit keep standing", () => {
+    const d = exec('require ["copy"]; redirect :copy "a@x.com"; redirect "b@x.com";', { maxRedirects: 1 });
+    expect([d.redirectAddr, d.implicitKeep, d.indeterminate]).toEqual([["a@x.com"], true, true]);
+  });
+
+  it("a repeat with :copy leaves the implicit keep standing", () => {
+    expect(exec('require ["copy"]; redirect :copy "a@x.com"; redirect :copy "a@x.com";').implicitKeep).toBe(true);
+    expect(exec('require ["fileinto","copy"]; fileinto :copy "A"; fileinto :copy "A";').implicitKeep).toBe(true);
+  });
+});
+
+describe("a repeated fileinto's side effects (RFC 5232 §5: the last flag list wins)", () => {
+  it(":flags", () => {
+    const d = exec('require ["fileinto","imap4flags"]; fileinto :flags "A" "X"; fileinto :flags "B" "X";');
+    expect([d.mailboxes, d.flags]).toEqual([["X"], ["b"]]);
+  });
+
+  it(":create", () => {
+    const d = exec('require ["fileinto","mailbox"]; fileinto "X"; fileinto :create "X";');
+    expect([d.mailboxes, d.mailboxesCreate]).toEqual([["X"], ["X"]]);
+  });
+});
+
+describe("which redirect addresses are the same", () => {
+  it("surrounding space and the domain's case aside", () => {
+    expect(exec('redirect " a@x.com "; redirect "a@X.COM";').redirectAddr).toEqual([" a@x.com "]);
+  });
+
+  it("anything that is not a bare address is its own: a wrong merge would drop a recipient", () => {
+    // Quoted local parts holding <, > or @, a comment, group syntax.
+    const q = String.fromCharCode(92, 34); // \" in the Sieve literal: a quote in the value
+    const pairs = [
+      [`${q}a<b>${q}@x.com`, `${q}z<b>${q}@y.com`],
+      ["a@x.com (<b@y.com>)", "b@y.com"],
+      ["g: <a@x.com>;", "a@x.com"],
+      [`${q}a@B${q}@x.com`, `${q}a@b${q}@x.com`],
+      // A display name: core reads only bare addresses, so the bare one must stay.
+      ["Boss <boss@corp.com>", "boss@corp.com"],
+      // Only a bare address is folded: any other form is its own spelling.
+      ["Bob <a@X.com>", "Bob <a@x.com>"],
+    ];
+    for (const [a, b] of pairs) expect(exec(`redirect "${a}"; redirect "${b}";`).redirectAddr).toHaveLength(2);
+  });
+
+  it("a repeat's check does not re-read every address held", () => {
+    // Five 16,000-character addresses held, then a loop redirecting to one of
+    // them: each repeat computed a key per held address and for its own, all
+    // uncharged.
+    const long = (i: number) => `${"a".repeat(16_000)}${i}@x.com`;
+    const held = Array.from({ length: 5 }, (_, i) => `redirect "${long(i)}";`).join(" ");
+    let body = "";
+    for (let i = 1; i <= 99; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
+    body += "--b99\r\nContent-Type: text/plain\r\n\r\nx\r\n";
+    for (let i = 99; i >= 0; i--) body += `--b${i}--\r\n`;
+    const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+    const script = `require ["foreverypart"]; ${held} foreverypart { foreverypart { foreverypart { redirect "${long(0)}"; } } }`;
+    const t0 = performance.now();
+    run(script, eml, { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } });
+    // 920 ms before, 75 ms after: loose enough for an instrumented CI run.
+    expect(performance.now() - t0).toBeLessThan(450);
   });
 });

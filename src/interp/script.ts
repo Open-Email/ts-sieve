@@ -19,10 +19,11 @@ export interface Options {
   /** Interp: max distinct redirect addresses per message (default 5). A
    * redirect past it is dropped and sets indeterminate. */
   maxRedirects?: number;
-  /** Interp: max distinct fileinto targets per message (default 32, as
-   * Pigeonhole's sieve_max_actions). A fileinto past it is dropped and sets
-   * indeterminate: inside a foreverypart loop the message decides how many
-   * targets a script files into. */
+  /** Interp: max distinct fileinto targets per message (default 32, the
+   * default of Pigeonhole's sieve_max_actions, which counts every action and
+   * fails the script past it; 0 allows none). A fileinto past it is dropped
+   * and sets indeterminate: inside a foreverypart loop the message decides how
+   * many targets a script files into. */
   maxFileintos?: number;
   maxVariableCount?: number;
   maxVariableNameLen?: number;
