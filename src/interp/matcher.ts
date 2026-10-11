@@ -218,9 +218,8 @@ export class MatcherTest {
    * null when that does not compile. The text can come from the message, and a
    * throw here would end execute(), which a host's fail-open turns into "skip
    * every rule"; the caller reads null as "unknown" instead. The length cap
-   * still applies to an expanded key. The step budget charges one step per VM
-   * thread visit, but a character class is one instruction however many
-   * ranges it scans, so the pattern's length is what bounds the work per step.
+   * still applies to an expanded key: it bounds what the compiler builds and
+   * the work each VM step does.
    */
   private runtimeKey(d: RuntimeData, i: number): { re: CompiledRegex | null; pattern: string } {
     const key = this.key[i]!;

@@ -48,24 +48,37 @@ describe("regex engine", () => {
     expect(compileRegex("b$").findSubmatch("aaaaaaa" + "b", { maxInputLength: 8 })).not.toBeNull();
   });
 
-  it("character-class with hundreds of duplicate ranges matches linearly fast", () => {
-    const pattern = `[^${"\\W".repeat(400)}]{900}`;
-    const subject = "a".repeat(16 * 1024);
-    const t0 = performance.now();
-    const res = compileRegex(pattern).findSubmatch(subject);
-    const elapsed = performance.now() - t0;
-    expect(res).not.toBeNull();
-    expect(elapsed).toBeLessThan(500);
+  // The class instructions of a compiled program, through its private fields.
+  const classes = (re: unknown) =>
+    ((re as { prog: { op: string; ranges?: [number, number][] }[] }).prog).filter((i) => i.op === "class");
+  const distinct = (n: number) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0x4e00 + 2 * i)).join("");
+
+  it("a class is matched by binary search over its ranges", () => {
+    // 990 ranges that cannot merge: a linear scan reads ~990 per character.
+    const re = compileRegex(`[^${distinct(990)}]*`);
+    const inst = classes(re)[0]!;
+    let reads = 0;
+    inst.ranges = new Proxy(inst.ranges!, {
+      get(target, key, recv) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, recv);
+      },
+    });
+    re.findSubmatch("a".repeat(1000));
+    expect(reads).toBeLessThanOrEqual(1001 * 11);
   });
 
-  it("character-class over 16 KiB header runs within script budget", () => {
-    const pattern = `[^${"\\W".repeat(400)}]{900}`;
-    const subject = "a".repeat(16 * 1024);
-    const script = `require ["regex","fileinto"];
-      if header :regex "subject" "${pattern}" { fileinto "Match"; }
-      fileinto "Other";`;
-    const res = run(script, `Subject: ${subject}\r\n\r\nbody\r\n`);
-    expect(res).toEqual(R({ fileinto: ["Match", "Other"] }));
+  it("a class's ranges are sorted and merged once", () => {
+    expect(classes(compileRegex(`[^${"\\W".repeat(400)}]`))[0]!.ranges).toHaveLength(5);
+    expect(m("^[ac]$", "b")).toBeNull(); // adjacent only when they touch
+    expect(m("^[a-zc]$", "z")).not.toBeNull(); // a range inside another keeps the outer end
+  });
+
+  it("every copy of a repeated class shares one ranges array", () => {
+    // Normalizing per emitted copy allocated a fresh array for each of 9,900
+    // copies: 720 MB for a 990-character pattern.
+    const re = compileRegex(`(?:[${distinct(975)}]{100}){99}`);
+    expect(new Set(classes(re).map((i) => i.ranges)).size).toBe(1);
   });
 
   it("normalizing character class ranges does not mutate shared WORD_RANGES tuples", () => {

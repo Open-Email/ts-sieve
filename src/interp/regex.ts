@@ -307,13 +307,13 @@ class Parser {
       case "D":
         return { t: "class", ranges: [[48, 57]], negated: true, fold: false };
       case "w":
-        return { t: "class", ranges: WORD_RANGES.slice(), negated: false, fold: false };
+        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: false, fold: false };
       case "W":
-        return { t: "class", ranges: WORD_RANGES.slice(), negated: true, fold: false };
+        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: true, fold: false };
       case "s":
-        return { t: "class", ranges: SPACE_RANGES.slice(), negated: false, fold: false };
+        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: false, fold: false };
       case "S":
-        return { t: "class", ranges: SPACE_RANGES.slice(), negated: true, fold: false };
+        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: true, fold: false };
       case "b":
         return { t: "assert", kind: "wordb" };
       case "B":
@@ -372,7 +372,9 @@ function negate(ranges: [number, number][]): [number, number][] {
 
 /** Sort ranges and merge the overlapping or adjacent ones, into new tuples
  * (WORD_RANGES and the like are shared and must not change), so a class is
- * matched by binary search. A reversed range ("z-a") stays empty. */
+ * matched by binary search. Done once per class node, when it is parsed: every
+ * class node is built by parseClass or parseEscape. A reversed range ("z-a")
+ * stays empty. */
 function normalizeRanges(ranges: [number, number][]): [number, number][] {
   if (ranges.length === 0) return [];
   const sorted = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -428,8 +430,9 @@ class Compiler {
           this.emit({ op: "any", dotall: node.dotall });
           return;
         case "class":
-          // Escapes (\w, \s, …) build classes outside parseClass; normalize all.
-          this.emit({ op: "class", ranges: normalizeRanges(node.ranges), negated: node.negated, fold: node.fold });
+          // Ranges were normalized when the node was parsed. A repeat compiles
+          // its node once per copy, and every copy shares this one array.
+          this.emit({ op: "class", ranges: node.ranges, negated: node.negated, fold: node.fold });
           return;
         case "assert":
           this.emit({ op: "assert", kind: node.kind });
