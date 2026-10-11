@@ -18,6 +18,7 @@ const MAX_INPUT_LENGTH = 256 * 1024;
 // even for nested repeats.
 const MAX_REPEAT_COUNT = 1000;
 const MAX_PROGRAM_SIZE = 10_000;
+const MAX_COMPILE_WORK = 20_000;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -370,12 +371,14 @@ type Inst =
 
 class Compiler {
   prog: Inst[] = [];
+  work = 0;
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
     return this.prog.length - 1;
   }
   compile(node: Node): void {
+    if (++this.work > MAX_COMPILE_WORK) throw new SieveError("regex: compiled program too large");
     switch (node.t) {
       case "empty":
         return;

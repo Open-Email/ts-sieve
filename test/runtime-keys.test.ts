@@ -51,6 +51,12 @@ describe("a :regex key that does not compile", () => {
       R({ fileinto: ["Other"], indeterminate: true }),
     );
   });
+
+  it("nested repeats of an empty group do not escape compile bounds", () => {
+    expect(run(fromKey('header :regex "subject" "${1}"'), msg({ From: "(?:(?:(?:){1000}){1000}){100}", Subject: "x" }))).toEqual(
+      R({ fileinto: ["Other"], indeterminate: true }),
+    );
+  });
 });
 
 describe("a key longer than the pattern cap once expanded", () => {
@@ -100,5 +106,11 @@ describe("a key written literally in the script", () => {
     expect(() => compile(`require "regex"; if header :regex "subject" "${"a".repeat(1001)}" { keep; }`)).toThrow(
       /too long/,
     );
+  });
+
+  it("literal nested repeats of an empty group fail at load", () => {
+    expect(() =>
+      compile('require ["regex"]; if header :regex "subject" "(?:(?:(?:){1000}){1000}){100}" { keep; }'),
+    ).toThrow(/compiled program too large/);
   });
 });
