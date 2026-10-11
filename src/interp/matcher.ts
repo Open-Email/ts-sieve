@@ -27,7 +27,7 @@ import {
 import type { RuntimeData, Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
-import { expandVars } from "./variables.js";
+import { expandForMatch, expandVars } from "./variables.js";
 
 /**
  * Whether a `:matches` glob ends with an UNESCAPED `*`. Over a prefix of the
@@ -65,21 +65,29 @@ function regexSoundOnPrefix(pattern: string): boolean {
   return !pattern.includes("$");
 }
 
+/** How many UTF-16 units of values and their folds foldOnce keeps. */
+const FOLD_CACHE_MAX = 4 * 1024 * 1024;
+
 /**
- * A value's fold, computed once per execution and charged by size: inside a
- * foreverypart loop the same header value is compared on every iteration, and
- * folding a large one is real work. Values under 1 KiB are folded each time
- * (uncharged before, and cheap).
+ * A value's fold, kept for the execution: inside a foreverypart loop the same
+ * header value is compared on every iteration, and folding a large one is real
+ * work. Every call is charged by the value's size, a step per KiB, found or
+ * not: looking a freshly built string up hashes all of it. The cache holds a
+ * bounded amount; past it, values are folded each time. Values under 1 KiB
+ * are not kept.
  */
 function foldOnce(d: RuntimeData, kind: string, source: string, fold: (s: string) => string): string {
   if (source.length < 1024) return fold(source);
+  d.budget.consume(source.length >> 10);
   let cache = d.foldCache.get(kind);
   if (cache === undefined) d.foldCache.set(kind, (cache = new Map()));
   let folded = cache.get(source);
   if (folded === undefined) {
-    d.budget.consume(source.length >> 10);
     folded = fold(source);
-    cache.set(source, folded);
+    if (d.foldCacheUnits + 2 * source.length <= FOLD_CACHE_MAX) {
+      cache.set(source, folded);
+      d.foldCacheUnits += 2 * source.length;
+    }
   }
   return folded;
 }
@@ -237,9 +245,8 @@ export class MatcherTest {
    * null when that does not compile. The text can come from the message, and a
    * throw here would end execute(), which a host's fail-open turns into "skip
    * every rule"; the caller reads null as "unknown" instead. The length cap
-   * still applies to an expanded key. The step budget charges one step per VM
-   * thread visit, but a character class is one instruction however many
-   * ranges it scans, so the pattern's length is what bounds the work per step.
+   * still applies to an expanded key: it bounds what the compiler builds and
+   * the work each VM step does.
    */
   private runtimeKey(d: RuntimeData, i: number): { re: CompiledRegex | null; pattern: string } {
     const key = this.key[i]!;
@@ -344,7 +351,7 @@ export class MatcherTest {
           // sort on either side of it.
           unknown = true;
         } else {
-          const k = expandVars(d, key);
+          const k = expandForMatch(d, key);
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
@@ -359,7 +366,7 @@ export class MatcherTest {
         // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
         // and charged by the value's size, a step per KiB: once for the fold,
         // and for :contains once per key searched through it.
-        const k = expandVars(d, key);
+        const k = expandForMatch(d, key);
         let r: Tri;
         if (this.match === "contains") d.budget.consume(source.length >> 10);
         if (this.comparator === "i;ascii-numeric") {
