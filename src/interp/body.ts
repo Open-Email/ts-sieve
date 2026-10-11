@@ -6,6 +6,7 @@
 // charset-decoded to UTF-8; :text HTML parts are stripped to text. Everything is
 // linear/bounded (no backtracking regex on body content).
 
+import { htmlToText } from "./htmltext.js";
 import { MatcherTest } from "./matcher.js";
 import type { RuntimeData, Test, Tri } from "./runtime.js";
 
@@ -137,59 +138,6 @@ function charsetDecode(bytes: Uint8Array, charset: string): string {
   } catch {
     return bytesToBinary(bytes); // unknown charset ⇒ keep raw (tolerate unknown charsets)
   }
-}
-
-// -------- HTML → text --------
-
-const ENTITIES: Record<string, string> = {
-  nbsp: " ",
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  auml: "ä",
-  ouml: "ö",
-  uuml: "ü",
-  Auml: "Ä",
-  Ouml: "Ö",
-  Uuml: "Ü",
-  szlig: "ß",
-  eacute: "é",
-  egrave: "è",
-  agrave: "à",
-  ccedil: "ç",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  hellip: "…",
-  mdash: "—",
-  ndash: "–",
-  bull: "•",
-};
-
-function unescapeHtml(s: string): string {
-  return s.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]*);/g, (m, ent: string) => {
-    if (ent[0] === "#") {
-      const cp = ent[1] === "x" || ent[1] === "X" ? Number.parseInt(ent.slice(2), 16) : Number.parseInt(ent.slice(1), 10);
-      if (Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff) {
-        try {
-          return String.fromCodePoint(cp);
-        } catch {
-          return m;
-        }
-      }
-      return m;
-    }
-    return ENTITIES[ent] ?? m;
-  });
-}
-
-function htmlToText(s: string): string {
-  let x = s.replace(/<[^>]*>/g, " "); // linear: [^>]* and required > don't backtrack badly
-  x = unescapeHtml(x);
-  x = x.replace(/[\t\n\f\r \p{Zs}]+/gu, " ");
-  return x.trim();
 }
 
 // -------- media type + header parsing --------

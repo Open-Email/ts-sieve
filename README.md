@@ -96,7 +96,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `fileinto` | 5228 | plus `:flags`, `:copy`, `:create` (gated on their extensions) |
 | `envelope` | 5228 | parts: `from`, `to`, `auth` |
 | `copy` | 3894 | `:copy` on `fileinto`/`redirect` |
-| `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` |
+| `body` | 5173 | `:raw`/`:text`/`:content`; hand-rolled byte-level MIME walker, QP/base64 + charset decode, HTML→text for `:text` (tokenizer rules: attribute-aware tags, script/style/comments and the hidden raw-text elements dropped, textarea/xmp kept, every WHATWG character reference decoded). Content is dropped up to a far terminator only where the browser's tokenizer state is decidable here; from the first `svg`, `math`, `select` or `noscript` tag or escaped script on, nothing is dropped beyond the next `>` and raw text is kept (a region holding `&` both literally and decoded) — so markup cannot hide the rest of the body, at the cost of matching stylesheets in such mail, where a whole-part `:is` can also miss |
 | `variables` | 5229 | `set` + modifiers, `string` test, `${name}`, match variables `${0}…${N}`, `envelope.*` namespace (needs `require "envelope"`; any other namespace is refused at load, RFC 5229 §3) |
 | `vacation` | 5230 | records intent only — see table above |
 | `reject` / `ereject` | 5429 | records the refusal only — see table above. §2.4 is enforced: a second reject fails when it runs, and a reject next to `vacation`, `keep`, `fileinto` or `redirect` (`:copy` included) fails once the script has run, whatever the order (in a testsuite script, at the end of each `test` block) |

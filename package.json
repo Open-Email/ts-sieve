@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
+    "gen:entities": "node scripts/gen-html-entities.mjs",
     "prepare": "npm run build"
   },
   "license": "MIT",
