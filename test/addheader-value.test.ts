@@ -9,6 +9,7 @@
 // below.
 
 import { describe, expect, it } from "vitest";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
 import { compile, R, run } from "./harness.js";
 
 const msg = (subject: string) => `From: a@x\r\nTo: b@y\r\nSubject: ${subject}\r\n\r\nbody\r\n`;
@@ -38,17 +39,57 @@ describe("a value from the message", () => {
     expect(run(echo("hithere"), msg("=?utf-8?B?aGkAdGhlcmU=?="))).toEqual(R({ fileinto: ["Echoed", "Other"] }));
   });
 
-  it("no CR, LF or NUL reaches the edit a host would serialise", async () => {
-    const { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } = await import("../src/index.js");
-    const script = load('require ["editheader","variables"]; if header :matches "subject" "*" { addheader "X-Orig" "${1}"; }', {
-      enabledExtensions: ["editheader", "variables"],
+  // Each subject (Q-encoded: "=0D" CR, "=0A" LF, "=00" NUL, "=09" tab, "_"
+  // space) and the one line it folds to.
+  const FOLDS: [string, string][] = [
+    ["a=0Ab", "a b"],
+    ["a=0Db", "a b"],
+    ["a=0D=0Ab", "a b"],
+    ["a=0A=0A=0Db", "a b"],
+    ["a=00b", "ab"],
+    ["=0D=0Aab", "ab"],
+    ["=00=0Aab", "ab"],
+    ["ab=0D=0A", "ab"],
+    ["a=0D=0A_b", "a b"],
+    ["a=0D=0A=09b", "a\tb"],
+    ["a=0D=00=0A_b", "a b"],
+    ["a=0D=0Abcc:_x=00y", "a bcc: xy"],
+  ];
+
+  for (const [subject, folded] of FOLDS) {
+    it(`the edit a host would serialise: ${subject}`, () => {
+      expect(ledger(`=?utf-8?Q?${subject}?=`)).toEqual([folded]);
     });
-    const headers = new Map([["subject", ["=?utf-8?Q?a=0D=0Abcc:_x=00y?="]]]);
-    const d = newRuntimeData(script, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(0, headers));
-    script.execute(d);
-    expect(d.headerEdits.map((e) => e.value)).toEqual(["a bcc: xy"]);
+  }
+
+  it("a break at the start is a fold, and reads back without a leading space", () => {
+    expect(run(echo("hi"), msg("=?utf-8?Q?=0D=0Ahi?="))).toEqual(R({ fileinto: ["Echoed", "Other"] }));
+  });
+
+  it("folding is linear in the value", () => {
+    // A run of line breaks before a word backtracked through a lookahead regex:
+    // 64,000 took seconds, and the step budget does not see it.
+    const value = `${"\n".repeat(200_000)}x${"\r\n".repeat(100_000)} y`;
+    const t0 = performance.now();
+    expect(ledger("", value)).toEqual(["x y"]);
+    expect(performance.now() - t0).toBeLessThan(500);
   });
 });
+
+/** The values `addheader "X-Orig" "${1}"` records, with ${1} captured from
+ * `subject` — or set to `capture` directly, past any match-input cap. */
+function ledger(subject: string, capture?: string): string[] {
+  const add = 'addheader "X-Orig" "${1}";';
+  const script = load(
+    `require ["editheader","variables"]; ${capture === undefined ? `if header :matches "subject" "*" { ${add} }` : add}`,
+    { enabledExtensions: ["editheader", "variables"] },
+  );
+  const headers = new Map([["subject", [subject]]]);
+  const d = newRuntimeData(script, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(0, headers));
+  if (capture !== undefined) d.matchVariables = ["", capture];
+  script.execute(d);
+  return d.headerEdits.map((e) => e.value);
+}
 
 describe("Pigeonhole editheader/addheader.svtest: Addheader - newlines", () => {
   it("a multi-line variable reads back unfolded", () => {
