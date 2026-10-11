@@ -184,6 +184,16 @@ describe("which redirect addresses are the same", () => {
       ["a@[X]", "a@[x]"],
       ["a b@X.com", "a b@x.com"],
       ["a,b@X.com", "a,b@x.com"],
+      ["a<b@X.com", "a<b@x.com"],
+      ["a>b@X.com", "a>b@x.com"],
+      ["a(b@X.com", "a(b@x.com"],
+      ["a)b@X.com", "a)b@x.com"],
+      ["a:b@X.com", "a:b@x.com"],
+      ["a;b@X.com", "a;b@x.com"],
+      ["a[b@X.com", "a[b@x.com"],
+      ["a]b@X.com", "a]b@x.com"],
+      [`a${q}b@X.com`, `a${q}b@x.com`],
+      ["a\\\\b@X.com", "a\\\\b@x.com"],
     ];
     for (const [a, b] of pairs) expect(exec(`redirect "${a}"; redirect "${b}";`).redirectAddr).toHaveLength(2);
   });
@@ -286,4 +296,17 @@ it("an address the host's policy appended is held, not redirected to again", () 
   const d = newRuntimeData(s, policy, new EnvelopeStatic(), new MessageStatic(0, new Map(), null));
   s.execute(d);
   expect(d.redirectAddr).toEqual(["z@x.com", "a@x.com"]);
+});
+
+it("an address the policy itself appended, in another spelling, is not pushed again", () => {
+  const policy = new (class extends DummyPolicy {
+    override redirectAllowed(d: RuntimeData, addr: string): boolean {
+      d.redirectAddr.push(addr.replace("x.com", "X.com"));
+      return true;
+    }
+  })();
+  const s = load('redirect "a@x.com";', { enabledExtensions: [] });
+  const d = newRuntimeData(s, policy, new EnvelopeStatic(), new MessageStatic(0, new Map(), null));
+  s.execute(d);
+  expect([d.redirectAddr, d.implicitKeep]).toEqual([["a@X.com"], false]);
 });
