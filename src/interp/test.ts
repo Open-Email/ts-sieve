@@ -144,7 +144,11 @@ export class AddressTest implements Test {
       const { parts, open } = this.mime.scope(d);
       for (const part of parts) {
         for (const hdr of this.header) {
-          if (this.matchValues(d, partHeader(d, part, expandVars(d, hdr)), state)) return true;
+          const values = partHeader(d, part, expandVars(d, hdr));
+          // Parsing each value as addresses costs its size: inside loops the
+          // parts visited multiply with the iterations.
+          for (const v of values) d.budget.consume(1 + (v.length >> 6));
+          if (this.matchValues(d, values, state)) return true;
         }
       }
       if (this.matcher.isCount()) return countOver(d, this.matcher, state.entryCount, open);
@@ -337,7 +341,7 @@ export class HeaderTest implements Test {
     for (const part of parts) {
       for (const hdr of this.header) {
         const name = expandVars(d, hdr);
-        const values = mime.values(name, partHeader(d, part, name), params);
+        const values = mime.values(d, name, partHeader(d, part, name), params);
         if (this.matcher.isCount()) {
           entryCount += values.length;
           continue;

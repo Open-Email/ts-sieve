@@ -154,7 +154,7 @@ function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string
 
 // -------- media type + header parsing --------
 
-function parseMediaType(ct: string): { mediaType: string; params: Record<string, string> } {
+export function parseMediaType(ct: string): { mediaType: string; params: Record<string, string> } {
   const semi = ct.indexOf(";");
   const mediaType = (semi === -1 ? ct : ct.slice(0, semi)).trim().toLowerCase();
   const params: Record<string, string> = {};
@@ -172,7 +172,7 @@ function parseMediaType(ct: string): { mediaType: string; params: Record<string,
 }
 
 /** Parse a MIME header block (binary string) into a case-insensitive last-value map. */
-function parseMimeHeader(block: string): Map<string, string> {
+export function parseMimeHeader(block: string): Map<string, string> {
   const h = new Map<string, string>();
   const lines = block.split(/\r?\n/);
   let cur = "";

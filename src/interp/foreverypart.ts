@@ -34,6 +34,7 @@ export class CmdForEveryPart implements Cmd {
     const parts = cur === null ? subtree(top) : subtree(top).slice(1);
     let broke = false;
     const r = withShare(d, this.shareIndex, () => {
+      d.budget.consume(parts.length); // the parts it walks, before the block costs
       for (const p of parts) {
         d.partStack.push(p);
         try {

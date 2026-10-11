@@ -13,6 +13,8 @@ import {
   bytesToBinary,
   MAX_MIME_DEPTH,
   MAX_MIME_PARTS,
+  parseMediaType,
+  parseMimeHeader,
   skipDelimiterLineEnd,
   splitBoundary,
   splitHeaderBody,
@@ -31,29 +33,48 @@ export interface MimePart {
   open: boolean;
   /** This part or a part nested in it is open. */
   openBelow: boolean;
+  /** subtree(), computed once. */
+  all: MimePart[] | null;
+}
+
+function newPart(headers: Map<string, string[]> | null): MimePart {
+  return { headers, children: [], open: false, openBelow: false, all: null };
 }
 
 const trees = new WeakMap<Message, MimePart>();
 
 /** The message's part tree, built on first use and kept per Message. Its
- * structure comes from the raw Content-Type header, as the body test's does. */
+ * structure is read exactly as the body test reads it (the same Content-Type
+ * field, the same boundary parameter, the same splitter), so a :mime test and
+ * a body test never disagree about which parts there are. */
 export function mimeTree(d: RuntimeData): MimePart {
   let root = trees.get(d.msg);
   if (root !== undefined) return root;
-  root = { headers: null, children: [], open: false, openBelow: false };
+  root = newPart(null);
+  const contentType = d.msg.headerGet("content-type")[0] ?? "";
   const raw = d.msg.bodyRaw();
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
-    build(root, d.msg.headerGet("content-type")[0] ?? "", bytesToBinary(raw), cut, 0, { parts: 0 });
+    build(root, contentType, bytesToBinary(raw), cut, 0, { parts: 0 });
+  } else if (holdsParts(contentType)) {
+    // A body the host did not read: whatever parts it holds were not seen.
+    root.open = root.openBelow = true;
   }
   trees.set(d.msg, root);
   return root;
 }
 
+/** Whether a part of this type has parts of its own (a multipart the body
+ * walker would split, or a nested message). */
+function holdsParts(contentType: string): boolean {
+  const { mediaType, params } = parseMediaType(contentType || "text/plain");
+  return (mediaType.startsWith("multipart/") && !!params["boundary"]) || mediaType === "message/rfc822";
+}
+
 function build(p: MimePart, contentType: string, b: string, cut: boolean, depth: number, counter: { parts: number }): void {
-  const { value: mediaType, params } = parseContentValue(contentType || "text/plain");
+  const { mediaType, params } = parseMediaType(contentType || "text/plain");
   if (mediaType.startsWith("multipart/")) {
-    const boundary = params.get("boundary");
+    const boundary = params["boundary"];
     if (!boundary) return;
     if (depth >= MAX_MIME_DEPTH) {
       p.open = true;
@@ -79,9 +100,9 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
         const partCut = lastCut && i === nested.length - 1;
         const { header, body, sep } = splitHeaderBody(nested[i]!);
         if (partCut && !sep) continue; // its header block is cut: not yet a part
-        const child: MimePart = { headers: parseHeaderFields(header), children: [], open: false, openBelow: false };
+        const child = newPart(parseHeaderFields(header));
         p.children.push(child);
-        build(child, child.headers!.get("content-type")?.[0] ?? "", body, partCut, depth + 1, counter);
+        build(child, parseMimeHeader(header).get("content-type") ?? "", body, partCut, depth + 1, counter);
       }
     }
   } else if (mediaType === "message/rfc822") {
@@ -91,9 +112,9 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
     } else if (depth >= MAX_MIME_DEPTH || ++counter.parts > MAX_MIME_PARTS) {
       p.open = true;
     } else {
-      const child: MimePart = { headers: parseHeaderFields(header), children: [], open: false, openBelow: false };
+      const child = newPart(parseHeaderFields(header));
       p.children.push(child);
-      build(child, child.headers!.get("content-type")?.[0] ?? "", body, cut, depth + 1, counter);
+      build(child, parseMimeHeader(header).get("content-type") ?? "", body, cut, depth + 1, counter);
     }
   }
   p.openBelow = p.open || p.children.some((c) => c.openBelow);
@@ -136,6 +157,7 @@ export function currentPart(d: RuntimeData): MimePart | null {
 /** p and every part nested in it, depth first: the order foreverypart visits
  * them in (RFC 5703 §3), which is document order. */
 export function subtree(p: MimePart): MimePart[] {
+  if (p.all !== null) return p.all;
   const out: MimePart[] = [];
   const stack = [p];
   while (stack.length > 0) {
@@ -143,6 +165,7 @@ export function subtree(p: MimePart): MimePart[] {
     out.push(q);
     for (let i = q.children.length - 1; i >= 0; i--) stack.push(q.children[i]!);
   }
+  p.all = out;
   return out;
 }
 
@@ -199,31 +222,49 @@ export class MimeOpts {
    * it. `open`: parts in scope may lie past the cut, so a miss is unknown. */
   scope(d: RuntimeData): { parts: MimePart[]; open: boolean } {
     const cur = currentPart(d) ?? mimeTree(d);
-    if (!this.anychild) return { parts: [cur], open: false };
-    return { parts: subtree(cur), open: cur.openBelow };
+    const parts = this.anychild ? subtree(cur) : [cur];
+    // Each part examined costs a step: inside loops, the parts a test visits
+    // multiply with the iterations.
+    d.budget.consume(parts.length);
+    return { parts, open: this.anychild && cur.openBelow };
   }
 
   /** The strings a header test matches for a field's raw values: decoded, or
-   * the part of a Content-Type / Content-Disposition the MIMEOPT names. */
-  values(name: string, raw: string[], params: string[]): string[] {
-    if (this.opt === "") return raw.map(decodeHeaderValue);
+   * the part of a Content-Type / Content-Disposition the MIMEOPT names. Each
+   * value is decoded or parsed once per message and costs a step per read,
+   * plus its size the first time. */
+  values(d: RuntimeData, name: string, raw: string[], params: string[]): string[] {
+    const derive = <T,>(v: string, kind: string, f: (v: string) => T): T => {
+      d.budget.consume(1);
+      const cache = derivedCache(d.msg, kind);
+      let r = cache.get(v) as T | undefined;
+      if (r === undefined) {
+        d.budget.consume(v.length >> 6);
+        r = f(v);
+        cache.set(v, r);
+      }
+      return r;
+    };
+    if (this.opt === "") return raw.map((v) => derive(v, "d", decodeHeaderValue));
     const out: string[] = [];
     const field = name.toLowerCase();
     for (const v of raw) {
-      const parsed = parseContentValue(v);
       if (this.opt === "param") {
+        const parsed = derive(v, "p", parseContentValue);
         for (const want of params) {
           const p = parsed.params.get(want.toLowerCase());
           if (p !== undefined) out.push(decodeHeaderValue(p));
         }
         continue;
       }
-      if (parsed.value === "") continue;
-      const slash = parsed.value.indexOf("/");
-      const type = slash === -1 ? parsed.value : parsed.value.slice(0, slash);
-      const sub = slash === -1 ? "" : parsed.value.slice(slash + 1);
+      // No parameter needed: only the text before the first ";".
+      const value = derive(v, "v", contentValueOnly);
+      if (value === "") continue;
+      const slash = value.indexOf("/");
+      const type = slash === -1 ? value : value.slice(0, slash);
+      const sub = slash === -1 ? "" : value.slice(slash + 1);
       if (field === "content-type") {
-        out.push(this.opt === "type" ? type : this.opt === "subtype" ? sub : parsed.value);
+        out.push(this.opt === "type" ? type : this.opt === "subtype" ? sub : value);
       } else if (field === "content-disposition") {
         // A disposition has no subtype; :contenttype is the disposition itself.
         out.push(this.opt === "subtype" ? "" : type);
@@ -233,6 +274,26 @@ export class MimeOpts {
     }
     return out;
   }
+}
+
+/** Per message and kind: header values decoded or parsed for :mime tests,
+ * keyed by the raw value itself (header edits can change the root's values,
+ * and a string's hash is computed once, however long it is). */
+const derivedCaches = new WeakMap<Message, Map<string, Map<string, unknown>>>();
+
+function derivedCache(msg: Message, kind: string): Map<string, unknown> {
+  let byKind = derivedCaches.get(msg);
+  if (byKind === undefined) derivedCaches.set(msg, (byKind = new Map()));
+  let m = byKind.get(kind);
+  if (m === undefined) byKind.set(kind, (m = new Map()));
+  return m;
+}
+
+/** The media type or disposition of a value, lower-cased, without parsing its
+ * parameters. */
+function contentValueOnly(v: string): string {
+  const semi = indexOutsideQuotes(v, 0);
+  return (semi === -1 ? v : v.slice(0, semi)).trim().toLowerCase();
 }
 
 /**
@@ -297,20 +358,19 @@ function joinRfc2231(raw: Map<string, string>): Map<string, string> {
   const out = new Map<string, string>();
   const sections = new Map<string, { index: number; value: string; encoded: boolean }[]>();
   for (const [key, value] of raw) {
-    const m = /^(.+?)\*(\d+)?(\*)?$/.exec(key);
-    if (m === null) {
+    const k = sectionKey(key);
+    if (k === null) {
       if (!out.has(key)) out.set(key, value);
       continue;
     }
-    const [, base, index, star] = m;
-    if (index === undefined) {
+    if (k.index === null) {
       // "name*": one extended value
-      out.set(base!, decodeExtended(value) ?? value);
+      out.set(k.base, decodeExtended(value) ?? value);
       continue;
     }
-    const list = sections.get(base!) ?? [];
-    list.push({ index: Number(index), value, encoded: star === "*" });
-    sections.set(base!, list);
+    const list = sections.get(k.base) ?? [];
+    list.push({ index: k.index, value, encoded: k.star });
+    sections.set(k.base, list);
   }
   for (const [base, list] of sections) {
     if (raw.has(`${base}*`)) continue;
@@ -336,6 +396,19 @@ function joinRfc2231(raw: Map<string, string>): Map<string, string> {
   return out;
 }
 
+/** An RFC 2231 parameter name: "base*" (extended), "base*N" or "base*N*"
+ * (a section); null for a plain name. Scanned from the end, no regex. */
+function sectionKey(key: string): { base: string; index: number | null; star: boolean } | null {
+  let end = key.length;
+  const star = key.endsWith("*");
+  if (star) end--;
+  let j = end;
+  while (j > 0 && key.charCodeAt(j - 1) >= 0x30 && key.charCodeAt(j - 1) <= 0x39) j--;
+  if (j < end && j > 1 && key[j - 1] === "*") return { base: key.slice(0, j - 1), index: Number(key.slice(j, end)), star };
+  if (star && j === end && end > 0) return { base: key.slice(0, end), index: null, star: true };
+  return null;
+}
+
 function decodeExtended(value: string): string | null {
   const q1 = value.indexOf("'");
   const q2 = q1 === -1 ? -1 : value.indexOf("'", q1 + 1);
@@ -348,8 +421,10 @@ function decodeExtended(value: string): string | null {
 function pushPercentDecoded(out: number[], s: string): void {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c === 0x25 /* % */ && i + 2 < s.length && /^[0-9a-fA-F]{2}$/.test(s.slice(i + 1, i + 3))) {
-      out.push(Number.parseInt(s.slice(i + 1, i + 3), 16));
+    const hi = c === 0x25 /* % */ && i + 2 < s.length ? hexDigit(s.charCodeAt(i + 1)) : -1;
+    const lo = hi === -1 ? -1 : hexDigit(s.charCodeAt(i + 2));
+    if (lo !== -1) {
+      out.push(hi * 16 + lo);
       i += 2;
     } else if (c < 0x80) {
       out.push(c);
@@ -357,6 +432,13 @@ function pushPercentDecoded(out: number[], s: string): void {
       for (const b of new TextEncoder().encode(s[i]!)) out.push(b);
     }
   }
+}
+
+function hexDigit(c: number): number {
+  if (c >= 0x30 && c <= 0x39) return c - 0x30;
+  if (c >= 0x41 && c <= 0x46) return c - 0x37;
+  if (c >= 0x61 && c <= 0x66) return c - 0x57;
+  return -1;
 }
 
 function decodeCharset(bytes: Uint8Array, charset: string): string {
