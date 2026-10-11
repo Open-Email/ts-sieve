@@ -849,7 +849,7 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
     } else if (b.length - s < dash.length && dash.startsWith(b.slice(s))) {
       return { end: s, cut, eof: !cut };
     }
-    for (let i = b.indexOf(nlDash, from); i !== -1; i = b.indexOf(nlDash, from)) {
+    for (let i = indexOfDelimiter(b, nl, boundary, from); i !== -1; i = indexOfDelimiter(b, nl, boundary, from)) {
       // A delimiter that fills the reader's buffer leaves it no room to look
       // at the byte after it, and it takes the boundary as found. (A longer
       // one has no delimiter line that fits, so no part to end.)
@@ -895,7 +895,11 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
       return finish(close ? withoutLineBreak(b, 0, pos) : b.length, close ? b.length : pos, b.length, true);
     }
     const lineEnd = lf + 1;
-    if (b.startsWith(dash, pos)) {
+    // A delimiter line is "--" boundary, padding and a line break, so a line
+    // no longer than "--" boundary is none, and testing that first keeps the
+    // comparison in the line. For a boundary with a line break in it, it ran
+    // on over the lines after it at every line that starts it (#68).
+    if (lineEnd - pos > dash.length && b.startsWith(dash, pos)) {
       // The first delimiter line sets the line break, a bare LF if it ends so.
       if (first === -1 && lineIs(pos, lineEnd, dash, "\n")) {
         nl = "\n";
@@ -935,6 +939,49 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
     }
     pos = lineEnd;
   }
+}
+
+/**
+ * Where nl "--" boundary first starts in `b` at or after `from`: where
+ * b.indexOf(nl + "--" + boundary, from) finds it, in time linear in the bytes
+ * it reads. indexOf compared a long boundary again at each near-match of it,
+ * O(n·|boundary|) over a body full of them (#68).
+ *
+ * It looks for nl "--" and compares the boundary after each hit. Without a
+ * line break in the boundary, a comparison stops at the next line break, so
+ * before the next hit, and no byte is compared twice. A boundary can hold one
+ * (percent-encoded, through RFC 2231), and then a comparison could run on
+ * over the hits after it: that one is found by Knuth-Morris-Pratt. A call
+ * costs |boundary| more, which the splitter's calls have read already: each
+ * starts past a delimiter line or a hit.
+ */
+export function indexOfDelimiter(b: string, nl: string, boundary: string, from: number): number {
+  const anchor = `${nl}--`;
+  if (boundary.includes("\n")) return kmpIndexOf(b, anchor + boundary, from);
+  for (let i = b.indexOf(anchor, from); i !== -1; i = b.indexOf(anchor, i + 1)) {
+    if (b.startsWith(boundary, i + anchor.length)) return i;
+  }
+  return -1;
+}
+
+/** The first `p` in `b` at or after `from`, by Knuth-Morris-Pratt: each byte
+ * of `b` is read once, and each step back gives up a byte matched before it,
+ * so the search is linear; the table costs |p|. */
+function kmpIndexOf(b: string, p: string, from: number): number {
+  // border[i]: the longest proper prefix of p[0..i] that is a suffix of it.
+  const border = new Int32Array(p.length);
+  for (let i = 1, k = 0; i < p.length; i++) {
+    while (k > 0 && p.charCodeAt(i) !== p.charCodeAt(k)) k = border[k - 1]!;
+    if (p.charCodeAt(i) === p.charCodeAt(k)) k++;
+    border[i] = k;
+  }
+  for (let i = from, k = 0; i < b.length; i++) {
+    const c = b.charCodeAt(i);
+    while (k > 0 && c !== p.charCodeAt(k)) k = border[k - 1]!;
+    if (c === p.charCodeAt(k)) k++;
+    if (k === p.length) return i - k + 1;
+  }
+  return -1;
 }
 
 /** Whether the line at `start`, which has no line break yet, could still turn
