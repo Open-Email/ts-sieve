@@ -59,8 +59,7 @@ failed, fall back to implicit keep". Because a throw skips every rule, the
 leniently, and structure past the caps below is "unknown". Other paths from
 message content to a throw remain and are tracked as issues (step-budget
 exhaustion by large parts under `:matches`/`:regex` or by many rules over many
-parts, a `:regex` key nested deep enough to overflow the matcher's stack). A
-`:matches`/`:regex` key holding a variable reference compiles when
+parts). A `:matches`/`:regex` key holding a variable reference compiles when
 the test runs; if the expanded text does not compile, or is past the
 pattern-length cap, the comparison is "unknown" rather than an error.
 
@@ -134,8 +133,10 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256 KiB
-unless `maxMatchInputLength` sets another cut (byte-truncated at a character
+compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, ≤ 250 nested
+groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
+deepen it too; a `{n,}` counts twice), input ≤ 256 KiB unless
+`maxMatchInputLength` sets another cut (byte-truncated at a character
 boundary, and evaluated as a cut), and it charges every VM step to the
 execution budget.
 
