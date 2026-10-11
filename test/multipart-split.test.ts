@@ -233,12 +233,12 @@ describe("the splitter's results", () => {
 });
 
 // A regression fails in the bound and one more run (see repeatedWithin),
-// which took up to a minute.
+// which took up to 40 s.
 vi.setConfig({ testTimeout: 120_000 });
 
-/** Each case below takes under 400 ms, setup included, with coverage and on
- * a loaded machine too; what each guards against took 20-60 s for the same
- * work, ten times this or more. */
+/** Each timed case below takes under 100 ms, and under 300 ms with coverage
+ * on a loaded machine running other files; what each guards against took
+ * 20-40 s for the same work, ten times the bound or more. */
 const BOUND = 2000;
 
 /** Runs `f` `times` times, stopping once `ms` has passed, and asserts that
@@ -250,16 +250,29 @@ function repeatedWithin(ms: number, times: number, f: () => void): void {
 }
 
 describe("the splitter's cost", () => {
-  it("is indexOf's for a short boundary, in a part of blank lines and dashes", () => {
+  it("searches a part for a short boundary whole: one indexOf, not one per line", () => {
     // indexOf skips most of these 4 MB when it looks for the whole delimiter
-    // (0.1 ms a split), but stops at each CR when it looks for CRLF "--"
-    // alone (15 ms), and a part's bytes are split again at every level of
-    // nesting, by every body test.
+    // (0.1 ms a split). Looking for CRLF "--" alone stops it at each CR, and
+    // the search goes on from each of the 262,144 hits (15 ms); a part's bytes
+    // are split again at every level of nesting, by every body test. Counted,
+    // not timed (a loaded runner under coverage came within 20% of a bound
+    // the regression was only ten times over): the indexOf calls on the body.
     const boundary = "0123456789abcdefghijklmnopqrstuv";
     const part = "\r\n".repeat(3 << 19) + "\r\n--".repeat(1 << 18);
     const body = `--${boundary}\r\n\r\n${part}\r\n--${boundary}--\r\n`;
-    expect(splitMultipart(body, boundary, false).parts.map((p) => p.body)).toEqual([part]);
-    repeatedWithin(BOUND, 1500, () => splitMultipart(body, boundary, false));
+    const indexOf = vi.spyOn(String.prototype, "indexOf");
+    let parts: string[];
+    let reads: number;
+    try {
+      parts = splitMultipart(body, boundary, false).parts.map((p) => p.body);
+      reads = indexOf.mock.contexts.filter((c) => String(c) === body).length;
+    } finally {
+      indexOf.mockRestore();
+    }
+    expect(parts).toEqual([part]);
+    // At least one, so the count sees the search; the rest read its lines.
+    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeLessThan(10);
   });
 
   it("is linear in a part full of near-matches of a long boundary", () => {
@@ -287,24 +300,24 @@ describe("the splitter's cost", () => {
     const m = splitMultipart(body, boundary, false);
     expect(m.parts.length).toBe(1);
     expect(m.prologue).toBe(body);
-    repeatedWithin(BOUND, 12, () => splitMultipart(body, boundary, false));
+    repeatedWithin(BOUND, 10, () => splitMultipart(body, boundary, false));
   });
 });
 
 describe("the delimiter search's cost", () => {
   // The splitter cannot reach the search with a boundary that holds a line
   // break (no line can hold a delimiter then), but the search is linear on
-  // its own terms. Over half a megabyte of the first boundary's near-matches
-  // indexOf took 9 s; over the second's, comparing the rest of the boundary
-  // after each hit of its head took 56 s, as a comparison runs on over the
-  // hits after it.
-  const cases = ["\n".repeat(131_072), `${"q\n--".repeat(32_768)}q`].map((boundary) => {
+  // its own terms. Over 1 MB of the first boundary's near-matches indexOf
+  // took 30 s; over half a megabyte of the second's, comparing the rest of
+  // the boundary after each hit of its head took 20 s, as a comparison runs
+  // on over the hits after it.
+  const cases = ["\n".repeat(262_144), `${"q\n--".repeat(32_768)}q`].map((boundary) => {
     const b = `\n--${boundary.slice(0, -1)}#`.repeat(4) + `\n--${boundary}`;
     return { b, boundary, at: b.length - boundary.length - 3 };
   });
 
   it("is linear over near-matches of a long boundary with a line break in it", () => {
-    repeatedWithin(BOUND, 2, () => {
+    repeatedWithin(BOUND, 1, () => {
       for (const { b, boundary, at } of cases) expect(indexOfDelimiter(b, "\n", boundary, 0)).toBe(at);
     });
   });
