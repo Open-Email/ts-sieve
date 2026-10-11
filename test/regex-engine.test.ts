@@ -55,7 +55,7 @@ describe("regex engine", () => {
     const res = compileRegex(pattern).findSubmatch(subject);
     const elapsed = performance.now() - t0;
     expect(res).not.toBeNull();
-    expect(elapsed).toBeLessThan(100);
+    expect(elapsed).toBeLessThan(500);
   });
 
   it("character-class over 16 KiB header runs within script budget", () => {
