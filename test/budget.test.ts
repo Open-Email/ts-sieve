@@ -69,14 +69,37 @@ describe("a test that runs out of its share is unknown, not an error", () => {
   });
 
   it("deleteheader deletes nothing and discloses the guess", () => {
-    const values = Array.from({ length: 12 }, () => `X-Big: ${"x".repeat(16_000)}`).join("\r\n");
-    const script = `require ["editheader","fileinto"];
+    // The first value matches before the share runs out: neither its delete nor
+    // its match variables may survive the unknown.
+    const values = ["X-Big: casino-first", ...Array.from({ length: 12 }, () => `X-Big: ${"x".repeat(16_000)}`)].join("\r\n");
+    const script = `require ["editheader","fileinto","variables"];
       deleteheader :matches "x-big" "*casino*";
-      if exists "x-big" { fileinto "Still"; }`;
+      if header :is "x-big" "casino-first" { fileinto "Still"; }
+      if string :is "\${2}" "-first" { fileinto "Leaked"; }`;
     expect(exec(script, `${values}\r\nSubject: hi\r\n\r\nbody\r\n`)).toEqual({
       fileinto: ["Still"],
       implicitKeep: false,
       indeterminate: true,
+      budgetExhausted: true,
+    });
+  });
+});
+
+describe("command dispatch never runs out", () => {
+  it("many exhausted tests in one anyof, then commands", () => {
+    // Each share that ran out once ended one step below its floor, eating the
+    // dispatch reserve: twenty of them made the next command throw.
+    const globs = Array.from({ length: 20 }, (_, i) => `body :matches "*word${i}*"`).join(", ");
+    const script = `require ["body","fileinto"];
+      if anyof (${globs}) { fileinto "Junk"; stop; }
+      if header :contains "from" "boss0" { fileinto "Boss0"; }
+      keep;`;
+    const eml = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"x".repeat(16_000)}\r\n`;
+    expect(exec(script, eml)).toMatchObject({ indeterminate: true, budgetExhausted: true });
+  });
+
+  it("a budget equal to the commands it dispatches", () => {
+    expect(exec('if header :contains "subject" "zz" {} keep;', "Subject: hi\r\n\r\nx\r\n", { maxExecSteps: 2 })).toMatchObject({
       budgetExhausted: true,
     });
   });
@@ -120,7 +143,23 @@ describe("what does not change", () => {
     });
   });
 
-  it("one expensive test may use most of the budget, not only half of it", () => {
+  it("a fitting body test stays definite with many rules after it", () => {
+    // 10 KB text + 10 KB HTML, the token in the HTML: it fits core's budget
+    // with room to spare, so forty rules after it must not cost it its answer.
+    const later = Array.from({ length: 40 }, (_, i) => `if header :contains "subject" "r${i}" { fileinto "R${i}"; }`).join("\n");
+    const script = `require ["body","fileinto"]; if body :matches "*unsubscribe*" { fileinto "Bulk"; }\n${later}`;
+    const alt = (text: string, html: string) =>
+      `From: a@x\r\nTo: b@y\r\nSubject: hi\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n` +
+      `--b\r\nContent-Type: text/plain\r\n\r\n${text}\r\n--b\r\nContent-Type: text/html\r\n\r\n${html}\r\n--b--\r\n`;
+    expect(exec(script, alt("x".repeat(10_000), `${"y".repeat(10_000)}unsubscribe`))).toEqual({
+      fileinto: ["Bulk"],
+      implicitKeep: false,
+      indeterminate: false,
+      budgetExhausted: false,
+    });
+  });
+
+  it("a lone expensive test may use most of the budget, not only half of it", () => {
     // Two 16 KB parts: about 196k of core's 200k steps, which completed before.
     const script = 'require ["body","fileinto"]; if body :matches "*casino*" { fileinto "Junk"; }';
     expect(exec(script, parts(2, 15_000, 1, "casino"))).toMatchObject({ fileinto: ["Junk"], budgetExhausted: false });

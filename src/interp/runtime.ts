@@ -32,15 +32,22 @@ class Budget {
   consume(n = 1): void {
     this.remaining -= n;
     if (this.remaining < this.floor) {
-      if (this.shares > 0) throw SHARE_EXHAUSTED;
+      if (this.shares > 0) {
+        // Not below the floor: what is under it belongs to command dispatch
+        // and the tests after this one.
+        this.remaining = this.floor;
+        throw SHARE_EXHAUSTED;
+      }
       throw new SieveError("sieve: script execution budget exceeded");
     }
   }
 }
 
 /** Steps kept back for each test after the running one, as a fraction of
- * maxExecSteps (3125 of core's 200k: a header test, not a body glob). */
-const LATER_TEST_RESERVE = 1 / 64;
+ * maxExecSteps (195 of core's 200k: a header :contains or a short glob, not a
+ * body glob). Larger, and a script with many rules after a body glob costs the
+ * glob its answer on mail that fits the budget. */
+const LATER_TEST_RESERVE = 1 / 1024;
 
 /**
  * Run budgeted work number `index` (a test, or deleteheader's matching, in
@@ -53,8 +60,10 @@ const LATER_TEST_RESERVE = 1 / 64;
  * The share is everything left, minus the steps command dispatch may still
  * need (one per command in the script, so it never runs out) and a reserve for
  * each budgeted step after this one, capped at half of what is left. One
- * expensive test therefore cannot starve the rest of the script, while a run
- * that fits the budget spends it as before.
+ * expensive test therefore cannot starve the rest of the script: they keep
+ * their reserve, or half of what was left. Many expensive tests in a row can,
+ * each taking its share of what the previous ones left; and a run that fits
+ * the budget may still lose an answer to the reserves of the tests after it.
  */
 export function withShare(d: RuntimeData, index: number, f: () => Tri): Tri {
   const b = d.budget;
@@ -69,7 +78,8 @@ export function withShare(d: RuntimeData, index: number, f: () => Tri): Tri {
   try {
     return f();
   } catch (e) {
-    if (e !== SHARE_EXHAUSTED || b.remaining >= b.floor) throw e;
+    // The innermost share's floor is the one in force, so it is this one.
+    if (e !== SHARE_EXHAUSTED) throw e;
     d.budgetExhausted = true;
     return "unknown";
   } finally {

@@ -147,6 +147,7 @@ export class CmdDeleteHeader implements Cmd {
     // share runs out nothing is deleted, and the guess is disclosed as for an
     // unknown match (see valueMatchesPatterns).
     const edits: HeaderEdit[] = [];
+    const savedVars = d.matchVariables;
     const r = withShare(d, this.shareIndex, () => {
       if (this.index > 0) {
         let idx = this.index - 1;
@@ -162,6 +163,7 @@ export class CmdDeleteHeader implements Cmd {
       return true;
     });
     if (r === "unknown") {
+      d.matchVariables = savedVars; // a match before the share ran out proves nothing
       d.indeterminate = true;
       return;
     }

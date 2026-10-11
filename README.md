@@ -61,9 +61,10 @@ the caps below is "unknown"), and a test that runs out of its share of
 `maxExecSteps` answers "unknown" while the script runs on (`budgetExhausted`).
 A `:matches`/`:regex` key holding a variable reference compiles when the test
 runs; if the expanded text does not compile, or is past the pattern-length
-cap, the comparison is "unknown" rather than an error. One path from message
-content to a throw remains and is tracked as an issue: a `:regex` key nested
-deep enough to overflow the matcher's stack.
+cap, the comparison is "unknown" rather than an error. Paths from message
+content to a throw that remain are tracked as issues (a `:regex` key nested
+deep enough to overflow the matcher's stack, #21; an `envelope` test whose
+envelope-part comes from a variable, #36).
 
 ### What the host implements
 
@@ -133,7 +134,7 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxRedirects` | 5 | `redirect` actions per execution |
 | `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 32 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe) |
 | `maxMatchInputLength` | 0 (off) | truncate values before `:matches`/`:regex` |
-| `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/64 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on. |
+| `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
