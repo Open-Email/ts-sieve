@@ -68,6 +68,13 @@ describe("a key longer than the pattern cap once expanded", () => {
     );
   });
 
+  it("a :matches key past the cap stays unknown under not", () => {
+    const script = `require ["variables","fileinto"];
+      if header :matches "from" "*" { if not header :matches "subject" "\${1}*" { fileinto "NotPrefixed"; } }
+      fileinto "Other";`;
+    expect(run(script, msg({ From: "a".repeat(1200), Subject: "b" }))).toEqual(R({ fileinto: ["Other"], indeterminate: true }));
+  });
+
   it("a :regex key past the cap is unknown too", () => {
     expect(run(fromKey('header :regex "subject" "${1}"'), msg({ From: "a".repeat(1200), Subject: "a" }))).toEqual(
       R({ fileinto: ["Other"], indeterminate: true }),
