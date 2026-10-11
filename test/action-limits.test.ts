@@ -177,8 +177,31 @@ describe("which redirect addresses are the same", () => {
       ["Boss <boss@corp.com>", "boss@corp.com"],
       // Only a bare address is folded: any other form is its own spelling.
       ["Bob <a@X.com>", "Bob <a@x.com>"],
+      ["<a@X.com>", "<a@x.com>"],
+      [`${q}a${q}@X.com`, `${q}a${q}@x.com`],
+      ["a@X.com(c)", "a@x.com(c)"],
+      ["g:a@X.com;", "g:a@x.com;"],
+      ["a@[X]", "a@[x]"],
+      ["a b@X.com", "a b@x.com"],
+      ["a,b@X.com", "a,b@x.com"],
     ];
     for (const [a, b] of pairs) expect(exec(`redirect "${a}"; redirect "${b}";`).redirectAddr).toHaveLength(2);
+  });
+
+  it("an address a host held before the run is read by the same rule", () => {
+    // The held keys are rebuilt from the list when it changed outside redirect.
+    let asked = 0;
+    const policy = new (class extends DummyPolicy {
+      override redirectAllowed(): boolean {
+        asked++;
+        return true;
+      }
+    })();
+    const s = load('redirect "a@x.com";', { enabledExtensions: [] });
+    const d = newRuntimeData(s, policy, new EnvelopeStatic(), new MessageStatic(0, new Map(), null));
+    d.redirectAddr.push("a@X.com");
+    s.execute(d);
+    expect([d.redirectAddr, asked]).toEqual([["a@X.com"], 0]);
   });
 
   it("a repeat's check does not re-read every address held", () => {
