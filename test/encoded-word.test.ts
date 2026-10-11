@@ -83,10 +83,12 @@ describe("a word that does not decode costs no more than one that does", () => {
 describe("base64 is read as atob reads it", () => {
   it("with or without its padding, and white space inside", () => {
     expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("aaa");
+    // Every character of the alphabet, "+" and "/" included.
+    expect(decodeHeaderValue("=?utf-8?b?Pj4+?= =?utf-8?b?Pz8/?=")).toBe(">>>???");
   });
 
   it("refusing a stray or misplaced pad, a bad length or a bad character", () => {
-    for (const w of ["=?utf-8?b?YQ=?=", "=?utf-8?b?Y?=", "=?utf-8?b?YQ==YQ==?=", "=?utf-8?b?Y-Q=?=", "=?utf-8?b?YQ===?="]) {
+    for (const w of ["=?utf-8?b?YQ=?=", "=?utf-8?b?Y?=", "=?utf-8?b?YQ==YQ==?=", "=?utf-8?b?Y-Q=?=", "=?utf-8?b?YQ===?=", "=?utf-8?b?YQ======?=", "=?utf-8?b?Y==Q?="]) {
       expect(decodeHeaderValue(w)).toBe(w);
     }
   });
