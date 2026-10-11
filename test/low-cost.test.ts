@@ -1,8 +1,25 @@
 // Issue #17: work the step budget did not see, and a decoder that was too
 // lenient.
+//
+// That work is counted, not timed: a bound loose enough for a loaded runner
+// under coverage let the regression pass on a quiet machine (#71).
 
-import { describe, expect, it } from "vitest";
-import { R, run } from "./harness.js";
+import { describe, expect, it, vi } from "vitest";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { ALL_EXTENSIONS, parseEml, R, run } from "./harness.js";
+
+// The HTML a run reduces, counted where the body test imports the reduction.
+const reduced = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../src/interp/htmltext.js", async (importOriginal) => {
+  const m = await importOriginal<typeof import("../src/interp/htmltext.js")>();
+  return {
+    ...m,
+    htmlToText: (s: string, cut?: boolean) => {
+      reduced.count++;
+      return m.htmlToText(s, cut);
+    },
+  };
+});
 
 const qp = (body: string) =>
   `From: a@x\r\nTo: b@y\r\nSubject: hi\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n${body}`;
@@ -41,10 +58,32 @@ describe("quoted-printable takes two hex digits after '='", () => {
   });
 });
 
-function time(f: () => unknown): number {
-  const t0 = performance.now();
-  f();
-  return performance.now() - t0;
+/** How many times f folds a value of a million characters or more: every
+ * i;ascii-casemap fold begins by asking whether the value holds a capital (a
+ * fold that stops asking counts none, and fails these tests rather than
+ * passing them). */
+function foldsOf(f: () => unknown): number {
+  let folds = 0;
+  const test = RegExp.prototype.test;
+  const spy = vi.spyOn(RegExp.prototype, "test").mockImplementation(function (this: RegExp, s: string) {
+    if (this.source === "[A-Z]" && s.length >= 1_000_000) folds++;
+    return test.call(this, s);
+  });
+  try {
+    f();
+  } finally {
+    spy.mockRestore();
+  }
+  return folds;
+}
+
+/** A body that counts the times it is read from its start. */
+class CountedBody extends Uint8Array {
+  passes = 0;
+  override subarray(begin?: number, end?: number) {
+    if (!begin) this.passes++;
+    return super.subarray(begin, end);
+  }
 }
 
 describe("many :contains keys over a large value", () => {
@@ -55,7 +94,7 @@ describe("many :contains keys over a large value", () => {
 
   it("fold the value once, not once per key", () => {
     // Folding a 1 MiB body per key took about 9 s for 1,000 keys.
-    expect(time(() => expect(run(script, big)).toEqual(R({ implicitKeep: true })))).toBeLessThan(2000);
+    expect(foldsOf(() => expect(run(script, big)).toEqual(R({ implicitKeep: true })))).toBe(1);
   });
 
   it("are charged by the value's size, so the budget bounds them", () => {
@@ -67,13 +106,11 @@ describe("many :contains keys over a large value", () => {
 
 describe(":value with many keys over a large value", () => {
   it("folds the value once, not once per key", () => {
-    // Alternating case is the fold's worst input; 300 keys took 3.5 s. Some
-    // 600 ms alone, past 1 s under a loaded full run: the bound tells the two
-    // apart, not a run from a quiet one.
+    // Alternating case is the fold's worst input; 300 keys took 3.5 s.
     const body = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"aA".repeat(512 * 1024)}\r\n`;
     const keys = Array.from({ length: 300 }, (_, i) => `"k${i}"`).join(",");
     const script = `require ["body","relational","fileinto"]; if body :value "eq" [${keys}] { fileinto "Eq"; }`;
-    expect(time(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBeLessThan(1500);
+    expect(foldsOf(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBe(1);
   });
 });
 
@@ -107,11 +144,16 @@ describe("repeated body :text tests reduce each HTML part once", () => {
   const rules = (n: number) =>
     `require ["body","fileinto"]; ${Array.from({ length: n }, (_, i) => `if body :text :contains "zz${i}" { fileinto "T${i}"; }`).join(" ")}`;
 
-  it("twenty tests cost about what one does", () => {
-    run(rules(1), eml); // warm up
-    const one = time(() => run(rules(1), eml));
-    const twenty = time(() => run(rules(20), eml));
-    expect(twenty).toBeLessThan(one * 5);
+  it("twenty tests read the body once and reduce it once", () => {
+    // Each test converted the raw body to a binary string, and decoded and
+    // reduced the part again: twenty cost twenty times one.
+    const { headers, size, body } = parseEml(eml);
+    const raw = new CountedBody(body!);
+    const s = load(rules(20), { enabledExtensions: ALL_EXTENSIONS });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
+    reduced.count = 0;
+    s.execute(d);
+    expect([d.implicitKeep, raw.passes, reduced.count]).toEqual([true, 1, 1]);
   });
 
   it("each test still sees the reduced text", () => {
