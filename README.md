@@ -134,7 +134,8 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256 KiB
+compiled program ≤ 10 000 instructions (and ≤ 100 000 compile steps, for
+repeats of nodes that emit nothing), `{n,m}` counts ≤ 1000, input ≤ 256 KiB
 (byte-truncated), and it charges every VM step to the execution budget.
 
 ## Robustness properties

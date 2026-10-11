@@ -18,6 +18,13 @@ const MAX_INPUT_LENGTH = 256 * 1024;
 // even for nested repeats.
 const MAX_REPEAT_COUNT = 1000;
 const MAX_PROGRAM_SIZE = 10_000;
+// The program-size cap bounds expansion only while every copy emits something:
+// a repeat of a node that emits nothing ("(?:)", "(?i)") adds no instructions,
+// so nested repeats of one went unchecked ("(?:(?:(?:(?:){1000}){1000}){1000}){1000}"
+// is 10^12 calls). Compile calls are counted too. Each call that emits nothing
+// sits inside a wrapper (group, concat, repeat) of one that does, so a pattern
+// within the program cap needs at most a few times its size; ten is margin.
+const MAX_COMPILE_WORK = 10 * MAX_PROGRAM_SIZE;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -370,12 +377,14 @@ type Inst =
 
 class Compiler {
   prog: Inst[] = [];
+  private work = 0;
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
     return this.prog.length - 1;
   }
   compile(node: Node): void {
+    if (++this.work > MAX_COMPILE_WORK) throw new SieveError("regex: pattern too complex to compile");
     switch (node.t) {
       case "empty":
         return;
