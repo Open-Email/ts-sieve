@@ -25,7 +25,7 @@ import {
   compareString,
   parseNumericPrefix,
 } from "./relational.js";
-import type { RuntimeData, Tri } from "./runtime.js";
+import { doubtCaptures, markCutCaptures, markStaleCaptures, type RuntimeData, type Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
 import { expandVars } from "./variables.js";
@@ -328,6 +328,8 @@ export class MatcherTest {
         const caps = re.findSubmatch(source, reOpts);
         if (caps !== null) {
           if (!truncated || (this.soundKeys[i] ?? globEndsWithStar(pattern))) {
+            if (d.captureDoubt || unknown) markStaleCaptures(caps);
+            else if (truncated) markCutCaptures(caps);
             d.matchVariables = caps;
             return true;
           }
@@ -359,6 +361,8 @@ export class MatcherTest {
           // Search semantics: a hit inside the prefix is a hit in the whole,
           // unless the pattern can anchor to the end.
           if (!truncated || (this.soundKeys[i] ?? regexSoundOnPrefix(pattern))) {
+            if (d.captureDoubt || unknown) markStaleCaptures(caps);
+            else if (truncated) markCutCaptures(caps);
             d.matchVariables = caps;
             return true;
           }
@@ -403,6 +407,7 @@ export class MatcherTest {
         if (r === "unknown") unknown = true;
       }
     }
+    if (unknown) doubtCaptures(d);
     return unknown ? "unknown" : false;
   }
 }

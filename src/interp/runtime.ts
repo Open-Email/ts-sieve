@@ -12,6 +12,42 @@ import type { MimePart } from "./mime.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
+/**
+ * Captures a match took from an input the engine cut (matcher.ts): they may
+ * differ from what the whole input gives. Keyed by the array, so code that
+ * saves and restores RuntimeData.matchVariables restores the mark too.
+ */
+const cutCaptures = new WeakSet<string[]>();
+
+/** Mark captures as taken from a cut input (see matchVariable). */
+export function markCutCaptures(caps: string[]): void {
+  cutCaptures.add(caps);
+}
+
+/**
+ * Captures an "unknown" may have changed. Evaluation goes on past an unknown
+ * member of anyof/allof, or an unknown key or value: over the whole input it
+ * could have set its own captures, or ended the test before a later member set
+ * these. Any read of them discloses, an out-of-range one too (the group count
+ * may differ).
+ */
+const staleCaptures = new WeakSet<string[]>();
+
+/** An "unknown" was met in the test being evaluated: doubt the captures in
+ * force, and any set before the evaluation ends (see CmdIf). */
+export function doubtCaptures(d: RuntimeData): void {
+  d.captureDoubt = true;
+  if (!staleCaptures.has(d.matchVariables)) {
+    d.matchVariables = [...d.matchVariables];
+    staleCaptures.add(d.matchVariables);
+  }
+}
+
+/** Mark captures set while their test evaluation was in doubt. */
+export function markStaleCaptures(caps: string[]): void {
+  staleCaptures.add(caps);
+}
+
 /** Thrown by Budget.consume when a share runs out; withShare catches it. */
 const SHARE_EXHAUSTED = Symbol("share exhausted");
 
@@ -97,6 +133,10 @@ export class SharedTest implements Test {
     private readonly test: Test,
     private readonly index: number,
   ) {}
+  /** The wrapped test's (see test.ts setsCaptures). */
+  get setsCaptures(): boolean | undefined {
+    return (this.test as { setsCaptures?: boolean }).setsCaptures;
+  }
   check(d: RuntimeData): Tri {
     return withShare(d, this.index, () => this.test.check(d));
   }
@@ -297,10 +337,22 @@ export class RuntimeData {
   /** FS that `test_script_compile` reads sub-scripts from. */
   namespace: Namespace | null = null;
 
-  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). */
+  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). A capture from a cut input
+   * may differ from what the whole input gives (for :matches, ${0} and the
+   * last "*"; for :regex, any group), with nothing to say so: reading it sets
+   * indeterminate, as a variable cut to its size limit does. So does reading a capture an
+   * "unknown" may have changed (see doubtCaptures), in range or not. */
   matchVariable(i: number): string {
-    return i >= 0 && i < this.matchVariables.length ? this.matchVariables[i]! : "";
+    if (staleCaptures.has(this.matchVariables)) this.indeterminate = true;
+    if (i < 0 || i >= this.matchVariables.length) return "";
+    if (cutCaptures.has(this.matchVariables)) this.indeterminate = true;
+    return this.matchVariables[i]!;
   }
+
+  /** An "unknown" was met in the test being evaluated (see doubtCaptures);
+   * cleared after each if/elsif test. (deleteheader, the one other matcher,
+   * discloses its own unknowns.) */
+  captureDoubt = false;
 
   /** Cooperative CPU budget; `maxExecSteps <= 0` ⇒ unlimited. */
   readonly budget: Budget;
@@ -345,6 +397,8 @@ export class RuntimeData {
     c.headerEditBytes = this.headerEditBytes;
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
+    if (cutCaptures.has(this.matchVariables)) cutCaptures.add(c.matchVariables);
+    if (staleCaptures.has(this.matchVariables)) staleCaptures.add(c.matchVariables);
     c.partStack = [...this.partStack];
     c.vacationResponses = new Map(this.vacationResponses);
     c.testName = this.testName;

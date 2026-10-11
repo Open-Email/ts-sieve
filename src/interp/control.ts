@@ -18,6 +18,8 @@ export class CmdIf implements Cmd {
 
   execute(d: RuntimeData): void {
     const res = this.test.check(d);
+    // Doubt about captures lasts one test's evaluation (see doubtCaptures).
+    d.captureDoubt = false;
     if (res === "unknown") d.indeterminate = true;
     if (res === true) {
       for (const c of this.block) {
@@ -36,6 +38,8 @@ export class CmdElsif implements Cmd {
   execute(d: RuntimeData): void {
     if (d.ifResult) return;
     const res = this.test.check(d);
+    // Doubt about captures lasts one test's evaluation (see doubtCaptures).
+    d.captureDoubt = false;
     if (res === "unknown") d.indeterminate = true;
     if (res === true) {
       for (const c of this.block) {
