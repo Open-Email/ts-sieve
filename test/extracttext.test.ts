@@ -167,12 +167,13 @@ describe("a cut left open in the decoding", () => {
     expect(run(found, eml, CUT)).toEqual(R({ fileinto: ["[hello wor]"], indeterminate: true }));
   });
 
-  it("a UTF-16 code unit split by the cut, behind a BOM", () => {
+  it("a UTF-16 code unit split by the cut, whichever byte order", () => {
     const first2 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 2 "t"; fileinto "[${t}]"; }';
-    expect(runBytes(first2, "text/plain; charset=utf-16", [0xff, 0xfe, 0x68, 0, 0x69], { cut: true })).toEqual({
-      fileinto: ["[h]"],
-      indeterminate: true,
-    });
+    const utf16 = (b: number[]) => runBytes(first2, "text/plain; charset=utf-16", b, { cut: true });
+    // Little-endian behind its BOM; big-endian behind its BOM and without one.
+    expect(utf16([0xff, 0xfe, 0x68, 0, 0x69])).toEqual({ fileinto: ["[h]"], indeterminate: true });
+    expect(utf16([0xfe, 0xff, 0, 0x68, 0])).toEqual({ fileinto: ["[h]"], indeterminate: true });
+    expect(utf16([0, 0x68, 0])).toEqual({ fileinto: ["[h]"], indeterminate: true });
   });
 
   it("a non-text leaf's character split by the cut", () => {

@@ -28,7 +28,7 @@ import {
 import type { RuntimeData, Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
-import { expandForMatch, expandVars } from "./variables.js";
+import { expandVars } from "./variables.js";
 
 /**
  * Whether a `:matches` glob ends with an UNESCAPED `*`. Over a prefix of the
@@ -371,7 +371,7 @@ export class MatcherTest {
           // sort on either side of it.
           unknown = true;
         } else {
-          const k = expandForMatch(d, key);
+          const k = expandVars(d, key);
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
@@ -386,7 +386,7 @@ export class MatcherTest {
         // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
         // and charged by the value's size, a step per KiB: once for the fold,
         // and for :contains once per key searched through it.
-        const k = expandForMatch(d, key);
+        const k = expandVars(d, key);
         let r: Tri;
         if (this.match === "contains") d.budget.consume(source.length >> 10);
         if (this.comparator === "i;ascii-numeric") {

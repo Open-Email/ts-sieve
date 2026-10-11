@@ -3,7 +3,7 @@
 // including the RFC 5231 `:count` accumulation and RFC 5260 `:index`/`:last`
 // field selection on header/address.
 
-import { canonicalFlags } from "./action.js";
+import { canonicalFlags, chargeFlags } from "./action.js";
 import {
   parseAddressList,
   parseEnvelopeAddress,
@@ -423,6 +423,7 @@ export class HasFlagTest implements Test {
     let flags: string[];
     if (this.variables.length > 0) {
       const lists = this.variables.map((v) => d.variables.get(v.toLowerCase()) ?? "");
+      chargeFlags(d, lists);
       flags = canonicalFlags(lists, null, d.flagAliases).filter((f) => f !== "");
     } else {
       flags = d.flags;

@@ -62,9 +62,20 @@ function nextClose(s: string, from: number, close: number): number {
   return close === -1 || close >= from ? close : s.indexOf("}", from);
 }
 
-/** Substitute ${name}/${N}. Identity when `variables` is not required. */
+/**
+ * Substitute ${name}/${N}. Identity when `variables` is not required.
+ *
+ * Under a share of the budget (a test, or any command in a foreverypart loop;
+ * see withShare) the expansion is charged by its size, a step per 128
+ * characters, as it grows: whatever reads it is linear in it, and a few
+ * references to a variable filled from the message expand to megabytes, every
+ * iteration of a loop. A top-level command is not charged: it runs once, and
+ * running out outside a share would fail the script.
+ */
 export function expandVars(d: RuntimeData, s: string): string {
   if (!d.script.requiresExtension("variables") || !s.includes("${")) return s;
+  const charge = d.budget.shares > 0;
+  let charged = 0;
   let out = "";
   let i = 0;
   let close = -2;
@@ -76,12 +87,17 @@ export function expandVars(d: RuntimeData, s: string): string {
       if (name !== null) {
         out += resolveVar(d, name);
         i = close + 1;
+        if (charge && out.length >> 7 > charged) {
+          d.budget.consume((out.length >> 7) - charged);
+          charged = out.length >> 7;
+        }
         continue;
       }
     }
     out += s[i];
     i++;
   }
+  if (charge && out.length >> 7 > charged) d.budget.consume((out.length >> 7) - charged);
   return out;
 }
 
@@ -113,38 +129,41 @@ export function unusableVarRef(script: Script, s: string): string | null {
   return null;
 }
 
-/**
- * expandVars for a value a test then matches, charged by the expansion's size
- * (a step per 128 characters). Building it and hashing it are linear, and a
- * few references to a variable filled from the message can expand to millions
- * of characters, every iteration of a loop. Only for tests and the matcher,
- * which run under a share of the budget (withShare): running out there is
- * "unknown", never a throw.
- */
-export function expandForMatch(d: RuntimeData, s: string): string {
-  const out = expandVars(d, s);
-  if (out.length !== s.length) d.budget.consume(out.length >> 7);
-  return out;
-}
-
 export function expandVarsList(d: RuntimeData, list: string[]): string[] {
   if (!d.script.requiresExtension("variables")) return list;
   return list.map((v) => expandVars(d, v));
 }
 
-/** Store a user variable, truncating the value to MaxVariableLen (byte-aware). */
+/**
+ * The UTF-8 bytes of s when it is over maxLen bytes, or null when it fits. Only
+ * its first maxLen units are encoded, which is all a cut to maxLen bytes
+ * keeps: a UTF-16 unit is one to three bytes, so a string of at most maxLen / 3
+ * units fits unread, and one of more than maxLen units does not.
+ */
+function overLimit(s: string, maxLen: number): Uint8Array | null {
+  if (s.length * 3 <= maxLen) return null;
+  const bytes = encoder.encode(s.length > maxLen ? s.slice(0, maxLen) : s);
+  return s.length > maxLen || bytes.length > maxLen ? bytes : null;
+}
+
+/**
+ * Store a user variable, truncating the value to maxVariableLen bytes (backing
+ * off a split UTF-8 sequence). A cut value is a prefix with no mark saying so,
+ * and a rule testing it would stand on a guess: the cut is disclosed as
+ * indeterminate.
+ */
 export function setVar(d: RuntimeData, name: string, value: string): void {
   const maxLen = d.script.opts.maxVariableLen;
   if (name.length > d.script.opts.maxVariableNameLen) {
     throw new SieveError(`variable name too long: ${name}`);
   }
   let v = value;
-  if (encoder.encode(v).length > maxLen) {
-    // Truncate to maxLen bytes, backing off a split UTF-8 sequence.
-    const bytes = encoder.encode(v);
+  const bytes = overLimit(v, maxLen);
+  if (bytes !== null) {
     let end = maxLen;
     while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--; // in a continuation byte
     v = new TextDecoder().decode(bytes.subarray(0, end));
+    d.indeterminate = true;
   }
   const lower = name.toLowerCase();
   const dot = lower.indexOf(".");
@@ -158,27 +177,39 @@ export function setVar(d: RuntimeData, name: string, value: string): void {
 
 type Modifier = { precedence: number; apply: (s: string) => string };
 
+/** s with its first character, a whole code point, mapped by f. */
+function firstChar(s: string, f: (c: string) => string): string {
+  if (s === "") return s;
+  const w = s.codePointAt(0)! > 0xffff ? 2 : 1;
+  return f(s.slice(0, w)) + s.slice(w);
+}
+
 export const SET_MODIFIERS: Record<string, Modifier> = {
   lower: { precedence: 40, apply: (s) => s.toLowerCase() },
   upper: { precedence: 40, apply: (s) => s.toUpperCase() },
-  lowerfirst: { precedence: 30, apply: (s) => (s ? s[0]!.toLowerCase() + s.slice(1) : s) },
-  upperfirst: { precedence: 30, apply: (s) => (s ? s[0]!.toUpperCase() + s.slice(1) : s) },
+  lowerfirst: { precedence: 30, apply: (s) => firstChar(s, (c) => c.toLowerCase()) },
+  upperfirst: { precedence: 30, apply: (s) => firstChar(s, (c) => c.toUpperCase()) },
   quotewildcard: { precedence: 20, apply: (s) => s.replace(/[\\*?]/g, (c) => `\\${c}`) },
   length: { precedence: 10, apply: (s) => String(Array.from(s).length) },
 };
 
 /**
  * RFC 5229: when `:quotewildcard` is the LAST-applied (lowest-precedence)
- * modifier, the value is truncated to the size limit here and a dangling escape
- * backslash is dropped, so the stored value stays a valid quoted pattern.
+ * modifier, the value is truncated to the size limit here and an escape the cut
+ * separated from its character is dropped, so the stored value stays a valid
+ * quoted pattern.
  * Byte-based + UTF-8-aware, mirroring setVar's truncation.
  */
 function truncateQuoted(s: string, maxLen: number): string {
-  const bytes = encoder.encode(s);
-  if (bytes.length <= maxLen) return s;
+  const bytes = overLimit(s, maxLen);
+  if (bytes === null) return s;
   let until = maxLen;
   while (until > 0 && (bytes[until]! & 0xc0) === 0x80) until--; // in a UTF-8 continuation byte
-  if (until > 0 && bytes[until - 1] === 0x5c /* \ */) until--; // drop a dangling escape backslash
+  // The trailing backslashes are escaped backslashes, pairs, then perhaps one
+  // escape the cut separated from its character: an odd run ends in one.
+  let run = 0;
+  while (run < until && bytes[until - 1 - run] === 0x5c /* \ */) run++;
+  if (run % 2 === 1) until--;
   return new TextDecoder().decode(bytes.subarray(0, until));
 }
 
@@ -192,19 +223,31 @@ export class CmdSet implements Cmd {
   }
 }
 
-/** Apply set modifiers (RFC 5229 §4.1), highest precedence first; shared by
- * set and extracttext. */
-export function applySetModifiers(d: RuntimeData, modifiers: string[], value: string, onCut?: () => void): string {
+/**
+ * Apply set modifiers (RFC 5229 §4.1), highest precedence first; shared by set
+ * and extracttext. A value :quotewildcard's truncation cuts is disclosed as
+ * indeterminate, as setVar discloses its own cut.
+ *
+ * Under a share of the budget (in a foreverypart loop) each modifier is
+ * charged by the value it walks, a step per 128 characters, and
+ * :quotewildcard by the escapes it added, a step per 16: an escape costs some
+ * 15 ns, a hundred times a character of the case modifiers.
+ */
+export function applySetModifiers(d: RuntimeData, modifiers: string[], value: string): string {
   let v = value;
   const ordered = [...modifiers].sort((a, b) => (SET_MODIFIERS[b]?.precedence ?? 0) - (SET_MODIFIERS[a]?.precedence ?? 0));
+  const charge = d.budget.shares > 0;
   let lastPrec = 0;
   for (const m of ordered) {
+    if (charge) d.budget.consume(v.length >> 7);
+    const before = v.length;
     v = SET_MODIFIERS[m]!.apply(v);
+    if (charge && m === "quotewildcard") d.budget.consume((v.length - before) >> 4);
     lastPrec = SET_MODIFIERS[m]!.precedence;
   }
   if (lastPrec === SET_MODIFIERS.quotewildcard!.precedence) {
     const quoted = truncateQuoted(v, d.script.opts.maxVariableLen);
-    if (quoted.length !== v.length) onCut?.();
+    if (quoted.length !== v.length) d.indeterminate = true;
     v = quoted;
   }
   return v;
@@ -222,12 +265,12 @@ export class TestString implements Test {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     if (this.matcher.isCount()) {
       let n = 0;
-      for (const src of this.source) if (expandForMatch(d, src) !== "") n++;
+      for (const src of this.source) if (expandVars(d, src) !== "") n++;
       return this.matcher.countMatches(d, n);
     }
     let unknown = false;
     for (const src of this.source) {
-      const r = this.matcher.tryMatch(d, expandForMatch(d, src), opts);
+      const r = this.matcher.tryMatch(d, expandVars(d, src), opts);
       if (r === true) return true;
       if (r === "unknown") unknown = true;
     }
