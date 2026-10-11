@@ -136,6 +136,19 @@ describe("what loops can make an execution hold", () => {
     expect(units).toBeLessThanOrEqual(2 * 4 * 1024 * 1024);
   });
 
+  for (const [label, body] of [
+    ["exists after edits", `foreverypart { addheader :last "X-A" "v"; } foreverypart { foreverypart { if exists "x-a" { fileinto "A"; } } }`],
+    ["header :count after edits", `foreverypart { addheader :last "X-A" "v"; } foreverypart { foreverypart { if header :count "eq" "x-a" "5" { fileinto "A"; } } }`],
+    ["edits and reads interleaved", `foreverypart { foreverypart { addheader :last "X-A" "v"; if exists "x-a" { fileinto "A"; } } }`],
+  ] as const) {
+    it(`reading edited headers in loops: ${label}`, () => {
+      // Every read replayed the whole edit list, copying the result per add:
+      // quadratic per read and uncharged, multiplied by the loops (20 s).
+      const script = `require ["foreverypart","mime","fileinto","editheader","relational","comparator-i;ascii-numeric"]; ${body} fileinto "After";`;
+      within(1500, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
+    });
+  }
+
   it("header edits are capped, and an edit past the cap is disclosed", () => {
     const script = `require ["foreverypart","mime","variables","fileinto","editheader"];
       if header :matches "subject" "*" { set "v" "\${1}"; }

@@ -20,7 +20,7 @@ export interface HeaderEdit {
 
 const PROTECTED_HEADERS = new Set(["received", "auto-submitted"]);
 
-/** Header edits one execution may record, and the octets of added values.
+/** Header edits one execution may record, and the UTF-16 units of added values.
  * foreverypart repeats commands, so without them a loop over many parts grew
  * the ledger past a Worker's memory (56,730 edits, 221M characters). An edit
  * past either is dropped and the guess disclosed: later header reads miss it. */
@@ -82,43 +82,55 @@ function isProtectedHeader(name: string): boolean {
   return PROTECTED_HEADERS.has(name.toLowerCase());
 }
 
+/** Per execution and field: the replay of the first `n` edits over the
+ * values the host returned (`src`). */
+const replays = new WeakMap<RuntimeData, Map<string, { n: number; src: string[]; out: string[] }>>();
+
 /**
  * Replay the header-edit ledger over a header's raw values. Field match is
  * case-insensitive; adds prepend (or append with :last); deletes remove by index
  * (1-based, :last counts from the end), by exact value (first occurrence), or all.
+ *
+ * Every header read replays, and foreverypart repeats both edits and reads:
+ * replaying the whole ledger on each read, with a copy per add, cost tens of
+ * seconds. The ledger only grows, so each field's last replay is kept and only
+ * the edits since are applied to a copy of it (the arrays returned are never
+ * changed afterwards). A host that returns a fresh array per headerGet call
+ * just replays from the start.
  */
 export function applyHeaderEditsToValues(d: RuntimeData, fieldName: string, values: string[]): string[] {
-  if (d.headerEdits.length === 0) return values;
-  let result = [...values];
+  const n = d.headerEdits.length;
+  if (n === 0) return values;
   const fn = fieldName.toLowerCase();
-  for (const edit of d.headerEdits) {
+  let memo = replays.get(d);
+  if (memo === undefined) replays.set(d, (memo = new Map()));
+  const last = memo.get(fn);
+  const same = last !== undefined && (last.src === values || (last.src.length === 0 && values.length === 0));
+  if (same && last.n === n) return last.out;
+  const out = same ? last.out.slice() : [...values];
+  replayInto(out, d.headerEdits, fn, same ? last.n : 0, n);
+  memo.set(fn, { n, src: values, out });
+  return out;
+}
+
+/** Apply edits[from, to) for field `fn` to `result`, in place. */
+function replayInto(result: string[], edits: HeaderEdit[], fn: string, from: number, to: number): void {
+  for (let i = from; i < to; i++) {
+    const edit = edits[i]!;
     if (edit.fieldName.toLowerCase() !== fn) continue;
     if (edit.action === "add") {
-      result = edit.last ? [...result, edit.value] : [edit.value, ...result];
+      if (edit.last) result.push(edit.value);
+      else result.unshift(edit.value);
+    } else if (edit.index > 0) {
+      const idx = edit.last ? result.length - edit.index : edit.index - 1;
+      if (idx >= 0 && idx < result.length) result.splice(idx, 1);
+    } else if (edit.value !== "") {
+      const idx = result.indexOf(edit.value);
+      if (idx !== -1) result.splice(idx, 1);
     } else {
-      if (edit.index > 0) {
-        let idx = edit.index - 1;
-        if (edit.last) idx = result.length - edit.index;
-        if (idx >= 0 && idx < result.length) {
-          result = [...result.slice(0, idx), ...result.slice(idx + 1)];
-        }
-      } else if (edit.value !== "") {
-        const out: string[] = [];
-        let deleted = false;
-        for (const v of result) {
-          if (!deleted && v === edit.value) {
-            deleted = true;
-            continue;
-          }
-          out.push(v);
-        }
-        result = out;
-      } else {
-        result = [];
-      }
+      result.length = 0;
     }
   }
-  return result;
 }
 
 export class CmdAddHeader implements Cmd {
