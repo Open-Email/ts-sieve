@@ -139,7 +139,7 @@ class TextOut {
 
 export function htmlToText(s: string): string {
   const w = new TextOut();
-  const ctx: Ctx = { bounded: false, gt: -2, escape: -2, rawStart: -2 };
+  const ctx: Ctx = { bounded: false, gt: -2, escape: -2, rawStart: -2, amp: -2 };
   const n = s.length;
   let i = 0;
   while (i < n) {
@@ -168,6 +168,8 @@ type Ctx = {
   escape: number;
   /** The same for VISIBLE_RAW_START, searched from each bounded region. */
   rawStart: number;
+  /** The same for "&", searched from each bounded region. */
+  amp: number;
 };
 
 /**
@@ -237,10 +239,10 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   if (s.startsWith("![CDATA[", j)) {
     const close = s.indexOf("]]>", j + 8);
     if (close === -1 || holdsVisibleRawStart(s, j + 8, close, ctx)) {
-      w.text(s, j + 8, n, false);
+      keepRegion(s, j + 8, n, w, ctx);
       return n;
     }
-    w.text(s, j + 8, close, false);
+    keepRegion(s, j + 8, close, w, ctx);
     return close + 3;
   }
   const gt = nextGt(s, j, ctx);
@@ -254,7 +256,7 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   while (k < gt && !endsTagName(s.charCodeAt(k))) k++;
   const name = k - j <= 16 ? s.slice(j, k).toLowerCase() : "";
   if (name === "plaintext") {
-    w.text(s, gt + 1, n, false);
+    keepRegion(s, gt + 1, n, w, ctx);
     return n;
   }
   const raw = RAW_TEXT.get(name);
@@ -262,10 +264,10 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   raw.closer.lastIndex = gt + 1;
   const m = raw.closer.exec(s);
   if (m === null || holdsVisibleRawStart(s, gt + 1, m.index, ctx)) {
-    w.text(s, gt + 1, n, false);
+    keepRegion(s, gt + 1, n, w, ctx);
     return n;
   }
-  w.text(s, gt + 1, m.index, raw.decode);
+  keepRegion(s, gt + 1, m.index, w, ctx);
   return m.index; // the closing tag is read as markup next
 }
 
@@ -281,6 +283,21 @@ function holdsVisibleRawStart(s: string, from: number, to: number, ctx: Ctx): bo
     ctx.rawStart = VISIBLE_RAW_START.exec(s)?.index ?? -1;
   }
   return ctx.rawStart !== -1 && ctx.rawStart < to;
+}
+
+/**
+ * Keep s[from, to) as text in bounded mode. Whether a browser decodes its
+ * character references depends on a state undecidable here — raw (xmp,
+ * plaintext, CDATA in foreign content: literal) or data/RCDATA (decoded) —
+ * so a region holding "&" yields both readings, the literal one first.
+ */
+function keepRegion(s: string, from: number, to: number, w: TextOut, ctx: Ctx): void {
+  w.text(s, from, to, false);
+  if (ctx.amp !== -1 && ctx.amp < from) ctx.amp = s.indexOf("&", from);
+  if (ctx.amp !== -1 && ctx.amp < to) {
+    w.space();
+    w.text(s, from, to, true);
+  }
 }
 
 /** The first ">" at or after `j`, reusing the last search while it qualifies. */

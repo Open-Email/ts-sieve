@@ -14,6 +14,9 @@ const eml = (html: string) =>
 /** The text body :text sees for `html`, asserted by an exact :is match. */
 const textIs = (html: string, text: string) =>
   run(`require "body"; if body :text :is ${quote(text)} { keep; }`, eml(html)).keep;
+/** Whether body :text contains `text`. */
+const textHas = (html: string, text: string) =>
+  run(`require "body"; if body :text :contains ${quote(text)} { keep; }`, eml(html)).keep;
 
 describe("HTML to text: what is a tag", () => {
   it("style and script elements drop with their content", () => {
@@ -160,6 +163,23 @@ describe("HTML to text: no drop state a browser would not enter", () => {
     expect(textIs("<select><xmp><textarea></xmp><b W0>", "<textarea></xmp><b W0>")).toBe(true);
     // Without such a start the region still ends at its closer.
     expect(textIs("<svg><textarea>a<b>c</textarea><i>d", "a<b>c d")).toBe(true);
+  });
+
+  it("there, raw regions show both their literal and their decoded text", () => {
+    // Bounded mode cannot tell a raw state (references stay literal) from data
+    // or RCDATA (they decode), so a region holding "&" yields both readings.
+    for (const html of [
+      "<svg><plaintext>B&#117;y",
+      "<svg></svg><textarea>B&#117;y",
+      "<svg></svg><![CDATA[>B&#117;y",
+      "<svg><xmp>B&#117;y</xmp>",
+      "<svg></svg><textarea><xmp></textarea>B&#117;y",
+      "<select><textarea>B&#117;y",
+    ]) {
+      expect(textHas(html, "Buy"), html).toBe(true);
+    }
+    expect(textHas("<svg><![CDATA[&notice]]>", "&notice")).toBe(true);
+    expect(textHas("<svg><![CDATA[&notice]]>", "\u00acice")).toBe(true);
   });
 
   it("noscript bounds what follows (it is raw text where scripting is on)", () => {
