@@ -55,6 +55,12 @@ describe(":mime over a cut body", () => {
     expect(run(script, mixed("image/png", false), CUT)).toEqual(R({ implicitKeep: true, indeterminate: true }));
   });
 
+  it("a part cut inside its header is not yet a part", () => {
+    // "Content-Type: application/pdf" may go on as "application/pdfx".
+    const eml = "From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: application/pdf";
+    expect(run(anyPdf, eml, CUT)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
   it("with the close delimiter in view, the miss is definite", () => {
     expect(run(anyPdf, mixed("image/png", true), CUT)).toEqual(R({ implicitKeep: true }));
   });

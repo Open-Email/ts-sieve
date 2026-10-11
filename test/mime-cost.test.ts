@@ -55,9 +55,36 @@ describe("loops over a deep tree with a huge header value", () => {
   });
 });
 
+describe("each kind of work is charged on its own", () => {
+  const req = 'require ["mime","foreverypart","fileinto"];';
+
+  it(":param values are decoded once and charged by size", () => {
+    // A 1 MB RFC 2047 parameter value, read in nested loops.
+    let body = "";
+    for (let i = 1; i <= 98; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
+    body += `--b98\r\nContent-Type: text/plain; x="=?utf-8?Q?${"=41".repeat(330_000)}?="\r\n\r\nx\r\n`;
+    for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
+    const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+    within(1500, () =>
+      run(`${req} foreverypart { foreverypart { if header :mime :anychild :param "x" "content-type" "zz" { fileinto "A"; } } } fileinto "After";`, eml, CORE),
+    );
+  });
+
+  it("address :mime values are charged by size", () => {
+    let body = "";
+    for (let i = 1; i <= 98; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
+    body += `--b98\r\nContent-Type: text/plain\r\nX-Big: ${"a".repeat(1_000_000)}@b\r\n\r\nx\r\n`;
+    for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
+    const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+    within(600, () =>
+      run(`${req} foreverypart { foreverypart { foreverypart { if address :mime :is "x-big" "z@b" { fileinto "A"; } } } } fileinto "After";`, eml, CORE),
+    );
+  });
+});
+
 describe("many parts, four nested loops", () => {
   it("absent headers are still charged per part", () => {
-    const small = chain(98, 60, 0);
+    const small = chain(98, 200, 0);
     const names = Array.from({ length: 8 }, (_, i) => `"x-none-${i}"`).join(",");
     const script = `require ["mime","foreverypart","fileinto"];
       foreverypart { foreverypart { foreverypart { foreverypart { if header :mime :anychild :contains [${names}] "z" { fileinto "A"; } } } } }

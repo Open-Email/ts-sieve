@@ -253,7 +253,7 @@ export class MimeOpts {
         const parsed = derive(v, "p", parseContentValue);
         for (const want of params) {
           const p = parsed.params.get(want.toLowerCase());
-          if (p !== undefined) out.push(decodeHeaderValue(p));
+          if (p !== undefined) out.push(derive(p, "d", decodeHeaderValue));
         }
         continue;
       }
@@ -405,7 +405,7 @@ function sectionKey(key: string): { base: string; index: number | null; star: bo
   let j = end;
   while (j > 0 && key.charCodeAt(j - 1) >= 0x30 && key.charCodeAt(j - 1) <= 0x39) j--;
   if (j < end && j > 1 && key[j - 1] === "*") return { base: key.slice(0, j - 1), index: Number(key.slice(j, end)), star };
-  if (star && j === end && end > 0) return { base: key.slice(0, end), index: null, star: true };
+  if (star && end > 0) return { base: key.slice(0, end), index: null, star: true };
   return null;
 }
 
