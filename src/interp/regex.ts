@@ -237,7 +237,7 @@ class Parser {
     }
     if (this.peek() !== "]") throw new SieveError("regex: missing ]");
     this.pos++;
-    return { t: "class", ranges, negated, fold: this.flags.i };
+    return { t: "class", ranges: normalizeRanges(ranges), negated, fold: this.flags.i };
   }
 
   private parseClassEscape(): number | [number, number][] {
@@ -354,6 +354,29 @@ function negate(ranges: [number, number][]): [number, number][] {
   return out;
 }
 
+function normalizeRanges(ranges: [number, number][]): [number, number][] {
+  if (ranges.length === 0) return [];
+  const sorted = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: [number, number][] = [];
+  let curLo = sorted[0]![0];
+  let curHi = sorted[0]![1];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const [nextLo, nextHi] = sorted[i]!;
+    if (nextLo <= curHi + 1) {
+      if (nextHi > curHi) {
+        curHi = nextHi;
+      }
+    } else {
+      out.push([curLo, curHi]);
+      curLo = nextLo;
+      curHi = nextHi;
+    }
+  }
+  out.push([curLo, curHi]);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Compiler → program
 // ---------------------------------------------------------------------------
@@ -386,7 +409,7 @@ class Compiler {
         this.emit({ op: "any", dotall: node.dotall });
         return;
       case "class":
-        this.emit({ op: "class", ranges: node.ranges, negated: node.negated, fold: node.fold });
+        this.emit({ op: "class", ranges: normalizeRanges(node.ranges), negated: node.negated, fold: node.fold });
         return;
       case "assert":
         this.emit({ op: "assert", kind: node.kind });
@@ -487,12 +510,28 @@ function isWord(cp: number): boolean {
   return (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || cp === 95;
 }
 
+function binarySearchRanges(ranges: [number, number][], cp: number): boolean {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const r = ranges[mid]!;
+    if (cp < r[0]) {
+      hi = mid - 1;
+    } else if (cp > r[1]) {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
 function classMatch(inst: { ranges: [number, number][]; negated: boolean; fold: boolean }, cp: number): boolean {
-  const test = (c: number) => inst.ranges.some(([lo, hi]) => c >= lo && c <= hi);
-  let hit = test(cp);
+  let hit = binarySearchRanges(inst.ranges, cp);
   if (!hit && inst.fold) {
     const swapped = cp >= 65 && cp <= 90 ? cp + 32 : cp >= 97 && cp <= 122 ? cp - 32 : cp;
-    if (swapped !== cp) hit = test(swapped);
+    if (swapped !== cp) hit = binarySearchRanges(inst.ranges, swapped);
   }
   return inst.negated ? !hit : hit;
 }
