@@ -1,6 +1,6 @@
 // Dovecot Pigeonhole `.svtest` conformance corpus (vendored under
 // test/corpus-src/ — LGPL third-party data; see test/corpus-src/PROVENANCE.md).
-// One vitest `it` per `.svtest`: in-scope
+// One vitest `it` per `.svtest` (and `.svtest.in` — see listSvtests): in-scope
 // files run through runDovecotFile and must produce zero sub-test failures;
 // files requiring an extension this interpreter doesn't implement (enotify,
 // include, mime, …) or the result-verification DSL that is out of scope here
@@ -70,7 +70,16 @@ function listSvtests(): Candidate[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(abs);
-      else if (entry.isFile() && entry.name.endsWith(".svtest")) {
+      // A `.svtest.in` is a configure template. In the pinned Pigeonhole,
+      // Makefile.am activates its `#UTF8#` lines on a mail-UTF-8 build and
+      // deletes them otherwise (the direction flipped between upstream
+      // d6a78f6 and 2722bdbc02). The only one, test-address.svtest.in, uses
+      // them for three assertions that a non-ASCII local part is INVALID,
+      // which this interpreter deliberately does not share: it accepts RFC
+      // 6532 addresses, as go-sieve a369ec3 does. Run verbatim, the marker
+      // starts a Sieve comment — exactly the `s/#UTF8#.*//` output — so those
+      // three stay off and the rest of the file runs.
+      else if (entry.isFile() && (entry.name.endsWith(".svtest") || entry.name.endsWith(".svtest.in"))) {
         out.push({ rel: path.relative(CORPUS_ROOT, abs), abs });
       }
     }

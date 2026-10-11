@@ -1,7 +1,7 @@
 // @openemail/sieve — an RFC 5228 Sieve interpreter for TypeScript.
 // Framework-agnostic: implement Message/Envelope/PolicyReader, load() a script,
 // then execute it against a RuntimeData and read the accumulated actions
-// (mailboxes, redirectAddr, flags, keep, implicitKeep).
+// (mailboxes, redirectAddr, flags, keep, implicitKeep, rejected, …).
 
 export { SieveError } from "./errors.js";
 export { load, defaultOptions, Script, type Options } from "./interp/script.js";

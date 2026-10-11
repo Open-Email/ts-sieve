@@ -350,3 +350,207 @@ describe("editheader visibility in date test", () => {
     ).toEqual(R({ keep: true, implicitKeep: true }));
   });
 });
+
+// RFC 5322 §3.4: name-addr = [display-name] angle-addr, so "<user@example.com>"
+// is a valid mailbox whose address is user@example.com. Bulk mailers send To:
+// and From: in this form; comparing it literally (brackets and all) made every
+// :is/:matches/:localpart/:domain rule on it miss silently. A non-ASCII local
+// part (RFC 6532) parses the same way as it does with a display name.
+describe("RFC 5322 bare angle-addr in the address test", () => {
+  const msg = (field: string, value: string) => `${field}: ${value}\nSubject: hi\n\nbody\n`;
+  const kept = R({ keep: true, implicitKeep: true });
+  const notKept = R({ implicitKeep: true });
+
+  it(":is :all matches the address inside the brackets", () => {
+    expect(run('if address :is "to" "user@example.com" { keep; }', msg("To", "<user@example.com>"))).toEqual(kept);
+  });
+
+  it(":domain and :localpart see the parsed address", () => {
+    expect(run('if address :domain :is "to" "example.com" { keep; }', msg("To", "<user@example.com>"))).toEqual(kept);
+    expect(run('if address :localpart :is "to" "user" { keep; }', msg("To", "<user@example.com>"))).toEqual(kept);
+  });
+
+  it(":matches is not defeated by a trailing bracket", () => {
+    expect(run('if address :matches "from" "*@example.com" { keep; }', msg("From", "<a@example.com>"))).toEqual(kept);
+  });
+
+  it("surrounding whitespace and comments do not change the address", () => {
+    expect(
+      run('if address :is "from" "a@example.com" { keep; }', msg("From", "  <a@example.com> (bulk)")),
+    ).toEqual(kept);
+  });
+
+  it("the brackets are not part of the matched address", () => {
+    expect(run('if address :is "to" "<user@example.com>" { keep; }', msg("To", "<user@example.com>"))).toEqual(
+      notKept,
+    );
+  });
+
+  it(":count counts a bare angle-addr as one address", () => {
+    expect(
+      run('require "relational"; if address :count "eq" "to" "1" { keep; }', msg("To", "<a@example.com>")),
+    ).toEqual(kept);
+  });
+
+  it("a non-ASCII local part parses as it does with a display name", () => {
+    expect(run('if address :is "to" "josé@example.com" { keep; }', msg("To", "<josé@example.com>"))).toEqual(kept);
+    expect(run('if address :localpart :is "to" "josé" { keep; }', msg("To", "<josé@example.com>"))).toEqual(kept);
+    expect(run('if address :is "to" "josé@example.com" { keep; }', msg("To", "José <josé@example.com>"))).toEqual(
+      kept,
+    );
+  });
+
+  it("a word that is not an address still matches :all as itself", () => {
+    expect(run('if address :is :all "cc" "nonsense" { keep; }', msg("Cc", "nonsense"))).toEqual(kept);
+  });
+
+  it("an empty angle-addr is the null address", () => {
+    expect(run('if address :is :all "cc" "" { keep; }', msg("Cc", "<>"))).toEqual(kept);
+  });
+});
+
+// RFC 5322 §3.4 group = display-name ":" [group-list] ";". RFC 5228 §5.1: the
+// address test "never acts on group names ... although it does act on the
+// addresses within the group construct". The group name used to be glued onto
+// the first member's local part ("tukkers: henk").
+describe("RFC 5322 group syntax in the address test", () => {
+  const group = "Cc: tukkers: henk@tukkerland.ex, theo@tukkerland.ex;\nTo: undisclosed-recipients:;\nSubject: hi\n\nbody\n";
+  const msg = (field: string, value: string) => `${field}: ${value}\nSubject: hi\n\nbody\n`;
+  const kept = R({ keep: true, implicitKeep: true });
+  const notKept = R({ implicitKeep: true });
+
+  it("matches every member of a group, the first one included", () => {
+    expect(run('if address :localpart :is "cc" "henk" { keep; }', group)).toEqual(kept);
+    expect(run('if address :localpart :is "cc" "theo" { keep; }', group)).toEqual(kept);
+    expect(run('if address :is "cc" "henk@tukkerland.ex" { keep; }', group)).toEqual(kept);
+  });
+
+  it("never matches the group name", () => {
+    expect(run('if address :contains "cc" "tukkers" { keep; }', group)).toEqual(notKept);
+  });
+
+  it("counts the members, and an empty group as none", () => {
+    expect(run('require "relational"; if address :count "eq" "cc" "2" { keep; }', group)).toEqual(kept);
+    expect(run('require "relational"; if address :count "eq" "to" "0" { keep; }', group)).toEqual(kept);
+  });
+
+  it("addresses after a group in the same field still match", () => {
+    const msg = "To: team: a@x.example;, b@y.example\nSubject: hi\n\nbody\n";
+    expect(run('if address :is "to" "a@x.example" { keep; }', msg)).toEqual(kept);
+    expect(run('if address :is "to" "b@y.example" { keep; }', msg)).toEqual(kept);
+    expect(run('require "relational"; if address :count "eq" "to" "2" { keep; }', msg)).toEqual(kept);
+  });
+
+  it("a colon inside quotes or an angle-addr source route is not a group", () => {
+    expect(
+      run('if address :is "from" "a@x.example" { keep; }', 'From: "Re: news" <a@x.example>\nSubject: hi\n\nbody\n'),
+    ).toEqual(kept);
+    const routed = "To: Foo <@a.example:u@x.example>, b@y.example\nSubject: hi\n\nbody\n";
+    expect(run('if address :is "to" "b@y.example" { keep; }', routed)).toEqual(kept);
+    expect(run('require "relational"; if address :count "eq" "to" "2" { keep; }', routed)).toEqual(kept);
+  });
+
+  // A display-name phrase can hold no unquoted "@", "<" or ">", so a colon
+  // after any of them is not a group: it is part of an address (an IPv6
+  // domain-literal) or trailing junk, and the address before it must survive.
+  it("a colon after an address does not open a group", () => {
+    const ipv6 = msg("To", "user@[IPv6:2001:db8::1]");
+    expect(run('if address :is "to" "user@[IPv6:2001:db8::1]" { keep; }', ipv6)).toEqual(kept);
+    expect(run('if address :localpart :is "to" "user" { keep; }', ipv6)).toEqual(kept);
+    expect(run('if address :domain :is "to" "[IPv6:2001:db8::1]" { keep; }', ipv6)).toEqual(kept);
+    expect(run('if address :is "to" "a@x.example" { keep; }', msg("To", "<a@x.example>:"))).toEqual(kept);
+    expect(run('if address :is "to" "" { keep; }', msg("To", "<a@x.example>:"))).toEqual(notKept);
+    expect(
+      run('if address :contains "to" "a@x.example" { keep; }', msg("To", "a@x.example (Team (eng) note: urgent)")),
+    ).toEqual(kept);
+  });
+
+  it("a semicolon outside a group does not split mailboxes", () => {
+    expect(
+      run('require "relational"; if address :count "eq" "to" "1" { keep; }', msg("To", "Smith; John <j@x.example>")),
+    ).toEqual(kept);
+    expect(run('if address :is "to" "Smith" { keep; }', msg("To", "Smith; John <j@x.example>"))).toEqual(notKept);
+  });
+});
+
+// RFC 5229 §3: "References to namespaces without a prior require statement for
+// the relevant extension MUST cause an error." Checked when the script loads,
+// in every string a command or test receives (go-sieve 78c72f5; Pigeonhole's
+// "referring to variable in unknown namespace"). ${envelope.from} used to load
+// and expand without require "envelope", and ${foo.bar} to expand to "".
+describe("RFC 5229 §3 namespace references are checked at load", () => {
+  const refused: [string, string, RegExp][] = [
+    ["fileinto", 'require ["fileinto","variables"]; fileinto "${envelope.from}";', /\$\{envelope\.from\} needs require "envelope"/],
+    ["redirect", 'require "variables"; redirect "${envelope.to}";', /\$\{envelope\.to\} needs require "envelope"/],
+    ["vacation :subject", 'require ["vacation","variables"]; vacation :subject "${envelope.from}" "away";', /needs require "envelope"/],
+    ["fileinto :flags list", 'require ["fileinto","imap4flags","variables"]; fileinto :flags ["\\\\Seen", "${envelope.from}"] "x";', /needs require "envelope"/],
+    ["addheader", 'require ["editheader","variables"]; addheader "X-A" "${envelope.from}";', /needs require "envelope"/],
+    ["set value", 'require "variables"; set "a" "${envelope.from}";', /needs require "envelope"/],
+    ["test key", 'require ["fileinto","variables"]; if header :is "subject" "${envelope.from}" { fileinto "x"; }', /needs require "envelope"/],
+    ["string test source", 'require "variables"; if string "${envelope.auth}" "x" { keep; }', /needs require "envelope"/],
+    ["unknown namespace", 'require ["fileinto","variables"]; fileinto "${foo.bar}";', /unknown namespace "foo"/],
+  ];
+  for (const [name, script, err] of refused) {
+    it(`refuses ${name}`, () => {
+      expect(() => compile(script)).toThrow(err);
+    });
+  }
+
+  it("reports where the reference is", () => {
+    let err: unknown;
+    try {
+      compile('require ["fileinto","variables"];\nfileinto "${foo.bar}";');
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toMatchObject({ line: 2, col: 10 });
+  });
+
+  it("is case-insensitive in the namespace", () => {
+    expect(() => compile('require ["fileinto","variables"]; fileinto "${ENVELOPE.from}";')).toThrow(
+      /needs require "envelope"/,
+    );
+  });
+
+  it("checks after encoded-character decoding", () => {
+    expect(() =>
+      compile('require ["fileinto","variables","encoded-character"]; fileinto "${hex:24}{foo.bar}";'),
+    ).toThrow(/unknown namespace "foo"/);
+    expect(() => compile('require ["fileinto","variables"]; fileinto "${hex:24}{foo.bar}";')).not.toThrow();
+  });
+
+  it("expands the envelope namespace once envelope is required", () => {
+    expect(
+      run('require ["fileinto","variables","envelope"]; fileinto "${envelope.from}";', eml, { from: "a@b.example" }),
+    ).toEqual(R({ fileinto: ["a@b.example"] }));
+  });
+
+  // RFC 5228 §3.2 puts require first, which this interpreter does not enforce:
+  // a late require "variables" slips past the load check (nothing is checked
+  // while variables is not yet required), so the runtime must not hand out
+  // envelope data the script never required either.
+  it("a late require \"variables\" reads nothing from an unrequired envelope", () => {
+    expect(
+      run('require "fileinto"; fileinto "x${envelope.from}y"; require "variables";', eml, { from: "a@b.example" }),
+    ).toEqual(R({ fileinto: ["xy"] }));
+    expect(run('require "fileinto"; fileinto "x${foo.bar}y"; require "variables";', eml)).toEqual(
+      R({ fileinto: ["xy"] }),
+    );
+  });
+
+  const accepted = [
+    'require ["fileinto","variables","envelope"]; fileinto "${envelope.from}";',
+    'require ["fileinto","variables"]; set "box" "Lists"; fileinto "${box}";',
+    'require ["fileinto","variables"]; if header :matches "subject" "*" { fileinto "${1}"; }',
+    'require ["fileinto","variables"]; fileinto "${ENVELOPE_LIKE}";',
+    // Without the variables extension "${envelope.from}" is literal text.
+    'require "fileinto"; fileinto "${envelope.from}";',
+    // Not a variable reference at all (invalid name): literal text.
+    'require ["fileinto","variables"]; fileinto "${foo.}";',
+  ];
+  for (const script of accepted) {
+    it(`accepts ${script}`, () => {
+      expect(() => compile(script)).not.toThrow();
+    });
+  }
+});

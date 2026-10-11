@@ -32,8 +32,9 @@ import { CmdAddHeader, CmdDeleteHeader } from "./editheader.js";
 import { decodeEncodedChars } from "./encoded.js";
 import { MailboxExistsTest } from "./mailbox.js";
 import { MatcherTest } from "./matcher.js";
+import { CmdReject } from "./reject.js";
 import { CmdVacation } from "./vacation.js";
-import { CmdSet, SET_MODIFIERS, TestString } from "./variables.js";
+import { CmdSet, SET_MODIFIERS, TestString, unusableVarRef } from "./variables.js";
 import type { AddressPart } from "./matching.js";
 import type { Cmd, Test } from "./runtime.js";
 import type { Script } from "./script.js";
@@ -78,6 +79,8 @@ const supportedRequires = new Set([
   "encoded-character",
   "body",
   "vacation",
+  "reject",
+  "ereject",
 ]);
 
 function at(pos: Position, message: string): SieveError {
@@ -100,9 +103,22 @@ function loadSpec(
 ): void {
   const pos = spec.pos ?? [];
   // RFC 5228 §2.4.2.4: decode ${hex:}/${unicode:} in string args at load time.
-  const dec: (v: string[]) => string[] = s.requiresExtension("encoded-character")
+  const decode: (v: string[]) => string[] = s.requiresExtension("encoded-character")
     ? (v) => v.map(decodeEncodedChars)
     : (v) => v;
+  // Then refuse a variable reference the script cannot read (RFC 5229 §3),
+  // unless the argument takes no variables (comparator and match-type tags,
+  // testsuite variable names).
+  const dec = (v: string[], a: PArg, noVariables?: boolean): string[] => {
+    const out = decode(v);
+    if (!noVariables) {
+      for (const value of out) {
+        const why = unusableVarRef(s, value);
+        if (why !== null) throw at(a, why);
+      }
+    }
+    return out;
+  };
   let lastTag: SpecTag | null = null;
   let nextPosArg = 0;
 
@@ -111,7 +127,7 @@ function loadSpec(
       case "string": {
         if (lastTag && lastTag.needsValue) {
           if (lastTag.matchNum) throw at(a, "LoadSpec: tagged argument requires a number, got string");
-          else if (lastTag.matchStr) lastTag.matchStr(dec([a.value]));
+          else if (lastTag.matchStr) lastTag.matchStr(dec([a.value], a, lastTag.noVariables));
           else throw new SieveError("missing matcher for SpecTag");
           lastTag = null;
           continue;
@@ -120,7 +136,7 @@ function loadSpec(
         const p = pos[nextPosArg]!;
         if ((p.minStrCount ?? 0) > 1) throw at(a, "LoadSpec: string-list required, got single string");
         if (p.matchNum) throw at(a, "LoadSpec: argument requires a number, got string-list");
-        else if (p.matchStr) p.matchStr(dec([a.value]));
+        else if (p.matchStr) p.matchStr(dec([a.value], a, p.noVariables));
         else throw new SieveError("no pos matcher");
         nextPosArg++;
         break;
@@ -135,7 +151,7 @@ function loadSpec(
             ) {
               throw at(a, "LoadSpec: wrong amount of string arguments");
             }
-            lastTag.matchStr(dec(a.value));
+            lastTag.matchStr(dec(a.value, a, lastTag.noVariables));
           } else throw new SieveError("missing matcher for SpecTag");
           lastTag = null;
           continue;
@@ -149,7 +165,7 @@ function loadSpec(
           throw at(a, "LoadSpec: wrong amount of string arguments");
         }
         if (p.matchNum) throw at(a, "LoadSpec: argument requires a number, got string-list");
-        else if (p.matchStr) p.matchStr(dec(a.value));
+        else if (p.matchStr) p.matchStr(dec(a.value, a, p.noVariables));
         else throw new SieveError("no pos matcher");
         nextPosArg++;
         break;
@@ -332,6 +348,22 @@ function loadKeep(s: Script, pcmd: PCmd): Cmd {
     pcmd.block,
   );
   if (!s.requiresExtension("imap4flags") && cmd.flags !== null) throw at(pcmd, "missing require 'imap4flags'");
+  return cmd;
+}
+
+/** RFC 5429 `reject <reason: string>` / `ereject <reason: string>`. */
+function loadReject(s: Script, pcmd: PCmd, extended: boolean): Cmd {
+  const ext = extended ? "ereject" : "reject";
+  if (!s.requiresExtension(ext)) throw at(pcmd, `missing require '${ext}'`);
+  const cmd = new CmdReject(extended);
+  loadSpec(
+    s,
+    { pos: [{ minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.reason = v[0]!) }] },
+    pcmd,
+    pcmd.args,
+    pcmd.tests,
+    pcmd.block,
+  );
   return cmd;
 }
 
@@ -952,6 +984,8 @@ const commands: Record<string, (s: Script, cmd: PCmd) => Cmd | null> = {
   deleteheader: loadDeleteHeader,
   set: loadSet,
   vacation: loadVacation,
+  reject: (s, pcmd) => loadReject(s, pcmd, false),
+  ereject: (s, pcmd) => loadReject(s, pcmd, true),
   // vnd.dovecot.testsuite
   test: loadDovecotTest,
   test_set: loadDovecotTestSet,
