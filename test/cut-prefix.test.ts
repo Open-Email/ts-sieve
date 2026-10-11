@@ -166,3 +166,23 @@ describe("the HTML reduction of a cut part", () => {
     expect(runBytes(script, { "Content-Type": "text/html; charset=utf-8" }, ascii("<p>x</p><"), true)).toEqual(notFiled);
   });
 });
+
+describe("i;unicode-casemap over a cut input", () => {
+  it("does not decide definite false when the prefix fold context differs from the whole", () => {
+    // "ΑΣ" at end-of-prefix would fold to "ας" with context-sensitive toLowerCase(),
+    // while the whole "ΑΣΑ" folds to "ασα". "ασα" does not start with "ας",
+    // so a context-sensitive fold falsely concludes the key cannot match.
+    const body = new TextEncoder().encode("ΑΣ");
+    const script =
+      'require ["body","fileinto","comparator-i;unicode-casemap"]; if not body :comparator "i;unicode-casemap" :is "ΑΣΑ" { fileinto "X"; }';
+    expect(runBytes(script, { "content-type": "text/plain; charset=utf-8" }, body, true)).toEqual(notFiled);
+  });
+
+  it("a final sigma before a space folds as one mid-string does", () => {
+    const body = new TextEncoder().encode("ΑΣ");
+    const script =
+      'require ["body","fileinto","comparator-i;unicode-casemap"]; if not body :comparator "i;unicode-casemap" :is "ΑΣ Α" { fileinto "X"; }';
+    expect(runBytes(script, { "content-type": "text/plain; charset=utf-8" }, body, true)).toEqual(notFiled);
+  });
+});
+

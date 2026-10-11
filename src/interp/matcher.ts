@@ -16,6 +16,7 @@ import {
   testString,
   testStringPrefix,
   toLowerASCII,
+  toUnicodeCasemapFold,
 } from "./matching.js";
 import { byteLen, type CompiledRegex, compileRegex, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
 import {
@@ -234,9 +235,12 @@ export class MatcherTest {
   /** Compile a `:matches` glob or a `:regex` pattern; throws SieveError when it
    * does not compile or is past the pattern-length cap. */
   private compileKey(pattern: string): CompiledRegex {
-    return this.match === "matches"
-      ? compileRegex(patternToRegex(pattern, this.caseFold))
-      : compileRegex(pattern, { caseInsensitive: this.caseFold });
+    if (this.match === "matches") return compileRegex(patternToRegex(pattern, this.caseFold));
+    // Under i;unicode-casemap the :regex input is folded context-free (ς→σ),
+    // so a literal ς in the pattern is too, or it could never match. The same
+    // length, and safe inside escapes and classes.
+    const p = this.comparator === "i;unicode-casemap" ? pattern.replace(/ς/g, "σ") : pattern;
+    return compileRegex(p, { caseInsensitive: this.caseFold });
   }
 
   /**
@@ -325,8 +329,9 @@ export class MatcherTest {
         // fold cannot reach É↔é, and dropping the input fold would regress the
         // comparator whose whole point is non-ASCII case. Its residual is as
         // before — a non-ASCII UPPERCASE literal in the pattern never matches,
-        // and captures fold to lowercase under this comparator only.
-        const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase() : source;
+        // and captures fold to lowercase (and ς to σ) under this comparator
+        // only.
+        const value = this.comparator === "i;unicode-casemap" ? toUnicodeCasemapFold(source) : source;
         const { re, pattern } = this.runtimeKey(d, i);
         if (re === null) {
           unknown = true;

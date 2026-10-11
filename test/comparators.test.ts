@@ -9,7 +9,7 @@ const EML = ["From: a@x", "To: b@y", "Subject: hi", "", "body"].join("\r\n");
 
 /** True iff the script's single `if` fired. */
 const hit = (test: string): boolean =>
-  run(`require ["fileinto","variables","relational","comparator-i;unicode-casemap","comparator-i;ascii-numeric"]; if ${test} { fileinto "X"; }`, EML)
+  run(`require ["fileinto","variables","relational","regex","comparator-i;unicode-casemap","comparator-i;ascii-numeric"]; if ${test} { fileinto "X"; }`, EML)
     .fileinto.length > 0;
 
 describe("i;unicode-casemap", () => {
@@ -21,6 +21,22 @@ describe("i;unicode-casemap", () => {
   it(":contains folds full Unicode (simple folding — ß stays distinct from ss)", () => {
     expect(hit('string :comparator "i;unicode-casemap" :contains "GRÖSSE MATTERS" "grösse"')).toBe(true);
     expect(hit('string :comparator "i;unicode-casemap" :contains "GRÖSSE" "größe"')).toBe(false);
+  });
+
+  it("folds Greek final sigma context-free (RFC 5051)", () => {
+    // σ (U+03C3) and ς (U+03C2) map to the same titlecase Σ (U+03A3)
+    expect(hit('string :comparator "i;unicode-casemap" :is "ς" "σ"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :is "ΑΣ" "Ασ"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :is "ΑΣ" "Ας"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :contains "βς" "βσ"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :is "ΟΣ ΟΣ" "οσ οσ"')).toBe(true); // every ς, not the first
+  });
+
+  it(":regex folds the pattern's ς as it folds the input's", () => {
+    expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΔΟΣ" "οδος"')).toBe(true);
+    expect(hit('string :regex :comparator "i;unicode-casemap" "οδός" "οδός"')).toBe(true);
+    expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΔΟΣ" "^οδο[^ς]$"')).toBe(false);
+    expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΣ ΟΣ" "^ος ος$"')).toBe(true); // every ς in the pattern
   });
 });
 
