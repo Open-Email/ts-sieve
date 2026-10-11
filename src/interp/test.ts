@@ -454,7 +454,7 @@ function countOver(d: RuntimeData, matcher: MatcherTest, count: number, open: bo
 
 /** Whether a test can leave captures the script sees: the body test restores
  * its own. A test that does not say is assumed to. */
-function setsCaptures(t: Test): boolean {
+export function setsCaptures(t: Test): boolean {
   return (t as { setsCaptures?: boolean }).setsCaptures !== false;
 }
 

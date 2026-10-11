@@ -21,6 +21,7 @@ export {
   type SubTest,
   type Namespace,
 } from "./interp/runtime.js";
+export { redirectsOnGuess } from "./interp/action.js";
 export type { Comparator, Match, AddressPart } from "./interp/matching.js";
 export type { VacationResponse } from "./interp/vacation.js";
 export type { MailboxChecker } from "./interp/runtime.js";

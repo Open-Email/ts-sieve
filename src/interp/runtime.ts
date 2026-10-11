@@ -319,6 +319,27 @@ export class RuntimeData {
   rejectExtended = false;
   /** A vacation action ran, whether or not it recorded a response. */
   vacationRan = false;
+  /** The vacation response recorded may not be the whole input's: the last
+   * one recorded ran on a guess (see onGuess), or an arm an unknown decided
+   * after it holds a vacation that could have replaced it. */
+  vacationOnGuess = false;
+  /** A reject may have run over the whole input though none ran here: an
+   * arm or loop an unknown decided holds one. A host keeps from answering a
+   * sender the script may have meant to refuse. */
+  rejectOnGuess = false;
+  /** The redirect targets (by redirectKey) every redirect to which so far
+   * ran on a guess (see onGuess, redirectsOnGuess). Empty in a run that
+   * never guessed, so a redirect then costs no lookup in it. */
+  redirectGuessed: Set<string> = new Set();
+  /** Arms being run that an unknown chose (see control.ts). */
+  guessDepth = 0;
+  /** An unknown decided an arm, a loop or a header edit that could change
+   * what runs after it: everything after is on a guess (see control.ts). */
+  guessAfter = false;
+  /** An unknown decided a condition earlier in this if/elsif chain, so the
+   * arm that runs may not be the one the whole input would choose. Threaded
+   * like ifResult. */
+  chainGuessed = false;
 
   flagAliases: Map<string, string> = new Map();
 
@@ -435,6 +456,12 @@ export class RuntimeData {
     c.rejectExtended = this.rejectExtended;
     c.rejectConflict = this.rejectConflict;
     c.vacationRan = this.vacationRan;
+    c.vacationOnGuess = this.vacationOnGuess;
+    c.rejectOnGuess = this.rejectOnGuess;
+    c.redirectGuessed = new Set(this.redirectGuessed);
+    c.guessDepth = this.guessDepth;
+    c.guessAfter = this.guessAfter;
+    c.chainGuessed = this.chainGuessed;
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
@@ -455,6 +482,28 @@ export class RuntimeData {
     c.namespace = this.namespace;
     return c;
   }
+}
+
+/**
+ * Whether an action running now is on a guess: an "unknown" chose the arm it
+ * runs in, or decided earlier an arm, a loop or a header edit that could
+ * change what runs after it. A forward or an auto-reply cannot be recalled,
+ * so a host withholds the ones a guess decided; the rest of the run is as the
+ * whole input would have it.
+ */
+export function onGuess(d: RuntimeData): boolean {
+  return d.guessDepth > 0 || d.guessAfter;
+}
+
+/**
+ * A stop or break ran on a guess: read whole, the run may have gone on past
+ * it, to a reject or a vacation the script holds. Conservative, by the
+ * script: it only keeps a host from answering.
+ */
+export function cutOffOnGuess(d: RuntimeData): void {
+  if (!onGuess(d)) return;
+  if (d.script.hasReject) d.rejectOnGuess = true;
+  if (d.script.hasVacation && d.vacationResponses.size > 0) d.vacationOnGuess = true;
 }
 
 export function newRuntimeData(

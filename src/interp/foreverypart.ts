@@ -16,7 +16,8 @@
 
 import { currentPart, mimeTree, partText, subtree } from "./mime.js";
 import { MAX_INPUT_LENGTH } from "./regex.js";
-import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
+import { armSkipped } from "./control.js";
+import { type Cmd, cutOffOnGuess, type RuntimeData, withShare } from "./runtime.js";
 import { applySetModifiers, setVar } from "./variables.js";
 
 /** Thrown by break; the loop it names (or the closest one) catches it. */
@@ -29,6 +30,11 @@ export class CmdForEveryPart implements Cmd {
   block: Cmd[] = [];
   /** This loop's number among the script's budgeted work (see withShare). */
   shareIndex = 0;
+  /** The block could change what runs after the loop (see guess.ts). */
+  mayAffectLater = true;
+  /** The block holds a vacation, or a reject (see guess.ts). */
+  mayVacation = true;
+  mayReject = true;
 
   execute(d: RuntimeData): void {
     const cur = currentPart(d);
@@ -56,7 +62,12 @@ export class CmdForEveryPart implements Cmd {
       }
       return true;
     });
-    if (r === "unknown" || (!broke && top.openBelow)) d.indeterminate = true;
+    if (r === "unknown" || (!broke && top.openBelow)) {
+      d.indeterminate = true;
+      // The iterations it missed may have changed what runs after it.
+      if (this.mayAffectLater) d.guessAfter = true;
+      armSkipped(d, this);
+    }
   }
 }
 
@@ -116,7 +127,8 @@ function firstChars(s: string, n: number): string | null {
 export class CmdBreak implements Cmd {
   name = "";
 
-  execute(_d: RuntimeData): void {
+  execute(d: RuntimeData): void {
+    cutOffOnGuess(d);
     throw new BreakSignal(this.name);
   }
 }

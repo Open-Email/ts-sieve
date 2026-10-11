@@ -5,6 +5,7 @@
 import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import { parse } from "../parser/parse.js";
+import { analyzeGuessScope } from "./guess.js";
 import { checkExtensionDependencies, loadBlock } from "./load.js";
 import { checkRejectConflicts } from "./reject.js";
 import { type Cmd, type RuntimeData, StopSignal, type TestEnv } from "./runtime.js";
@@ -94,6 +95,19 @@ export class Script {
   /** Load time: the names of the foreverypart loops being loaded, outermost
    * first ("" for an unnamed one), for break and the nesting cap. */
   loops: string[] = [];
+  /** The script can reach maxRedirects, so a redirect dropped or not run can
+   * change which later one the limit drops (see guess.ts). */
+  redirectsMayCap = true;
+  /** The script has a hasflag test: a flag written is a flag a later test
+   * may read (see guess.ts). */
+  readsFlags = false;
+  /** The script can reach maxFileintos, so a fileinto not run can change
+   * whether a later one (and its :flags) is dropped (see guess.ts). */
+  fileintosMayCap = true;
+  /** The script holds a reject, a vacation: what a stop or break that ran on
+   * a guess may have cut off (see cutOffOnGuess). True until analysed. */
+  hasReject = true;
+  hasVacation = true;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };
@@ -139,5 +153,6 @@ export function load(source: string, opts: Options = {}): Script {
   });
   script.cmds = loadBlock(script, cmds);
   checkExtensionDependencies(script);
+  analyzeGuessScope(script);
   return script;
 }

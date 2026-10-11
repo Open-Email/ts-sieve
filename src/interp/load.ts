@@ -550,6 +550,7 @@ function loadHeaderTest(s: Script, ptest: PTest): Test {
  */
 function loadHasFlagTest(s: Script, ptest: PTest): Test {
   if (!s.requiresExtension("imap4flags")) throw at(ptest, "missing require 'imap4flags'");
+  s.readsFlags = true;
   const matcher = new MatcherTest();
   let first: string[] = [];
   let second: string[] | null = null;
