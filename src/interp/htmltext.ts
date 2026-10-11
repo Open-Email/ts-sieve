@@ -176,7 +176,6 @@ export function htmlToText(s: string, cut = false): string {
       i = lt + 1;
       if (i === n) open = true;
     }
-    if (!open) stable = w.out.length;
   }
   if (!open) stable = w.out.length;
   // Pending white space is the trailing white space, and goes.
@@ -298,7 +297,9 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   if (raw === undefined || !raw.keep) return gt + 1;
   raw.closer.lastIndex = gt + 1;
   const m = raw.closer.exec(s);
-  if (m === null || holdsVisibleRawStart(s, gt + 1, m.index, ctx)) {
+  // A closing tag name the input ends in is not a closer: the tokenizer reads
+  // "</textarea" at the end as text, and a cut input may go on "</textareas".
+  if (m === null || m.index + m[0].length === n || holdsVisibleRawStart(s, gt + 1, m.index, ctx)) {
     keepRegion(s, gt + 1, n, w, ctx);
     return n;
   }

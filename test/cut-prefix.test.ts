@@ -128,6 +128,11 @@ describe("the HTML reduction of a cut part", () => {
     "<noscript><p>ns</p></noscript> after",
     "<p>a</p\n> <br/> <img src=x alt=\"<b>\"> b <!DOCTYPE html> c <?xml x?> d </ x> e",
     "<svg>a < b <c d> &amp e</svg> f",
+    // A bounded closer at the cut may continue: "</textareas>" closes nothing.
+    "<svg><textarea>a&amp;b</textareas>c</textarea> d",
+    "<math><xmp>p</xmpx>q</xmp> r",
+    // "&" plus 31 characters: a 32nd could still be the ";" that decodes it.
+    "x &CounterClockwiseContourIntegral; y",
   ];
 
   it("every cut of every sample reduces to a prefix of the whole", () => {
@@ -146,6 +151,7 @@ describe("the HTML reduction of a cut part", () => {
     expect(htmlToText("<p>hello</p><p>wor", true)).toBe("hello wor");
     expect(htmlToText("a &amp; b &am", true)).toBe("a & b");
     expect(htmlToText("<p>x</p><scr", true)).toBe("x");
+    expect(htmlToText("abc<scr", true)).toBe("abc");
     expect(htmlToText("<p>x</p><", true)).toBe("x");
   });
 

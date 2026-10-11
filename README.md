@@ -133,8 +133,9 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
 compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256 KiB
-(byte-truncated at a character boundary, and marked as cut like the host's
-own cap), and it charges every VM step to the execution budget.
+unless `maxMatchInputLength` sets another cut (byte-truncated at a character
+boundary, and evaluated as a cut), and it charges every VM step to the
+execution budget.
 
 ## Robustness properties
 
