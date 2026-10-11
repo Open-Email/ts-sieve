@@ -231,7 +231,8 @@ describe("which redirect addresses are the same", () => {
     const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
     // A held address is read through the list, and every key begins by
-    // trimming its address: only the addresses are this long.
+    // trimming its address (only the addresses are this long; a key that
+    // stops trimming counts none, and fails here rather than passing).
     const [list, reads] = readCounted(d.redirectAddr);
     d.redirectAddr = list;
     let keyed = 0;
