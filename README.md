@@ -146,7 +146,8 @@ compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
   script upload, not when a message arrives. A pattern built from variables
-  can only fail at delivery, and there it answers "unknown" instead of throwing.
+  can only be compiled at delivery, and one that does not compile answers
+  "unknown" instead of throwing.
 - **Header-injection guard.** `addheader` rejects values containing CR/LF/NUL,
   so a variable smuggled out of a hostile message can't append extra header
   fields when the host serialises `headerEdits`.
