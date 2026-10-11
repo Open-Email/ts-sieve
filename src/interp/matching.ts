@@ -34,7 +34,7 @@ export function toLowerASCII(s: string): string {
 }
 
 /**
- * Context-free Unicode casemap fold (RFC 5051).
+ * The i;unicode-casemap fold: lowercase, without context.
  *
  * String.prototype.toLowerCase() applies the Unicode Final_Sigma context rule:
  * Σ lowercases to ς at the end of a word, and to σ elsewhere. That causes

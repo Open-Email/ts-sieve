@@ -177,5 +177,12 @@ describe("i;unicode-casemap over a cut input", () => {
       'require ["body","fileinto","comparator-i;unicode-casemap"]; if not body :comparator "i;unicode-casemap" :is "ΑΣΑ" { fileinto "X"; }';
     expect(runBytes(script, { "content-type": "text/plain; charset=utf-8" }, body, true)).toEqual(notFiled);
   });
+
+  it("a final sigma before a space folds as one mid-string does", () => {
+    const body = new TextEncoder().encode("ΑΣ");
+    const script =
+      'require ["body","fileinto","comparator-i;unicode-casemap"]; if not body :comparator "i;unicode-casemap" :is "ΑΣ Α" { fileinto "X"; }';
+    expect(runBytes(script, { "content-type": "text/plain; charset=utf-8" }, body, true)).toEqual(notFiled);
+  });
 });
 
