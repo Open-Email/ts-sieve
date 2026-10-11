@@ -146,6 +146,15 @@ const rootTwoTypes = "From: a@x\r\nTo: b@y\r\nContent-Type: text/plain\r\nConten
 /** `test` as the condition of a rule that files Junk. */
 const junkIf = (test: string, extra: string[] = []) =>
   `require ${JSON.stringify(["fileinto", "mime", ...extra])}; if ${test} { fileinto "Junk"; }`;
+/** `test` as the condition of a rule that files Hit, after `edit` adds a field
+ * in doubt: a prefix of a long Subject, which the engine could not hold whole.
+ * The message's Content-Type is text/plain, its Reply-To one@a.example. */
+const withDoubt = (edit: string, test: string) =>
+  run(
+    `require ["variables","editheader","mime","fileinto","index"]; if header :matches "subject" "*" { set "s" "\${1}"; } ${edit} "\${s}"; if ${test} { fileinto "Hit"; }`,
+    `From: a@x\r\nSubject: ${"x".repeat(4500)}\r\nReply-To: one@a.example\r\nContent-Type: text/plain\r\n\r\nbody\r\n`,
+    { options: { maxMatchInputLength: 16 * 1024 } },
+  );
 
 describe("a MIME option reads a part's first Content-Type and Content-Disposition", () => {
   it("a second Content-Type is not the part's type", () => {
@@ -220,11 +229,18 @@ describe("a MIME option reads a part's first Content-Type and Content-Dispositio
   it("a first field in doubt is not passed over for the second", () => {
     // The added field, prepended, holds a prefix of a long Subject: its type is
     // unknown, and the received text/plain after it is not the root's type.
-    const script =
-      'require ["variables","editheader","mime","fileinto"]; if header :matches "subject" "*" { set "s" "${1}"; } ' +
-      'addheader "Content-Type" "${s}"; if header :mime :contenttype "content-type" "text/plain" { fileinto "Text"; }';
-    const m = `From: a@x\r\nSubject: ${"x".repeat(4500)}\r\nContent-Type: text/plain\r\n\r\nbody\r\n`;
-    expect(run(script, m, { options: { maxMatchInputLength: 16 * 1024 } })).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader "Content-Type"', 'header :mime :contenttype "content-type" "text/plain"')).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("a field in doubt after the first is not read", () => {
+    const r = withDoubt('addheader :last "Content-Type"', 'not header :mime :contenttype "content-type" "application/x-msdownload"');
+    expect(r).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+  });
+
+  it("a field name in any case", () => {
+    expect(run(junkIf('header :mime :anychild :contenttype "Content-Type" "application/x-msdownload"'), twoTypes).fileinto).toEqual([]);
+    const cd = withPart('Content-Type: application/octet-stream\r\nContent-Disposition: inline\r\nContent-Disposition: attachment; filename="evil.exe"');
+    expect(run(junkIf('header :mime :anychild :contenttype "CONTENT-DISPOSITION" "attachment"'), cd).fileinto).toEqual([]);
   });
 });
 
@@ -247,5 +263,39 @@ describe(":index under :mime counts a part's own fields", () => {
     const m = "From: a@x\r\nTo: b@y\r\nSubject: a\r\nSubject: b\r\n\r\nbody\r\n";
     expect(run(junkIf('header :mime :index 1 "subject" "b"', ["index"]), m).fileinto).toEqual([]);
     expect(run(junkIf('header :mime :index 2 "subject" "b"', ["index"]), m).fileinto).toEqual(["Junk"]);
+  });
+
+  it("a field in doubt is unknown where :index selects it, and only there", () => {
+    const exe = (index: string) => `not header :mime ${index} :contenttype "content-type" "application/x-msdownload"`;
+    // Added after the received text/plain: the second field.
+    expect(withDoubt('addheader :last "Content-Type"', 'header :mime :index 2 :matches :contenttype "content-type" "x*"')).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Content-Type"', exe(":index 2"))).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Content-Type"', exe(":index 1"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+    // Added before it: the first.
+    expect(withDoubt('addheader "Content-Type"', exe(":index 2"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+  });
+});
+
+describe("address :mime counts :index in each part's own header", () => {
+  // A part with two From fields: its own header, not the message's.
+  const twoFroms = withPart("Content-Type: text/plain\r\nFrom: one@x\r\nFrom: two@x");
+  const two = (tags: string) => junkIf(`address :mime :anychild ${tags} :all "from" "two@x"`, ["index"]);
+
+  it("selects among a part's fields, as the header test does", () => {
+    expect(run(two(":index 1"), twoFroms).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :anychild :index 1 "from" "two@x"', ["index"]), twoFroms).fileinto).toEqual([]);
+    expect(run(two(":index 2"), twoFroms).fileinto).toEqual(["Junk"]);
+    expect(run(two(":index 1 :last"), twoFroms).fileinto).toEqual(["Junk"]);
+    expect(run(two(":index 3"), twoFroms).fileinto).toEqual([]);
+  });
+
+  it("a field in doubt is unknown where :index selects it, and only there", () => {
+    const b = (index: string) => `not address :mime ${index} :domain "reply-to" "b.example"`;
+    // Added after the received one@a.example: the second field.
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 1"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 2"))).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 1 :last"))).toMatchObject({ fileinto: [], indeterminate: true });
+    // Added before it: the first.
+    expect(withDoubt('addheader "Reply-To"', b(":index 2"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
   });
 });

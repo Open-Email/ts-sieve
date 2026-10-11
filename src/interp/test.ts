@@ -194,7 +194,10 @@ export class AddressTest implements Test {
           // runs: a part's header is not capped as the message's are, and
           // :anychild multiplies the parts read.
           chargeRead(d, values, true);
-          if (this.matchValues(d, values, valueMarks(values), state)) return true;
+          // :index counts the fields of the part's own header (see
+          // HeaderTest.checkMime).
+          const [from, to] = indexRange(values.length, this.index, this.last);
+          if (this.matchValues(d, values.slice(from, to), valueMarks(values)?.slice(from, to), state)) return true;
         }
       }
       if (this.matcher.isCount()) return state.unknown ? "unknown" : countOver(d, this.matcher, state.entryCount, open);
@@ -416,12 +419,16 @@ export class HeaderTest implements Test {
         const name = expandVars(d, hdr);
         d.budget.consume(1); // the name; mime.values charges each value
         const all = partHeader(d, part, name);
-        // RFC 5260 :index counts the fields of the part's own header, as it
-        // counts the message's (Pigeonhole counts the values the MIMEOPT
-        // derives, across the parts in scope). Without it, a MIMEOPT on
-        // Content-Type or Content-Disposition reads the first (see
-        // MimeOpts.firstOnly): the first field, before a marked one is set
-        // aside, so a first field in doubt is not passed over for the next.
+        // Each part in scope is tested on its own (RFC 5703 §4.1: the test is
+        // true if any of them satisfies it), so :index counts the fields of
+        // the part's own header, as it counts the message's; Pigeonhole
+        // counts the values the MIMEOPT derives, across the parts. :count
+        // still sums over the parts: it counts the values the test reads,
+        // which under :anychild are every part's, as Pigeonhole counts them.
+        // Without :index, a MIMEOPT on Content-Type or Content-Disposition
+        // reads the first field (see MimeOpts.firstOnly), picked before a
+        // marked one is set aside, so a first field in doubt is not passed
+        // over for the next.
         const [from, to] = this.index === 0 && mime.firstOnly(name) ? [0, Math.min(1, all.length)] : indexRange(all.length, this.index, this.last);
         let raw = from === 0 && to === all.length ? all : all.slice(from, to);
         const marks = valueMarks(all)?.slice(from, to);
