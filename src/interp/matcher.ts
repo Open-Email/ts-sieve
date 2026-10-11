@@ -13,6 +13,7 @@ import {
   testString,
   testStringPrefix,
   toLowerASCII,
+  toUnicodeCasemapFold,
 } from "./matching.js";
 import { byteLen, type CompiledRegex, compileRegex, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
 import {
@@ -296,7 +297,7 @@ export class MatcherTest {
         // comparator whose whole point is non-ASCII case. Its residual is as
         // before — a non-ASCII UPPERCASE literal in the pattern never matches,
         // and captures fold to lowercase under this comparator only.
-        const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase() : source;
+        const value = this.comparator === "i;unicode-casemap" ? toUnicodeCasemapFold(source) : source;
         const { re, pattern } = this.runtimeKey(d, i);
         if (re === null) {
           unknown = true;

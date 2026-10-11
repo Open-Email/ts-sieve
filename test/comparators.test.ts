@@ -22,6 +22,14 @@ describe("i;unicode-casemap", () => {
     expect(hit('string :comparator "i;unicode-casemap" :contains "GRÖSSE MATTERS" "grösse"')).toBe(true);
     expect(hit('string :comparator "i;unicode-casemap" :contains "GRÖSSE" "größe"')).toBe(false);
   });
+
+  it("folds Greek final sigma context-free (RFC 5051)", () => {
+    // σ (U+03C3) and ς (U+03C2) map to the same titlecase Σ (U+03A3)
+    expect(hit('string :comparator "i;unicode-casemap" :is "ς" "σ"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :is "ΑΣ" "Ασ"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :is "ΑΣ" "Ας"')).toBe(true);
+    expect(hit('string :comparator "i;unicode-casemap" :contains "βς" "βσ"')).toBe(true);
+  });
 });
 
 describe("i;ascii-numeric (RFC 4790 §9.1.1)", () => {

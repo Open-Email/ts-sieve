@@ -27,6 +27,23 @@ export function toLowerASCII(s: string): string {
   return out;
 }
 
+/**
+ * Context-free Unicode casemap fold (RFC 5051).
+ *
+ * String.prototype.toLowerCase() applies the Unicode Final_Sigma context rule:
+ * Σ lowercases to ς at the end of a word, and to σ elsewhere. That causes
+ * two problems:
+ * 1. Over a cut input, the fold of a prefix is not a prefix of the fold of the
+ *    whole ("ΑΣ" folds to "ας", but "ΑΣΑ" folds to "ασα"), breaking prefix
+ *    decidability.
+ * 2. RFC 5051 maps characters to titlecase, under which σ and ς both map to Σ.
+ *    Mapping ς to σ produces a context-free canonical fold where σ and ς
+ *    compare equal.
+ */
+export function toUnicodeCasemapFold(s: string): string {
+  return s.toLowerCase().replace(/ς/g, "σ");
+}
+
 export interface MatchOptions {
   maxMatchInputLength?: number;
 }
@@ -61,15 +78,18 @@ export function testString(
         default:
           throw new SieveError(`match type '${match}' must not reach testString`);
       }
-    case "i;unicode-casemap":
+    case "i;unicode-casemap": {
+      const v = toUnicodeCasemapFold(value);
+      const k = toUnicodeCasemapFold(key);
       switch (match) {
         case "is":
-          return value.toLowerCase() === key.toLowerCase();
+          return v === k;
         case "contains":
-          return value.toLowerCase().includes(key.toLowerCase());
+          return v.includes(k);
         default:
           throw new SieveError(`match type '${match}' must not reach testString`);
       }
+    }
     case "i;ascii-numeric":
       switch (match) {
         case "is": {
@@ -103,7 +123,7 @@ export function testStringPrefix(comparator: Comparator, match: Match, prefix: s
     comparator === "i;octet"
       ? (x: string) => x
       : comparator === "i;unicode-casemap"
-        ? (x: string) => x.toLowerCase()
+        ? toUnicodeCasemapFold
         : toLowerASCII;
   switch (match) {
     case "contains":
