@@ -83,6 +83,19 @@ describe("a part whose header block core's reader refuses ends the list", () => 
     expect(seesExe(afterBad("X-Ok: 1\r\n"))).toEqual(SEEN);
   });
 
+  it("the budget, to the byte", () => {
+    // Core's port charges each line its pieces and 2 more, each field its
+    // length and its buffer slack (half its length and 256 past 256 bytes),
+    // and the end of the input 2. A field of at most 256 bytes costs 256.
+    // Here the folded line ends the body on a 4096-byte piece: its line
+    // break is not in the field, and the slack is a byte less.
+    const shape = (n: number, tail = "") =>
+      `--b\r\nContent-Type: application/x-msdownload\r\nX-A: ${"a".repeat(n)}\r\n ${"a".repeat(4096 * 170 - 1)}${tail}`;
+    expect(runRaw(anychild, shape(2380))).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, shape(2381))).toEqual(R({ implicitKeep: true }));
+    expect(runRaw(anychild, shape(2380, "\r\n"))).toEqual(R({ implicitKeep: true }));
+  });
+
   it("a field just inside the budget is kept", () => {
     expect(seesExe(afterBad(`X-Big: ${"a".repeat(690_000)}\r\n`))).toEqual(SEEN);
   });
