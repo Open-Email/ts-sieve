@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
-import { ALL_EXTENSIONS, parseEml, R, readCounted, run } from "./harness.js";
+import { ALL_EXTENSIONS, parseEml, parts, R, readCounted, run } from "./harness.js";
 
 const CORE = { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } };
 
@@ -444,17 +444,17 @@ describe("four nested loops at core's options", () => {
 describe("fileinto's duplicate check", () => {
   it("is not a scan: no name held is read again", () => {
     // 25,000 distinct names in nested loops took 30 ms; a scan took 3 s, and a
-    // set rebuilt per name 18 s. Counted, not timed: here 300 names, each
-    // part's own, and a scan reads some 45,000.
-    let body = "";
-    for (let j = 0; j < 300; j++) body += `--b\r\nX-N: p${j}\r\nContent-Type: text/plain\r\n\r\nx\r\n`;
-    const { headers, size, body: raw } = parseEml(`From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`);
-    const script = 'require ["mime","foreverypart","fileinto","variables"]; foreverypart { if header :mime :matches "x-n" "*" { fileinto "F/${1}"; } }';
+    // set rebuilt per name 18 s. Counted, not timed: here each part's own
+    // name, filed twice, so a repeat is checked as well as a new name. A scan
+    // reads some 90,000 names, a scan of the repeats alone 45,000.
+    const script = 'require ["mime","foreverypart","fileinto","variables"]; foreverypart { if header :mime :matches "x-n" "*" { fileinto "F/${1}"; fileinto "F/${1}"; } }';
     const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxFileintos: 1000 });
-    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
+    const { headers, size, body } = parseEml(parts(300));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
     const [list, reads] = readCounted(d.mailboxes);
     d.mailboxes = list;
     s.execute(d);
+    expect(d.mailboxes, "src reads the list the test counts").toBe(list);
     expect(d.mailboxes).toHaveLength(300);
     expect(reads()).toBe(0);
   });

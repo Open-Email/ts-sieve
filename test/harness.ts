@@ -133,6 +133,13 @@ export function compile(scriptSrc: string, opts: RunOptions = {}): void {
   load(scriptSrc, { enabledExtensions: opts.enabledExtensions ?? ALL_EXTENSIONS, ...opts.options });
 }
 
+/** A multipart of `n` text parts, each with its own X-N. */
+export function parts(n: number): string {
+  let body = "";
+  for (let j = 0; j < n; j++) body += `--b\r\nX-N: p${j}\r\nContent-Type: text/plain\r\n\r\nx\r\n`;
+  return `From: a@x\r\nTo: b@y\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`;
+}
+
 /** `list` behind a proxy, and how many of its entries were read through it:
  * what the cost tests count where a bound in time flakes on a loaded runner,
  * or lets the regression pass on a quiet one. */

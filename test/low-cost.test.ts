@@ -14,9 +14,9 @@ vi.mock("../src/interp/htmltext.js", async (importOriginal) => {
   const m = await importOriginal<typeof import("../src/interp/htmltext.js")>();
   return {
     ...m,
-    htmlToText: (s: string, cut?: boolean) => {
+    htmlToText: (...a: Parameters<typeof m.htmlToText>) => {
       reduced.count++;
-      return m.htmlToText(s, cut);
+      return m.htmlToText(...a);
     },
   };
 });
@@ -58,10 +58,12 @@ describe("quoted-printable takes two hex digits after '='", () => {
   });
 });
 
+const BLIND_FOLD = "the [A-Z] probe saw no fold: toLowerASCII no longer asks it";
+
 /** How many times f folds a value of a million characters or more: every
  * i;ascii-casemap fold begins by asking whether the value holds a capital (a
  * fold that stops asking counts none, and fails these tests rather than
- * passing them). */
+ * passing them, with BLIND_FOLD). */
 function foldsOf(f: () => unknown): number {
   let folds = 0;
   const test = RegExp.prototype.test;
@@ -94,7 +96,9 @@ describe("many :contains keys over a large value", () => {
 
   it("fold the value once, not once per key", { timeout: 30_000 }, () => {
     // Folding a 1 MiB body per key took about 9 s for 1,000 keys.
-    expect(foldsOf(() => expect(run(script, big)).toEqual(R({ implicitKeep: true })))).toBe(1);
+    const folds = foldsOf(() => expect(run(script, big)).toEqual(R({ implicitKeep: true })));
+    expect(folds, BLIND_FOLD).toBeGreaterThan(0);
+    expect(folds).toBe(1);
   });
 
   it("are charged by the value's size, so the budget bounds them", () => {
@@ -110,7 +114,9 @@ describe(":value with many keys over a large value", () => {
     const body = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"aA".repeat(512 * 1024)}\r\n`;
     const keys = Array.from({ length: 300 }, (_, i) => `"k${i}"`).join(",");
     const script = `require ["body","relational","fileinto"]; if body :value "eq" [${keys}] { fileinto "Eq"; }`;
-    expect(foldsOf(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBe(1);
+    const folds = foldsOf(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })));
+    expect(folds, BLIND_FOLD).toBeGreaterThan(0);
+    expect(folds).toBe(1);
   });
 });
 
@@ -153,6 +159,8 @@ describe("repeated body :text tests reduce each HTML part once", () => {
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
     reduced.count = 0;
     s.execute(d);
+    expect(raw.passes, "the subarray probe saw no read of the body").toBeGreaterThan(0);
+    expect(reduced.count, "the htmlToText wrapper saw no reduction").toBeGreaterThan(0);
     expect([d.implicitKeep, raw.passes, reduced.count]).toEqual([true, 1, 1]);
   });
 

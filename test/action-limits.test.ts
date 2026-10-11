@@ -17,14 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
-import { ALL_EXTENSIONS, parseEml, R, readCounted, run } from "./harness.js";
-
-/** A multipart of `parts` text parts, each with its own X-N. */
-function parts(n: number): string {
-  let body = "";
-  for (let j = 0; j < n; j++) body += `--b\r\nX-N: p${j}\r\nContent-Type: text/plain\r\n\r\nx\r\n`;
-  return `From: a@x\r\nTo: b@y\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`;
-}
+import { ALL_EXTENSIONS, parseEml, parts, R, readCounted, run } from "./harness.js";
 
 const REQ = 'require ["mime","foreverypart","fileinto","variables","copy"];';
 
@@ -246,11 +239,12 @@ describe("which redirect addresses are the same", () => {
     } finally {
       spy.mockRestore();
     }
+    expect(d.redirectAddr, "src reads the list the test counts").toBe(list);
     expect([d.redirectAddr.length, d.budgetExhausted]).toEqual([5, true]); // the loop ran as long as it could
     // Each held address read at most once, and each command's literal keyed
     // once: some 97,000 reads and 195,000 keys before.
     expect(reads()).toBeLessThanOrEqual(5);
-    expect(keyed).toBeGreaterThan(0);
+    expect(keyed, "the trim probe saw no key: redirectKey no longer trims").toBeGreaterThan(0);
     expect(keyed).toBeLessThanOrEqual(6);
   });
 });
@@ -294,6 +288,7 @@ describe("the names a host pushed", () => {
     const [list, reads] = readCounted(["Z", "Z"]);
     d.mailboxes = list;
     s.execute(d);
+    expect(d.mailboxes, "src reads the list the test counts").toBe(list);
     expect(d.mailboxes).toHaveLength(302);
     expect(reads()).toBeLessThanOrEqual(2); // the host's two, once
   });
