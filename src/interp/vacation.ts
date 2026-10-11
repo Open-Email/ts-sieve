@@ -54,6 +54,9 @@ export class CmdVacation implements Cmd {
     const reason = expandVars(d, this.reason);
     const handle = expandVars(d, this.handle);
     const addresses = expandVarsList(d, this.addresses);
+    // In a loop, a step per address it compares: a literal list costs no
+    // expansion, and it may hold thousands.
+    if (d.budget.shares > 0) d.budget.consume(1 + addresses.length);
     // RFC 5429 §2.4: vacation conflicts with reject whether or not it records
     // a response (a null sender or one of :addresses records none).
     d.vacationRan = true;

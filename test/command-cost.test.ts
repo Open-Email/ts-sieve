@@ -198,6 +198,14 @@ describe("inside a loop, a command is charged by the size of its work", () => {
   });
 });
 
+describe("vacation's :addresses", () => {
+  it("are charged per address in a loop", () => {
+    const list = (k: number) => `[${Array.from({ length: k }, (_, i) => `"a${i}@b.c"`).join(",")}]`;
+    const steps = (k: number) => stepsOf(`require ["foreverypart","vacation"]; foreverypart { vacation :addresses ${list(k)} "away"; }`, flat(10, "s"));
+    expect(steps(1000) - steps(1)).toBeGreaterThanOrEqual(10 * 999);
+  });
+});
+
 describe("a command that runs out of the loop's share mid-way has done nothing", () => {
   it("vacation", () => {
     const script = `require ["foreverypart","variables","vacation"]; ${FROM_SUBJECT} foreverypart { vacation "${"${v}".repeat(2000)}"; }`;
@@ -246,6 +254,55 @@ describe("a test is charged per header name, and per value by its size", () => {
     // The parts carry no Subject: only the names are charged.
     expect(steps(`header :mime :is ${names("subject", 100)} "x"`) - steps(`header :mime :is ${names("subject", 1)} "x"`)).toBeGreaterThanOrEqual(10 * 99);
     expect(steps(`not exists :mime ${names("content-type", 100)}`) - steps(`not exists :mime ${names("content-type", 1)}`)).toBeGreaterThanOrEqual(10 * 99 * 2);
+  });
+
+  it("envelope :count, per field", () => {
+    expect(extra((k) => `envelope :count "ge" ${names("from", k)} "99999999"`)).toBeGreaterThanOrEqual(10 * 99);
+  });
+
+  it(":count, per key", () => {
+    const keys = (k: number) => `[${Array.from({ length: k }, () => '"99999999"').join(",")}]`;
+    const steps = (k: number) => stepsOf(`require ["foreverypart","relational"]; foreverypart { if header :count "ge" "subject" ${keys(k)} { stop; } }`, eml);
+    expect(steps(100) - steps(1)).toBeGreaterThanOrEqual(10 * 99);
+  });
+
+  it("RFC 2047: a step per encoded word, and CR or LF decoded at its rate", () => {
+    // A word costs a callback and a decoder, some 0.6 us, whatever its size.
+    const words = "=?utf-8?q?a?=".repeat(1500);
+    const crlf = "a\r\n".repeat(4000);
+    const one = (subject: string) => {
+      const m = `From: a@x\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${"--b\r\nContent-Type: text/plain\r\n\r\nx\r\n".repeat(10)}--b--\r\n`;
+      const s = load('require ["foreverypart"]; foreverypart { if header :is "subject" "x" { stop; } }', { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 100_000_000 });
+      const { headers, size, body } = parseEml(m);
+      headers.set("subject", [subject]);
+      const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+      s.execute(d);
+      return 100_000_000 - d.budget.remaining;
+    };
+    expect(one(words) - one("s")).toBeGreaterThanOrEqual(10 * 1500);
+    expect(one(crlf) - one("s")).toBeGreaterThanOrEqual(10 * (crlf.length >> 6));
+  });
+
+  it("body :content, per type per part", () => {
+    const types = (k: number) => `[${Array.from({ length: k }, (_, i) => `"x-${i}/y"`).join(",")}]`;
+    const steps = (k: number) => stepsOf(`require ["body"]; if body :content ${types(k)} :contains "zz" { stop; }`, eml);
+    expect(steps(100) - steps(1)).toBeGreaterThanOrEqual(11 * 99);
+  });
+
+  it("mailboxexists, per name the host is asked about", () => {
+    const steps = (k: number) => {
+      const list = `[${Array.from({ length: k }, (_, i) => `"m${i}"`).join(",")}]`;
+      const s = load(`require ["foreverypart","mailbox"]; foreverypart { if not mailboxexists ${list} { stop; } }`, {
+        enabledExtensions: ALL_EXTENSIONS,
+        maxExecSteps: 100_000_000,
+      });
+      const { headers, size, body } = parseEml(eml);
+      const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+      d.mailboxChecker = { exists: () => true };
+      s.execute(d);
+      return 100_000_000 - d.budget.remaining;
+    };
+    expect(steps(100) - steps(1)).toBeGreaterThanOrEqual(10 * 99);
   });
 
   it("string :count, per source", () => {

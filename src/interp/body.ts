@@ -383,6 +383,7 @@ export class TestBody implements Test {
       return false;
     }
     const { mediaType, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
+    d.budget.consume(this.content.length); // each :content type, per part
     const process = this.wantsPart(mediaType);
 
     if (mediaType.startsWith("multipart/")) {

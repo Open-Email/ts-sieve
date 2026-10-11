@@ -138,10 +138,16 @@ function chargeRead(d: RuntimeData, values: readonly string[]): void {
   d.budget.consume(n);
 }
 
-/** What decodeHeaderValue costs: a scan of the value (a step per 2 KiB), and
- * for RFC 2047 encoded words their decoding (a step per 64 characters). */
+/** What decodeHeaderValue costs: a scan of the value (a step per 2 KiB); a
+ * step per 64 characters when it holds CR or LF to strip, or RFC 2047 encoded
+ * words; and a step per encoded word, each a callback and a decoder (some
+ * 0.6 us, however small). */
 function decodeCost(v: string): number {
-  return (v.length >> 11) + (v.includes("=?") ? v.length >> 6 : 0);
+  let n = v.length >> 11;
+  let words = 0;
+  for (let i = v.indexOf("=?"); i !== -1; i = v.indexOf("=?", i + 2)) words++;
+  if (words > 0 || /[\r\n]/.test(v)) n += v.length >> 6;
+  return n + words;
 }
 
 export class AddressTest implements Test {

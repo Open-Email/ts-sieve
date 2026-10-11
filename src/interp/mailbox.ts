@@ -14,6 +14,7 @@ export class MailboxExistsTest implements Test {
     const checker = d.mailboxChecker;
     if (!checker) return true; // optimistic default
     for (const m of this.mailboxes) {
+      d.budget.consume(1); // a step a name the host is asked about
       if (!checker.exists(m)) return false;
     }
     return true;

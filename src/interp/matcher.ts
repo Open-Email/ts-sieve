@@ -287,6 +287,7 @@ export class MatcherTest {
   countMatches(d: RuntimeData, value: number): boolean {
     const v = BigInt(value);
     for (const k of this.key) {
+      d.budget.consume(1); // a step a key, as matching costs one
       // RFC 5231/4790: the key is prepared as i;ascii-numeric — leading-digit
       // prefix, non-numeric = +infinity.
       const kNum = parseNumericPrefix(expandVars(d, k));
