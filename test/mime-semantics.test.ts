@@ -165,7 +165,9 @@ describe("cut soundness, over random MIME trees", () => {
     'if not header :mime :anychild :param "filename" "content-disposition" "a.pdf" { fileinto "NF"; }',
   ];
 
-  it("no definite answer on a cut differs from the whole message's", () => {
+  // Every cut of every message: tens of thousands of runs, slower under CI's
+  // coverage instrumentation.
+  it("no definite answer on a cut differs from the whole message's", { timeout: 120_000 }, () => {
     const fails: string[] = [];
     let definite = 0;
     for (let m = 0; m < 40; m++) {
