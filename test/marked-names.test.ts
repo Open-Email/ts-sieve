@@ -36,6 +36,17 @@ describe("mailboxexists expands variables (#63)", () => {
     expect([d.mailboxes, d.indeterminate]).toEqual([[], true]);
   });
 
+  it("does not ask the host about a marked name, whose answer it cannot use", () => {
+    const asked: string[] = [];
+    exec(`require ["mailbox","variables","fileinto"]; ${MARK} if mailboxexists ["\${big}", "Inbox"] { fileinto "Yes"; }`, { exists: (name) => (asked.push(name), true) });
+    expect(asked).toEqual(["Inbox"]);
+  });
+
+  it("without a host to ask, every name exists, a marked one too", () => {
+    const d = exec(`require ["mailbox","variables","fileinto"]; ${MARK} if mailboxexists "\${big}" { fileinto "Yes"; }`);
+    expect([d.mailboxes, d.indeterminate]).toEqual([["Yes"], false]);
+  });
+
   it("without variables, a name is literal", () => {
     const asked: string[] = [];
     exec('require ["mailbox","fileinto"]; if mailboxexists "${f}" { fileinto "Yes"; }', { exists: (name) => (asked.push(name), true) });
@@ -60,7 +71,7 @@ body
 .
 ;
 ${MARK}
-test_set "big" "abc";
+test_set "Big" "abc";
 test "a variable test_set set reads whole" {
   if string :is "\${big}" "abc" { set "ok" "1"; }
   if not string :is "\${ok}" "1" { test_fail "read as a prefix"; }
@@ -92,8 +103,19 @@ describe("a test that cannot set captures leaves them whole when it is unknown (
     });
   }
 
-  it("and the control: a test that may set them doubts them", () => {
-    const d = forward('header :matches "${big}" "*"');
-    expect([d.redirectAddr, d.indeterminate]).toEqual([[], true]);
+  it("as an elsif", () => {
+    const d = exec(`require ["variables"]; ${MARK} if header :matches "subject" "*" { } if false { } elsif exists "\${big}" { keep; } redirect "\${1}";`, {
+      subject: "fwd@example.com",
+    });
+    expect([d.redirectAddr, redirectsOnGuess(d), d.indeterminate]).toEqual([["fwd@example.com"], [], true]);
   });
+
+  // The direction that matters: over the whole input these may set ${1}, so a
+  // forward to it must not go as if it were whole.
+  for (const test of ['header :matches "${big}" "*"', 'not header :matches "${big}" "*"', 'anyof (false, header :matches "${big}" "*")']) {
+    it(`and the control: ${test} may set them, and doubts them`, () => {
+      const d = forward(test);
+      expect([d.redirectAddr, d.indeterminate]).toEqual([[], true]);
+    });
+  }
 });

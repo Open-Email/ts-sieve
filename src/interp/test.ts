@@ -459,7 +459,8 @@ function countOver(d: RuntimeData, matcher: MatcherTest, count: number, open: bo
 // guess. Only when no member decides does the unknown surface.
 
 /** Whether a test can leave captures the script sees: the body test restores
- * its own. A test that does not say is assumed to. */
+ * its own, exists, size and the like set none, and not, allof and anyof answer
+ * for their members. A test that does not say is assumed to. */
 export function setsCaptures(t: Test): boolean {
   return (t as { setsCaptures?: boolean }).setsCaptures !== false;
 }
