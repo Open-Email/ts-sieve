@@ -266,6 +266,8 @@ export function rawBinary(msg: Message, raw: Uint8Array): string {
 export const MAX_MIME_PARTS = 1024;
 
 export class TestBody implements Test {
+  /** Restores the captures in force, whatever it matched (see check). */
+  readonly setsCaptures = false;
   readonly matcher = new MatcherTest();
   raw = false;
   text = false;

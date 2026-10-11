@@ -3,8 +3,9 @@
 // A :matches or :regex over a cut input can still match soundly (a trailing
 // "*", say), and the matcher keeps its captures. They come from the cut input,
 // and may differ from what the whole input gives (for :matches, ${0} and the
-// last "*"; for :regex, any group), with nothing to say so. `if not string :contains "${1}" "unsubscribe" { discard; }` then
-// discarded on a guess. Reading such a capture discloses it as indeterminate;
+// last "*"; for :regex, any group), with nothing to say so:
+// `if not string :contains "${1}" "unsubscribe" { discard; }` then discarded on
+// a guess. Reading such a capture discloses it as indeterminate;
 // a cut match whose captures nobody reads discloses nothing.
 
 import { describe, expect, it } from "vitest";
@@ -95,16 +96,26 @@ describe("captures an absorbed unknown leaves behind", () => {
     expect(run(script, heavy("From: a@spam.example"), BUDGET)).toMatchObject({ indeterminate: true });
   });
 
-  it("allof: a member out of its budget share, absorbed by a false one", () => {
-    const script = `require ["variables","body","regex"]; if header :matches "from" "*@*" { }
-      if allof (body :regex "casino", header :is "x-none" "z") { }
-      if string :is "\${2}" "spam.example" { discard; }`;
-    expect(run(script, heavy("From: a@spam.example"), BUDGET).indeterminate).toBe(true);
+  it("allof: a member that could set captures, out of its budget share, absorbed by a false one", () => {
+    // Over the whole input the :regex matches and its captures replace From's.
+    const script = `require ["variables","regex","fileinto"]; if header :matches "from" "*@*" { }
+      if allof (header :regex "subject" "((a|b|c|d|e|f|g|h)+)c", header :is "x-none" "z") { }
+      fileinto "\${2}";`;
+    const eml = msg(`From: a@spam.example\r\nSubject: ${"ab".repeat(8000)}c`);
+    expect(run(script, eml, { options: { ...CORE.options, maxExecSteps: 100_000 } })).toMatchObject({ fileinto: ["spam.example"], indeterminate: true });
   });
 
   it("an out-of-range read of them too: over the whole input there may be such a group", () => {
     const script = 'require ["variables"]; if anyof (header :matches "subject" "*(*)", header :matches "from" "*@*") { if string :is "${5}" "" { discard; } }';
     expect(run(script, msg(`From: a@spam.example\r\n${cutSubject}`), CORE).indeterminate).toBe(true);
+  });
+
+  it("a clone of exact captures reads them exactly", () => {
+    const s = load('require ["variables"]; if header :matches "subject" "*" { }', { enabledExtensions: ALL_EXTENSIONS, ...CORE.options });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(0, new Map([["subject", ["short"]]]), null));
+    s.execute(d);
+    const c = d.clone();
+    expect([c.matchVariable(1), c.indeterminate]).toEqual(["short", false]);
   });
 
   it("a clone carries them into a sub-run", () => {
@@ -115,6 +126,54 @@ describe("captures an absorbed unknown leaves behind", () => {
     const c = d.clone();
     c.matchVariable(1);
     expect(c.indeterminate).toBe(true);
+  });
+
+  it("an unknown in a member that still answered is no doubt: the whole input answers it alike", () => {
+    // allof(a header test true after an unknown value, a fresh match).
+    const script = `require ["variables"];
+      if allof (header :matches ["reply-to","from"] "*<*>", header :matches "x-list" "*@*") { if string :is "\${2}" "spam.example" { discard; } }`;
+    const headers = `Reply-To: ${"n".repeat(17_000)} <other@corp.example>\r\nFrom: Boss <boss@corp.example>\r\nX-List: a@spam.example`;
+    expect(run(script, msg(headers), CORE).indeterminate).toBe(false);
+  });
+
+  describe("a body test's unknown is no doubt: it restores the captures it found", () => {
+    const LONG = "x".repeat(18_000);
+    const mp = (headers: string) =>
+      `${headers}\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\n${LONG}\r\n--b\r\nContent-Type: text/plain\r\n\r\nthe END\r\n--b--\r\n`;
+    it("as an allof member that answered after an unknown part", () => {
+      const script = `require ["variables","body"];
+        if allof (body :text :matches "*END", header :matches "from" "*@*") { if string :is "\${2}" "spam.example" { discard; } }`;
+      expect(run(script, mp("From: a@spam.example"), CORE).indeterminate).toBe(false);
+    });
+    it("as an anyof member that stayed unknown", () => {
+      const script = `require ["variables","body"]; if header :matches "from" "*@*" { }
+        if anyof (body :raw :matches "*NOPE", true) { }
+        if string :is "\${2}" "spam.example" { discard; }`;
+      expect(run(script, `From: a@spam.example\r\n\r\n${LONG} END\r\n`, CORE).indeterminate).toBe(false);
+    });
+    it("but it doubts what the members after it set: over the whole input it may have ended the test", () => {
+      const script = `require ["variables","body"];
+        if anyof (body :raw :matches "*NOPE", header :matches "from" "*@*") { if string :is "\${2}" "spam.example" { discard; } }`;
+      expect(run(script, `From: a@spam.example\r\n\r\n${LONG} END\r\n`, CORE).indeterminate).toBe(true);
+    });
+    it("as an if's own test, true after an unknown part", () => {
+      const script = `require ["variables","body"];
+        if header :matches "from" "*@*" { if body :text :matches "*END" { } if string :is "\${2}" "spam.example" { discard; } }`;
+      expect(run(script, mp("From: a@spam.example"), CORE).indeterminate).toBe(false);
+    });
+  });
+
+  it("an earlier key's unknown doubts a later key's captures, :matches and :regex", () => {
+    const subject = `From: a@x\r\nSubject: ${"x".repeat(18_000)} (fine)`;
+    const m = 'require ["variables"]; if header :matches "subject" ["*(*)", "x*"] { if string :is "${2}" "" { discard; } }';
+    expect(run(m, msg(subject), CORE).indeterminate).toBe(true);
+    const r = 'require ["variables","regex"]; if header :regex "subject" ["[(]([a-z]+)[)]$", "^x"] { if string :is "${1}" "" { discard; } }';
+    expect(run(r, msg(subject), CORE).indeterminate).toBe(true);
+  });
+
+  it("anyof: a later :regex member's captures", () => {
+    const script = 'require ["variables","regex"]; if anyof (header :matches "subject" "*(*)", header :regex "from" "(.*)@(.*)") { if string :is "${2}" "spam.example" { discard; } }';
+    expect(run(script, msg(`From: a@spam.example\r\n${cutSubject}`), CORE).indeterminate).toBe(true);
   });
 
   it("nothing is disclosed when nothing reads them, or a later rule matches afresh", () => {

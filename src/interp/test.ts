@@ -429,6 +429,28 @@ function countOver(d: RuntimeData, matcher: MatcherTest, count: number, open: bo
 // member looking for the absorbing value rather than short-circuiting into a
 // guess. Only when no member decides does the unknown surface.
 
+/** Whether a test can leave captures the script sees: the body test restores
+ * its own. A test that does not say is assumed to. */
+function setsCaptures(t: Test): boolean {
+  return (t as { setsCaptures?: boolean }).setsCaptures !== false;
+}
+
+/**
+ * One member of anyof/allof, with what its answer means for the captures.
+ * A member that answers definitely answers alike over the whole input, so an
+ * unknown inside it (another value, a body part) doubts nothing after it. An
+ * unknown member doubts the captures in force, unless it could not have set
+ * any; either way it doubts what the members after it set.
+ */
+function member(d: RuntimeData, t: Test): Tri {
+  const before = d.captureDoubt;
+  const r = t.check(d);
+  if (r !== "unknown") d.captureDoubt = before;
+  else if (setsCaptures(t)) doubtCaptures(d);
+  else d.captureDoubt = true;
+  return r;
+}
+
 export class NotTest implements Test {
   constructor(public test: Test) {}
   check(d: RuntimeData): Tri {
@@ -442,12 +464,9 @@ export class AllOfTest implements Test {
   check(d: RuntimeData): Tri {
     let unknown = false;
     for (const t of this.tests) {
-      const r = t.check(d);
+      const r = member(d, t);
       if (r === false) return false;
-      if (r === "unknown") {
-        unknown = true;
-        doubtCaptures(d);
-      }
+      if (r === "unknown") unknown = true;
     }
     return unknown ? "unknown" : true;
   }
@@ -458,12 +477,9 @@ export class AnyOfTest implements Test {
   check(d: RuntimeData): Tri {
     let unknown = false;
     for (const t of this.tests) {
-      const r = t.check(d);
+      const r = member(d, t);
       if (r === true) return true;
-      if (r === "unknown") {
-        unknown = true;
-        doubtCaptures(d);
-      }
+      if (r === "unknown") unknown = true;
     }
     return unknown ? "unknown" : false;
   }

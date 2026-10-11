@@ -133,6 +133,10 @@ export class SharedTest implements Test {
     private readonly test: Test,
     private readonly index: number,
   ) {}
+  /** The wrapped test's (see test.ts setsCaptures). */
+  get setsCaptures(): boolean | undefined {
+    return (this.test as { setsCaptures?: boolean }).setsCaptures;
+  }
   check(d: RuntimeData): Tri {
     return withShare(d, this.index, () => this.test.check(d));
   }
