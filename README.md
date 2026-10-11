@@ -59,8 +59,10 @@ failed, fall back to implicit keep". Because a throw skips every rule, the
 leniently, and structure past the caps below is "unknown". Other paths from
 message content to a throw remain and are tracked as issues (step-budget
 exhaustion by large parts under `:matches`/`:regex` or by many rules over many
-parts, a `:regex`/`:matches` key built from message data that does not
-compile).
+parts, a `:regex` key nested deep enough to overflow the matcher's stack). A
+`:matches`/`:regex` key holding a variable reference compiles when
+the test runs; if the expanded text does not compile, or is past the
+pattern-length cap, the comparison is "unknown" rather than an error.
 
 ### What the host implements
 
@@ -143,7 +145,9 @@ compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256
   attacker-controlled text.
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
-  script upload, not when a message arrives.
+  script upload, not when a message arrives. A pattern built from variables
+  can only be compiled at delivery, and one that does not compile answers
+  "unknown" instead of throwing.
 - **Header-injection guard.** `addheader` puts its value on one line before it
   reaches `headerEdits` (a fold is removed, any other line break becomes a
   space, a NUL is dropped), so a variable smuggled out of a hostile message
