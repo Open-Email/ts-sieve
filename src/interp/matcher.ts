@@ -17,7 +17,7 @@ import {
   testStringPrefix,
   toLowerASCII,
 } from "./matching.js";
-import { byteLen, type CompiledRegex, compileRegex, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
+import { byteLen, type CompiledRegex, compileRegex, MAX_COMPILE_WORK, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
 import {
   RELATIONAL_OPS,
   compareNumericValue,
@@ -227,13 +227,28 @@ export class MatcherTest {
     const re = this.compiledKeys[i];
     if (re) return { re, pattern: key };
     const pattern = expandVars(d, key);
+    // A test matches every value of a field (or every body part) against the
+    // same keys, and the expansion only changes when variables do: compile
+    // once per expansion, per execution. The compile is charged, a step per
+    // 100 calls, and a pattern that does not compile as the whole cap.
+    let compiled = this.runtimeCompiled.get(d);
+    if (compiled === undefined) this.runtimeCompiled.set(d, (compiled = []));
+    const last = compiled[i];
+    if (last !== undefined && last.pattern === pattern) return last;
+    let out: CompiledRegex | null = null;
     try {
-      return { re: this.compileKey(pattern), pattern };
+      out = this.compileKey(pattern);
     } catch (e) {
-      if (e instanceof SieveError) return { re: null, pattern };
-      throw e;
+      if (!(e instanceof SieveError)) throw e;
     }
+    d.budget.consume(1 + Math.floor((out?.compileWork ?? MAX_COMPILE_WORK) / 100));
+    const entry = { re: out, pattern };
+    compiled[i] = entry;
+    return entry;
   }
+
+  /** runtimeKey's last compile of each variable-bearing key, per execution. */
+  private readonly runtimeCompiled = new WeakMap<RuntimeData, ({ re: CompiledRegex | null; pattern: string } | undefined)[]>();
 
   isCount(): boolean {
     return this.match === "count";

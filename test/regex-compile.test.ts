@@ -11,7 +11,9 @@
 // at load, a key from the message is "unknown" (#19).
 
 import { describe, expect, it } from "vitest";
-import { compile, R, run } from "./harness.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { compileRegex } from "../src/interp/regex.js";
+import { ALL_EXTENSIONS, compile, parseEml, R, run } from "./harness.js";
 
 const CORE = { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } };
 const fromKey = `require ["regex","variables","fileinto"];
@@ -25,12 +27,10 @@ function within<T>(ms: number, f: () => T): T {
   return r;
 }
 
-const BOMBS = [
-  "(?:(?:(?:){1000}){1000}){100}",
-  "(?:(?:(?:(?:){1000}){1000}){1000}){1000}",
-  "(?:(?:(?:(?i){1000}){1000}){1000}){1000}",
-  "(?:(?:(?:(?:)*){1000}){1000}){1000}",
-];
+// Bombs that stay finite if the cap ever regresses (10^8 calls, under a
+// second), so a regression fails here instead of hanging the run; the
+// boundary test below pins the cap itself.
+const BOMBS = ["(?:(?:(?:){1000}){1000}){100}", "(?:(?:(?i){1000}){1000}){100}", "(?:(?:(?:(?:)*){1000}){1000}){1000}"];
 
 describe("nested repeats of a node that emits nothing", () => {
   for (const bomb of BOMBS) {
@@ -47,6 +47,28 @@ describe("nested repeats of a node that emits nothing", () => {
       );
     });
   }
+});
+
+describe("the cap", () => {
+  it("is 100,000 compile calls", () => {
+    expect(() => compileRegex("(?:(?:){48}){1000}")).not.toThrow(); // 98,001 calls
+    expect(() => compileRegex("(?:(?:){49}){1000}")).toThrow(/too complex/); // 100,001
+  });
+});
+
+describe("a key from the message is compiled once per test, not per value", () => {
+  it("5,000 Subject fields do not compile it 5,000 times", () => {
+    // Each failing compile is charged as the whole cap; per value, 5,000 of
+    // them would exhaust core's budget (and took 3.5 s uncharged).
+    const eml = `From: (?:(?:(?:){1000}){1000}){100}\r\n${"Subject: x\r\n".repeat(5000)}\r\nbody\r\n`;
+    const { headers, size, body } = parseEml(eml);
+    const s = load(fromKey, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect(d.mailboxes).toEqual(["Other"]);
+    expect(d.indeterminate).toBe(true);
+    expect(d.budgetExhausted).toBe(false);
+  });
 });
 
 describe("what still compiles", () => {

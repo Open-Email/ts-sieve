@@ -29,10 +29,12 @@ const MAX_COMPILE_DEPTH = 500;
 // The program-size cap bounds expansion only while every copy emits something:
 // a repeat of a node that emits nothing ("(?:)", "(?i)") adds no instructions,
 // so nested repeats of one went unchecked ("(?:(?:(?:(?:){1000}){1000}){1000}){1000}"
-// is 10^12 calls). Compile calls are counted too. Each call that emits nothing
-// sits inside a wrapper (group, concat, repeat) of one that does, so a pattern
-// within the program cap needs at most a few times its size; ten is margin.
-const MAX_COMPILE_WORK = 10 * MAX_PROGRAM_SIZE;
+// is 10^12 calls). Compile calls are counted too. Work is about instructions
+// times wrapper depth: real patterns need a few calls per instruction (2.5 at
+// most in Pigeonhole's corpus), synthetic wrapping up to ~250x. Compile work
+// is not charged to the step budget here; a caller compiling a key at run
+// time charges it (matcher.ts runtimeKey), using compileWork.
+export const MAX_COMPILE_WORK = 10 * MAX_PROGRAM_SIZE;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -394,7 +396,7 @@ type Inst =
 class Compiler {
   prog: Inst[] = [];
   private depth = 0;
-  private work = 0;
+  work = 0;
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
@@ -534,11 +536,17 @@ interface StepBudget {
 }
 
 export interface CompiledRegex {
+  /** Compile calls it took (see MAX_COMPILE_WORK). */
+  readonly compileWork: number;
   findSubmatch(input: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null;
 }
 
 class Program implements CompiledRegex {
-  constructor(private readonly prog: Inst[], private readonly ncaps: number) {}
+  constructor(
+    private readonly prog: Inst[],
+    private readonly ncaps: number,
+    readonly compileWork: number,
+  ) {}
 
   findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null {
     const maxInput = opts?.maxInputLength ?? MAX_INPUT_LENGTH;
@@ -710,7 +718,7 @@ export function compileRegex(
   // A leading Save(0) is implicit via the seed caps; add trailing Match.
   compiler.compile(ast);
   compiler.emit({ op: "match" });
-  return new Program(compiler.prog, ncaps);
+  return new Program(compiler.prog, ncaps, compiler.work);
 }
 
 /**
