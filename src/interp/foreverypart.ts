@@ -52,7 +52,14 @@ export class CmdForEveryPart implements Cmd {
       d.budget.consume(parts.length); // the parts it walks, before the block costs
       for (let i = 0; i < parts.length; i++) {
         const p = parts[i]!;
-        if (i >= gap) d.indeterminate = true;
+        if (i === gap) {
+          // The iteration missed would come first over the whole input, and
+          // may have broken, stopped or acted: what runs from here is on a
+          // guess, as after a loop that missed iterations at its end.
+          d.indeterminate = true;
+          if (this.mayAffectLater) d.guessAfter = true;
+          armSkipped(d, this);
+        }
         if (p.open) gap = Math.min(gap, i + subtree(p).length);
         d.partStack.push(p);
         try {
