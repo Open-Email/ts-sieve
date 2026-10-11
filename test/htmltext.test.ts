@@ -145,6 +145,27 @@ describe("HTML to text: no drop state a browser would not enter", () => {
     expect(textIs("<math><xmp><!--</xmp>W0", "<!-- W0")).toBe(true);
   });
 
+  it("a kept region holding a visible-raw start shows the rest as text", () => {
+    // A browser in foreign content (or select) reads textarea/xmp/CDATA
+    // content as markup and can enter xmp, textarea, plaintext or CDATA there,
+    // showing spans as text past where this reduction's region ends.
+    expect(
+      textIs(
+        "<svg><textarea></svg><xmp></textarea><Buy cheap pills now at example dot com>",
+        "</svg><xmp></textarea><Buy cheap pills now at example dot com>",
+      ),
+    ).toBe(true);
+    expect(textIs("<svg><textarea></svg><plaintext></textarea><Buy> <Click here>", "</svg><plaintext></textarea><Buy> <Click here>")).toBe(true);
+    expect(textIs("<svg></svg><![CDATA[><xmp>]]><Buy cheap pills now>", "><xmp>]]><Buy cheap pills now>")).toBe(true);
+    expect(textIs("<select><xmp><textarea></xmp><b W0>", "<textarea></xmp><b W0>")).toBe(true);
+    // Without such a start the region still ends at its closer.
+    expect(textIs("<svg><textarea>a<b>c</textarea><i>d", "a<b>c d")).toBe(true);
+  });
+
+  it("noscript bounds what follows (it is raw text where scripting is on)", () => {
+    expect(textIs("<noscript><style></noscript>W0", "W0")).toBe(true);
+  });
+
   it("an escaped script (<!-- inside it) makes what follows bounded too", () => {
     expect(textIs("<script><!--<script></script><style></script>W0</style>", "W0")).toBe(true);
     expect(textIs("<script><!--<script></script><!--</script>W0-->", "W0-->")).toBe(true);
@@ -158,8 +179,10 @@ describe("HTML to text: cost", () => {
   // construct that runs to the end of the input is quadratic, and 1 MiB of
   // small scripts took 41 s. A generous bound — linear runs in milliseconds.
   it("many small constructs over a large input stay linear", { timeout: 30_000 }, () => {
-    for (const unit of ["<script>x</script>", "<!-- x -->", '<a title="x">', "<style>x</style>", "<"]) {
-      const html = unit.repeat(Math.ceil(1_048_576 / unit.length));
+    const units = ["<script>x</script>", "<!-- x -->", '<a title="x">', "<style>x</style>", "<"];
+    const bounded = ["<a", "<![CDATA[x]]>", "<textarea>x</textarea>", "<xmp>"].map((u) => ["<svg>", u] as const);
+    for (const [prefix, unit] of [...units.map((u) => ["", u] as const), ...bounded]) {
+      const html = prefix + unit.repeat(Math.ceil(1_048_576 / unit.length));
       const t = performance.now();
       textIs(html, "");
       expect(performance.now() - t).toBeLessThan(2000);

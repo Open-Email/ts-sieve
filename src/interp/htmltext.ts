@@ -70,8 +70,14 @@ const RAW_TEXT: ReadonlyMap<string, { keep: boolean; decode: boolean; closer: Re
 );
 
 /** Start tags past which a browser's tokenizer state depends on tree-builder
- * rules this reduction does not model (foreign content, the select mode). */
-const BOUNDING_TAGS = new Set(["svg", "math", "select"]);
+ * rules this reduction does not model (foreign content, the select mode, and
+ * noscript, which is raw text where a renderer runs scripts). */
+const BOUNDING_TAGS = new Set(["svg", "math", "select", "noscript"]);
+
+/** What starts a raw state a browser SHOWS: inside a region kept here, a
+ * browser reading it as markup (foreign content, select) can enter one that
+ * outlasts the region. */
+const VISIBLE_RAW_START = /<(?:xmp|textarea|plaintext)|<!\[CDATA\[/gi;
 
 /** Accumulates visible text under the white-space rules. */
 class TextOut {
@@ -133,7 +139,7 @@ class TextOut {
 
 export function htmlToText(s: string): string {
   const w = new TextOut();
-  const ctx: Ctx = { bounded: false, gt: -2, escape: -2 };
+  const ctx: Ctx = { bounded: false, gt: -2, escape: -2, rawStart: -2 };
   const n = s.length;
   let i = 0;
   while (i < n) {
@@ -160,6 +166,8 @@ type Ctx = {
   /** The same for "<!--", searched from each script's content: an unbounded
    * search per script made many small scripts quadratic. */
   escape: number;
+  /** The same for VISIBLE_RAW_START, searched from each bounded region. */
+  rawStart: number;
 };
 
 /**
@@ -228,8 +236,12 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   const n = s.length;
   if (s.startsWith("![CDATA[", j)) {
     const close = s.indexOf("]]>", j + 8);
-    w.text(s, j + 8, close === -1 ? n : close, false);
-    return close === -1 ? n : close + 3;
+    if (close === -1 || holdsVisibleRawStart(s, j + 8, close, ctx)) {
+      w.text(s, j + 8, n, false);
+      return n;
+    }
+    w.text(s, j + 8, close, false);
+    return close + 3;
   }
   const gt = nextGt(s, j, ctx);
   if (gt === -1) {
@@ -249,8 +261,26 @@ function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   if (raw === undefined || !raw.keep) return gt + 1;
   raw.closer.lastIndex = gt + 1;
   const m = raw.closer.exec(s);
-  w.text(s, gt + 1, m === null ? n : m.index, raw.decode);
-  return m === null ? n : m.index; // the closing tag is read as markup next
+  if (m === null || holdsVisibleRawStart(s, gt + 1, m.index, ctx)) {
+    w.text(s, gt + 1, n, false);
+    return n;
+  }
+  w.text(s, gt + 1, m.index, raw.decode);
+  return m.index; // the closing tag is read as markup next
+}
+
+/**
+ * Whether s[from, to) — a region kept as text here — holds a start of a raw
+ * state a browser shows. A browser reading the region as markup can enter that
+ * state and stay in it past `to`, showing spans this mode would hide, so the
+ * caller then shows the rest of the input as text: more, never less.
+ */
+function holdsVisibleRawStart(s: string, from: number, to: number, ctx: Ctx): boolean {
+  if (ctx.rawStart !== -1 && ctx.rawStart < from) {
+    VISIBLE_RAW_START.lastIndex = from;
+    ctx.rawStart = VISIBLE_RAW_START.exec(s)?.index ?? -1;
+  }
+  return ctx.rawStart !== -1 && ctx.rawStart < to;
 }
 
 /** The first ">" at or after `j`, reusing the last search while it qualifies. */
