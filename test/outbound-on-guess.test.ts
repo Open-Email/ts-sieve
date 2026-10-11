@@ -185,6 +185,9 @@ describe("an arm a definite test skipped over state a guess wrote", () => {
       `require ["imap4flags","reject"]; if ${U} { addflag "spam"; } if hasflag "spam" { reject "no"; }`,
       `require ["editheader","reject"]; deleteheader :matches "x-ok" "*zzz"; if not exists "x-ok" { reject "no"; }`,
       `require ["variables","reject","fileinto"]; if ${U} { set "x" "1"; } if string :is "\${x}" "1" { fileinto "A"; } elsif true { keep; } else { reject "no"; }`,
+      // The first arm is taken over a guessed variable: read whole it is not,
+      // and the elsif holding the reject runs.
+      `require ["variables","reject","fileinto"]; if ${U} { set "x" "1"; } if string :is "\${x}" "" { fileinto "A"; } elsif true { reject "no"; }`,
     ]) {
       const d = run1(script);
       expect([script.slice(0, 40), d.rejected, d.rejectOnGuess]).toEqual([script.slice(0, 40), false, true]);
