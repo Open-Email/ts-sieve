@@ -55,7 +55,8 @@ describe("a header rule sees every word that decodes", () => {
 describe("a word that does not decode costs no more than one that does", () => {
   // Each failed word was a thrown DOMException from atob, some 3 us apiece and
   // uncharged at top level: a Subject of "=?=?b?" made 20 rules over 1 MiB take
-  // 14.6 s, against 0.16 s on the decoder that gave up at the first.
+  // 14.6 s, against 0.16 s on the decoder that gave up at the first. Pinned by
+  // count, not by time (#71).
   const failing = "=?=?b?".repeat(1 << 16);
 
   it("no word is refused by a throw", () => {
@@ -76,18 +77,6 @@ describe("a word that does not decode costs no more than one that does", () => {
       spy.mockRestore();
     }
     expect(thrown).toBe(0);
-  });
-
-  it("20 rules over a 1 MiB Subject of failed words", () => {
-    const subject = "=?=?b?".repeat((1 << 20) / 6);
-    const rules = Array.from({ length: 20 }, (_, i) => `if header :contains "subject" "k${i}" { fileinto "F${i}"; }`).join(" ");
-    const t0 = performance.now();
-    const r = run(`require "fileinto"; ${rules}`, `From: a@x\r\nSubject: ${subject}\r\n\r\nbody\r\n`, {
-      options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 },
-    });
-    // About 0.25 s fixed; the regression took 14.6 s.
-    expect(performance.now() - t0).toBeLessThan(3000);
-    expect(r.fileinto).toEqual([]);
   });
 });
 
