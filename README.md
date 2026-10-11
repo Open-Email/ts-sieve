@@ -61,9 +61,10 @@ the caps below is "unknown"), and a test that runs out of its share of
 `maxExecSteps` answers "unknown" while the script runs on (`budgetExhausted`).
 A `:matches`/`:regex` key holding a variable reference compiles when the test
 runs; if the expanded text does not compile, or is past the pattern-length
-cap, the comparison is "unknown" rather than an error. One path from message
-content to a throw remains and is tracked as an issue: an `envelope` test
-whose envelope-part comes from a variable (#36).
+cap, the comparison is "unknown" rather than an error. An `envelope`
+envelope-part built from a variable that names no part the test reads has no
+value, like a missing header. No other path from message content to a throw
+is known: report one as an issue.
 
 ### What the host implements
 

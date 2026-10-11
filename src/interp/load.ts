@@ -469,6 +469,9 @@ function checkIndexTags(s: Script, pos: Position, what: string, index: number, l
   }
 }
 
+/** The envelope-parts the envelope test reads (RFC 5228 §5.4, plus "auth"). */
+const ENVELOPE_PARTS = new Set(["from", "to", "auth"]);
+
 function loadEnvelopeTest(s: Script, ptest: PTest): Test {
   if (!s.requiresExtension("envelope")) throw new SieveError("missing require 'envelope'");
   const matcher = new MatcherTest();
@@ -492,6 +495,10 @@ function loadEnvelopeTest(s: Script, ptest: PTest): Test {
   loadSpec(s, spec, ptest, ptest.args, ptest.tests, null);
   matcher.setKey(s, key);
   if (useSubaddress && !s.requiresExtension("subaddress")) throw at(ptest, "missing require 'subaddress'");
+  for (const f of field) {
+    const literal = !s.requiresExtension("variables") || !f.includes("${");
+    if (literal && !ENVELOPE_PARTS.has(f.toLowerCase())) throw at(ptest, `envelope: unsupported envelope-part: ${f}`);
+  }
   return new EnvelopeTest(matcher, addressPart, field);
 }
 
