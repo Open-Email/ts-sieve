@@ -230,6 +230,24 @@ describe("a message cannot buy its way past later rules", () => {
     expect(d.mailboxes).toEqual(["Junk"]);
   });
 
+  it("rules over 5,000 copies of a header decide after a body test spent the budget", () => {
+    // Repeating a header was the other lever: a step per value found, at top
+    // level, where finding them costs nothing per value.
+    let body = "";
+    for (let i = 0; i < 40; i++) body += `--b\r\nContent-Type: text/plain\r\n\r\n${"x".repeat(16_000)}\r\n`;
+    const listIds = Array.from({ length: 5000 }, (_, i) => `List-Id: l${i}`).join("\r\n");
+    const tags = Array.from({ length: 5000 }, (_, i) => `X-Tag: t${i}`).join("\r\n");
+    const froms = ["boss@x.com", ...Array.from({ length: 2999 }, (_, i) => `u${i}@x.com`)].map((f) => `From: ${f}`).join("\r\n");
+    const script = `require ["fileinto","body","regex"];
+      if body :regex "casino" { fileinto "Body"; }
+      if exists "list-id" { fileinto "Lists"; }
+      if address :is "from" "boss@x.com" { fileinto "Boss"; }
+      if header :is "x-tag" "t0" { fileinto "Tag"; }`;
+    const d = exec(script, `${froms}\r\n${listIds}\r\n${tags}\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`);
+    expect(d.budgetExhausted).toBe(true);
+    expect(d.mailboxes).toEqual(["Lists", "Boss", "Tag"]);
+  });
+
   it("an address rule over a 60 KB From decides after a body test spent the budget", () => {
     // 150 long addresses: each probe costs a step, as it always has; the
     // 60 KB parse is what no longer fits the rule's reserve.
@@ -329,6 +347,8 @@ describe("a test is charged per header name, and per value by its size", () => {
     const steps = stepsOf('require ["foreverypart"]; foreverypart { if header :contains "subject" "x" { stop; } }', m);
     // With :contains' own charge, some 1,200 a part; a step per "=?" was 30,000.
     expect(steps).toBeLessThan(10 * 2 * (junk.length >> 6));
+    // But it is searched at the decode rate.
+    expect(steps).toBeGreaterThanOrEqual(10 * (junk.length >> 6));
   });
 
   it("RFC 2047: a step per encoded word, and CR or LF decoded at its rate", () => {

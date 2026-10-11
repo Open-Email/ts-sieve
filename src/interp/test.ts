@@ -126,27 +126,29 @@ function testAddress(
 
 /**
  * Whether a test runs inside a foreverypart loop, where it runs once per part
- * and the size of what it reads multiplies with the iterations: there it is
- * charged by size. At top level a test runs once, its reads bounded by the
- * message and the script; a size charge there would let a large header, with
- * a body test that spends the budget, cost the rules after it their reserve,
- * a way for a message to skip them.
+ * and what it reads multiplies with the iterations: there it is charged by the
+ * values it finds and their size. At top level a test runs once, its reads
+ * bounded by the message and the script; a charge there by size or by count
+ * would let a large or repeated header, with a body test that spends the
+ * budget, cost the rules after it their reserve, a way for a message to skip
+ * them.
  */
 function inLoop(d: RuntimeData): boolean {
   return d.partStack.length > 0;
 }
 
 /**
- * Charge parsing a field's values as addresses: a step for the field name and
- * one per value, and in a loop a step per 64 characters parsed (some 12 ns a
- * character). A test names any number of fields, which a loop repeats:
+ * Charge parsing a field's values as addresses: a step for the field name,
+ * and where sized (in a loop) one per value and a step per 64 characters
+ * parsed (some 12 ns a character). At top level a message sets how many
+ * values there are by repeating a header, and each is probed for a step anyway. A test names any number of fields, which a loop repeats:
  * charged nothing per name, 1,000 names over an 8 KB From cost 18 ms a step.
  * Tests run under a share of the budget (withShare), so running out is
  * "unknown".
  */
 function chargeRead(d: RuntimeData, values: readonly string[], sized = inLoop(d)): void {
   let n = 1;
-  for (const v of values) n += 1 + (sized ? v.length >> 6 : 0);
+  if (sized) for (const v of values) n += 1 + (v.length >> 6);
   d.budget.consume(n);
 }
 
@@ -331,7 +333,7 @@ export class ExistsTest implements Test {
     }
     for (const field of this.fields) {
       const values = getHeader(d, expandVars(d, field));
-      d.budget.consume(1 + values.length); // the name, and the values found
+      d.budget.consume(1 + (inLoop(d) ? values.length : 0)); // the name; in a loop, the values found
       if (values.length === 0) return false;
     }
     return true;
@@ -368,7 +370,7 @@ export class HeaderTest implements Test {
     let unknown = false;
     for (const hdr of this.header) {
       const all = getHeader(d, expandVars(d, hdr));
-      d.budget.consume(1 + all.length); // the name, and the values found
+      d.budget.consume(1 + (inLoop(d) ? all.length : 0)); // the name; in a loop, the values found
       const values = selectIndexed(all, this.index, this.last);
       for (const value of values) {
         if (this.matcher.isCount()) {
