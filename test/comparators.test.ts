@@ -36,6 +36,7 @@ describe("i;unicode-casemap", () => {
     expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΔΟΣ" "οδος"')).toBe(true);
     expect(hit('string :regex :comparator "i;unicode-casemap" "οδός" "οδός"')).toBe(true);
     expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΔΟΣ" "^οδο[^ς]$"')).toBe(false);
+    expect(hit('string :regex :comparator "i;unicode-casemap" "ΟΣ ΟΣ" "^ος ος$"')).toBe(true); // every ς in the pattern
   });
 });
 
