@@ -63,11 +63,27 @@ describe("a redirect an unknown decided", () => {
     expect(r.onGuess).toEqual(["a@x.test"]);
   });
 
-  it("after an unknown arm that discards is, when hasflag could read the flags it clears", () => {
-    const withFlags = exec('require ["copy","body","imap4flags"]; if body :contains "invoice" { discard; } redirect :copy "a@x.test";', cutBody, true);
+  it("after an unknown arm that discards is, when a hasflag could read the flags it clears", () => {
+    const withFlags = exec('require ["copy","body","imap4flags"]; if body :contains "invoice" { discard; } if hasflag "seen" { keep; } redirect :copy "a@x.test";', cutBody, true);
     expect(withFlags.onGuess).toEqual(["a@x.test"]);
-    const without = exec('require ["copy","body"]; if body :contains "invoice" { discard; } redirect :copy "a@x.test";', cutBody, true);
+    const without = exec('require ["copy","body","imap4flags"]; if body :contains "invoice" { discard; } redirect :copy "a@x.test";', cutBody, true);
     expect(without.onGuess).toEqual([]);
+  });
+
+  it("after an unknown arm that sets flags is only when a hasflag reads them (rules that only tag)", () => {
+    const BS = String.fromCharCode(92);
+    const tag = exec(`require ["copy","body","imap4flags"]; if body :contains "invoice" { addflag "${BS}${BS}Flagged"; } redirect :copy "a@x.test";`, cutBody, true);
+    expect(tag.onGuess).toEqual([]);
+    const read = exec(`require ["copy","body","imap4flags"]; if body :contains "invoice" { addflag "${BS}${BS}Flagged"; } if hasflag "x" { keep; } redirect :copy "a@x.test";`, cutBody, true);
+    expect(read.onGuess).toEqual(["a@x.test"]);
+  });
+
+  it("after an unknown arm whose fileinto or keep :flags replaces the flags a hasflag reads, is", () => {
+    const BS = String.fromCharCode(92);
+    for (const act of [`fileinto :flags "${BS}${BS}Seen" "Done";`, `keep :flags "${BS}${BS}Seen";`]) {
+      const r = exec(`require ["copy","fileinto","imap4flags"]; addflag "${BS}${BS}Flagged"; if ${U} { ${act} } if hasflag :is "${BS}${BS}Flagged" { redirect :copy "asst@x.test"; }`, longSubject);
+      expect(r.onGuess).toEqual(["asst@x.test"]);
+    }
   });
 
   it("after an unknown arm that redirects is, when the script can reach the redirect limit", () => {
@@ -101,10 +117,10 @@ describe("other unknowns that change what later tests read", () => {
     expect(r.onGuess).toEqual(["a@x.test"]);
   });
 
-  it("an open MIME tree under a loop that sets flags puts what follows on a guess", () => {
+  it("an open MIME tree under a loop that sets flags a hasflag reads puts what follows on a guess", () => {
     const parts = Array.from({ length: 1030 }, () => "--b\r\nContent-Type: text/plain\r\n\r\nx\r\n").join("") + "--b--\r\n";
     const m = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${parts}`;
-    const flags = exec('require ["foreverypart","mime","imap4flags","copy"]; foreverypart { if header :mime :subtype "content-type" "pdf" { addflag "pdf"; } } redirect :copy "a@x.test";', m);
+    const flags = exec('require ["foreverypart","mime","imap4flags","copy"]; foreverypart { if header :mime :subtype "content-type" "pdf" { addflag "pdf"; } } if not hasflag "pdf" { redirect :copy "a@x.test"; }', m);
     expect([flags.indeterminate, flags.onGuess]).toEqual([true, ["a@x.test"]]);
     const files = exec('require ["foreverypart","mime","fileinto","copy"]; foreverypart { if header :mime :subtype "content-type" "pdf" { fileinto "Pdf"; } } redirect :copy "a@x.test";', m);
     expect([files.indeterminate, files.onGuess]).toEqual([true, []]);
@@ -122,8 +138,33 @@ describe("a vacation an unknown decided", () => {
     expect([r.vacation, r.vacationOnGuess]).toEqual([true, false]);
   });
 
+  it("one an unknown arm may have overwritten is: its text is a guess", () => {
+    const elseArm = exec(`require "vacation"; vacation :subject "A" "generic"; if ${U} { keep; } else { vacation :subject "B" "else arm"; }`, longSubject);
+    expect(elseArm.vacationOnGuess).toBe(true);
+    const skipped = exec(`require "vacation"; vacation :subject "A" "generic"; if ${U} { vacation :subject "B" "if arm"; }`, longSubject);
+    expect(skipped.vacationOnGuess).toBe(true);
+  });
+
   it("decided definitely is not", () => {
     const r = exec('require "vacation"; vacation "Away.";', longSubject);
     expect(r.vacationOnGuess).toBe(false);
+  });
+});
+
+describe("a reject an unknown may have skipped", () => {
+  it("is reported, so a host can keep from answering that sender", () => {
+    const r = load(`require ["reject"]; if ${U} { reject "no"; }`, { enabledExtensions: ALL_EXTENSIONS, ...CORE });
+    const { headers, size, body } = parseEml(longSubject);
+    const d = newRuntimeData(r, new DummyPolicy(), new EnvelopeStatic("from@test.com", "to@test.com"), new MessageStatic(size, headers, body, false));
+    r.execute(d);
+    expect([d.rejected, d.rejectOnGuess]).toEqual([false, true]);
+  });
+
+  it("is not reported when no reject could have run", () => {
+    const r = load(`require ["fileinto"]; if ${U} { fileinto "X"; }`, { enabledExtensions: ALL_EXTENSIONS, ...CORE });
+    const { headers, size, body } = parseEml(longSubject);
+    const d = newRuntimeData(r, new DummyPolicy(), new EnvelopeStatic("from@test.com", "to@test.com"), new MessageStatic(size, headers, body, false));
+    r.execute(d);
+    expect(d.rejectOnGuess).toBe(false);
   });
 });

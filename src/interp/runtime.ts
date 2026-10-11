@@ -319,9 +319,14 @@ export class RuntimeData {
   rejectExtended = false;
   /** A vacation action ran, whether or not it recorded a response. */
   vacationRan = false;
-  /** The vacation response recorded was recorded only on a guess (see
-   * onGuess): no vacation recorded it outside one. */
+  /** The vacation response recorded may not be the whole input's: the last
+   * one recorded ran on a guess (see onGuess), or an arm an unknown decided
+   * after it holds a vacation that could have replaced it. */
   vacationOnGuess = false;
+  /** A reject may have run over the whole input though none ran here: an
+   * arm or loop an unknown decided holds one. A host keeps from answering a
+   * sender the script may have meant to refuse. */
+  rejectOnGuess = false;
   /** The redirect targets (by redirectKey) every redirect to which so far
    * ran on a guess (see onGuess, redirectsOnGuess). Empty in a run that
    * never guessed, so a redirect then costs no lookup in it. */
@@ -452,6 +457,7 @@ export class RuntimeData {
     c.rejectConflict = this.rejectConflict;
     c.vacationRan = this.vacationRan;
     c.vacationOnGuess = this.vacationOnGuess;
+    c.rejectOnGuess = this.rejectOnGuess;
     c.redirectGuessed = new Set(this.redirectGuessed);
     c.guessDepth = this.guessDepth;
     c.guessAfter = this.guessAfter;

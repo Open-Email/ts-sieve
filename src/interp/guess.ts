@@ -12,9 +12,10 @@
 // Computed once at load, conservatively: a command not listed as inert is
 // taken to affect what follows.
 
-import { CmdDiscard, CmdFileInto, CmdKeep, CmdRedirect } from "./action.js";
+import { CmdAddFlag, CmdDiscard, CmdFileInto, CmdKeep, CmdRedirect, CmdRemoveFlag, CmdSetFlag } from "./action.js";
 import { CmdElse, CmdElsif, CmdIf } from "./control.js";
 import { CmdForEveryPart } from "./foreverypart.js";
+import { CmdReject } from "./reject.js";
 import type { Cmd } from "./runtime.js";
 import type { Script } from "./script.js";
 import { CmdVacation } from "./vacation.js";
@@ -46,39 +47,58 @@ export function analyzeGuessScope(s: Script): void {
   // there are two.
   s.redirectsMayCap = n.redirects > s.opts.maxRedirects;
   const vacationsRepeat = n.vacations > 1;
-  // A test may set the captures later references read (${1}), and discard
-  // clears the flags hasflag reads.
+  // A test may set the captures later references read (${1}). The internal
+  // flag set is read only by hasflag: a script without one (the JSON rules
+  // tag mail, and never test a flag) cannot be steered by a flag written.
   const capturesRead = s.requiresExtension("variables");
-  const flagsRead = s.requiresExtension("imap4flags");
+  const flagsRead = s.readsFlags;
 
-  /** Whether `cmds` could change what runs after them; sets mayAffectLater
-   * on every arm and loop inside, each block walked once. */
-  const mark = (cmds: Cmd[]): boolean => {
-    let any = false;
+  type Effects = { affects: boolean; vacation: boolean; reject: boolean };
+
+  /** What `cmds` could do that matters after them; sets mayAffectLater,
+   * mayVacation and mayReject on every arm and loop inside, each block
+   * walked once. */
+  const mark = (cmds: Cmd[]): Effects => {
+    const e: Effects = { affects: false, vacation: false, reject: false };
     for (const c of cmds) {
       let affects: boolean;
       if (c instanceof CmdIf || c instanceof CmdElsif || c instanceof CmdElse || c instanceof CmdForEveryPart) {
         const inner = mark(c.block);
-        c.mayAffectLater = inner;
-        affects = inner || ((c instanceof CmdIf || c instanceof CmdElsif) && capturesRead);
+        c.mayAffectLater = inner.affects;
+        c.mayVacation = inner.vacation;
+        c.mayReject = inner.reject;
+        e.vacation ||= inner.vacation;
+        e.reject ||= inner.reject;
+        affects = inner.affects || ((c instanceof CmdIf || c instanceof CmdElsif) && capturesRead);
       } else if (c instanceof CmdKeep || c instanceof CmdFileInto) {
-        affects = false;
+        // :flags replaces the internal flag set.
+        affects = c.flags !== null && flagsRead;
       } else if (c instanceof CmdRedirect) {
         affects = s.redirectsMayCap;
       } else if (c instanceof CmdVacation) {
+        e.vacation = true;
         affects = vacationsRepeat;
       } else if (c instanceof CmdDiscard) {
+        // It clears the internal flag set.
         affects = flagsRead;
+      } else if (c instanceof CmdSetFlag || c instanceof CmdAddFlag || c instanceof CmdRemoveFlag) {
+        // A flag variable is a variable; the internal set is read by hasflag.
+        affects = c.variableName !== null || flagsRead;
       } else {
-        // stop, set, extracttext, the flag commands, editheader, break,
-        // reject and anything else.
+        // stop, set, extracttext, editheader, break, reject and anything
+        // else.
+        if (c instanceof CmdReject) e.reject = true;
         const block = blockOf(c);
-        if (block !== null) mark(block);
+        if (block !== null) {
+          const inner = mark(block);
+          e.vacation ||= inner.vacation;
+          e.reject ||= inner.reject;
+        }
         affects = true;
       }
-      any ||= affects;
+      e.affects ||= affects;
     }
-    return any;
+    return e;
   };
   mark(s.cmds);
 }

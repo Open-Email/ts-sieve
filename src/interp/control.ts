@@ -18,6 +18,14 @@
 
 import type { Cmd, RuntimeData, Test } from "./runtime.js";
 
+/** The arm an unknown kept from running (or that ran on a guess) may be the
+ * whole input's: a vacation in it could replace the one recorded, and a
+ * reject in it could have refused the message. */
+export function armSkipped(d: RuntimeData, arm: { mayVacation: boolean; mayReject: boolean }): void {
+  if (arm.mayVacation && d.vacationResponses.size > 0) d.vacationOnGuess = true;
+  if (arm.mayReject) d.rejectOnGuess = true;
+}
+
 /** Run an arm, on a guess when an unknown decided the chain before it. One
  * that could change what runs after it puts the rest of the run on a guess. */
 function runArm(d: RuntimeData, block: Cmd[], guessed: boolean, mayAffectLater: boolean): void {
@@ -40,6 +48,9 @@ export class CmdIf implements Cmd {
   block: Cmd[] = [];
   /** The block could change what runs after it (see guess.ts). */
   mayAffectLater = true;
+  /** The block holds a vacation, or a reject (see guess.ts). */
+  mayVacation = true;
+  mayReject = true;
 
   execute(d: RuntimeData): void {
     const res = this.test.check(d);
@@ -49,6 +60,7 @@ export class CmdIf implements Cmd {
       d.indeterminate = true;
       // The block not run may be the one the whole input runs.
       if (this.mayAffectLater) d.guessAfter = true;
+      armSkipped(d, this);
     }
     if (res === true) runArm(d, this.block, false, this.mayAffectLater);
     d.ifResult = res === true;
@@ -61,6 +73,9 @@ export class CmdElsif implements Cmd {
   block: Cmd[] = [];
   /** The block could change what runs after it (see guess.ts). */
   mayAffectLater = true;
+  /** The block holds a vacation, or a reject (see guess.ts). */
+  mayVacation = true;
+  mayReject = true;
 
   execute(d: RuntimeData): void {
     if (d.ifResult) return;
@@ -74,6 +89,7 @@ export class CmdElsif implements Cmd {
     if (res === "unknown") {
       d.indeterminate = true;
       if (this.mayAffectLater) d.guessAfter = true;
+      armSkipped(d, this);
     }
     if (res === true) runArm(d, this.block, prior, this.mayAffectLater);
     d.ifResult = res === true;
@@ -85,6 +101,9 @@ export class CmdElse implements Cmd {
   block: Cmd[] = [];
   /** The block could change what runs after it (see guess.ts). */
   mayAffectLater = true;
+  /** The block holds a vacation, or a reject (see guess.ts). */
+  mayVacation = true;
+  mayReject = true;
 
   execute(d: RuntimeData): void {
     if (d.ifResult) return;

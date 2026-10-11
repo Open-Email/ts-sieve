@@ -16,6 +16,7 @@
 
 import { currentPart, mimeTree, partText, subtree } from "./mime.js";
 import { MAX_INPUT_LENGTH } from "./regex.js";
+import { armSkipped } from "./control.js";
 import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
 import { applySetModifiers, setVar } from "./variables.js";
 
@@ -31,6 +32,9 @@ export class CmdForEveryPart implements Cmd {
   shareIndex = 0;
   /** The block could change what runs after the loop (see guess.ts). */
   mayAffectLater = true;
+  /** The block holds a vacation, or a reject (see guess.ts). */
+  mayVacation = true;
+  mayReject = true;
 
   execute(d: RuntimeData): void {
     const cur = currentPart(d);
@@ -62,6 +66,7 @@ export class CmdForEveryPart implements Cmd {
       d.indeterminate = true;
       // The iterations it missed may have changed what runs after it.
       if (this.mayAffectLater) d.guessAfter = true;
+      armSkipped(d, this);
     }
   }
 }

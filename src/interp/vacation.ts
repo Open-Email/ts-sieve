@@ -76,8 +76,8 @@ export class CmdVacation implements Cmd {
 
     // Record intent (last-write-wins). The host applies the actual send + dedup.
     // vacation does NOT cancel the implicit keep (RFC 5230 §4).
-    // On a guess only while every vacation that recorded one ran on a guess.
-    d.vacationOnGuess = (d.vacationResponses.size === 0 || d.vacationOnGuess) && onGuess(d);
+    // The last one recorded is the one sent: on a guess when it ran on one.
+    d.vacationOnGuess = onGuess(d);
     d.vacationResponses.set(sender, {
       from,
       subject,

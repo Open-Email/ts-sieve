@@ -98,6 +98,9 @@ export class Script {
   /** The script can reach maxRedirects, so a redirect dropped or not run can
    * change which later one the limit drops (see guess.ts). */
   redirectsMayCap = true;
+  /** The script has a hasflag test: a flag written is a flag a later test
+   * may read (see guess.ts). */
+  readsFlags = false;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };
