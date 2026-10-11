@@ -27,7 +27,7 @@ import {
 import type { RuntimeData, Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
-import { expandVars } from "./variables.js";
+import { expandForMatch, expandVars } from "./variables.js";
 
 /**
  * Whether a `:matches` glob ends with an UNESCAPED `*`. Over a prefix of the
@@ -63,6 +63,33 @@ function globEndsWithStar(pattern: string): boolean {
  */
 function regexSoundOnPrefix(pattern: string): boolean {
   return !pattern.includes("$");
+}
+
+/** How many UTF-16 units of values and their folds foldOnce keeps. */
+const FOLD_CACHE_MAX = 4 * 1024 * 1024;
+
+/**
+ * A value's fold, kept for the execution: inside a foreverypart loop the same
+ * header value is compared on every iteration, and folding a large one is real
+ * work. Every call is charged by the value's size, a step per KiB, found or
+ * not: looking a freshly built string up hashes all of it. The cache holds a
+ * bounded amount; past it, values are folded each time. Values under 1 KiB
+ * are not kept.
+ */
+function foldOnce(d: RuntimeData, kind: string, source: string, fold: (s: string) => string): string {
+  if (source.length < 1024) return fold(source);
+  d.budget.consume(source.length >> 10);
+  let cache = d.foldCache.get(kind);
+  if (cache === undefined) d.foldCache.set(kind, (cache = new Map()));
+  let folded = cache.get(source);
+  if (folded === undefined) {
+    folded = fold(source);
+    if (d.foldCacheUnits + 2 * source.length <= FOLD_CACHE_MAX) {
+      cache.set(source, folded);
+      d.foldCacheUnits += 2 * source.length;
+    }
+  }
+  return folded;
 }
 
 export class MatcherTest {
@@ -325,16 +352,13 @@ export class MatcherTest {
           // sort on either side of it.
           unknown = true;
         } else {
-          const k = expandVars(d, key);
+          const k = expandForMatch(d, key);
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
-            // Folded once per comparison, as for :is/:contains below.
+            // Folded once, as for :is/:contains below.
             const fold = this.comparator === "i;octet" ? (x: string) => x : toLowerASCII;
-            if (valueFolded === undefined) {
-              d.budget.consume(source.length >> 10);
-              valueFolded = fold(source);
-            }
+            valueFolded ??= this.comparator === "i;octet" ? source : foldOnce(d, "ascii", source, toLowerASCII);
             if (compareString(this.relational, valueFolded, fold(k))) return true;
           }
         }
@@ -343,16 +367,16 @@ export class MatcherTest {
         // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
         // and charged by the value's size, a step per KiB: once for the fold,
         // and for :contains once per key searched through it.
-        const k = expandVars(d, key);
+        const k = expandForMatch(d, key);
         let r: Tri;
         if (this.match === "contains") d.budget.consume(source.length >> 10);
         if (this.comparator === "i;ascii-numeric") {
           r = sourceTruncated ? testStringPrefix(this.comparator, this.match, source, k) : testString(this.comparator, this.match, source, k, opts);
         } else {
-          if (foldedSource === undefined) {
-            d.budget.consume(source.length >> 10);
-            foldedSource = comparatorFold(this.comparator)(source);
-          }
+          foldedSource ??=
+            this.comparator === "i;octet"
+              ? source
+              : foldOnce(d, this.comparator === "i;unicode-casemap" ? "unicode" : "ascii", source, comparatorFold(this.comparator));
           r = compareFolded(this.match, foldedSource, comparatorFold(this.comparator)(k), sourceTruncated);
         }
         if (r === true) return true;
