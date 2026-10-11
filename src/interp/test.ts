@@ -125,29 +125,44 @@ function testAddress(
 }
 
 /**
- * Charge parsing a field's values as addresses: a step for the field name,
- * and per value one more and a step per 64 characters (parsing costs some
- * 12 ns a character). A test names any number of fields, which a loop repeats:
+ * Whether a test runs inside a foreverypart loop, where it runs once per part
+ * and the size of what it reads multiplies with the iterations: there it is
+ * charged by size. At top level a test runs once, its reads bounded by the
+ * message and the script; a size charge there would let a large header, with
+ * a body test that spends the budget, cost the rules after it their reserve,
+ * a way for a message to skip them.
+ */
+function inLoop(d: RuntimeData): boolean {
+  return d.partStack.length > 0;
+}
+
+/**
+ * Charge parsing a field's values as addresses: a step for the field name and
+ * one per value, and in a loop a step per 64 characters parsed (some 12 ns a
+ * character). A test names any number of fields, which a loop repeats:
  * charged nothing per name, 1,000 names over an 8 KB From cost 18 ms a step.
  * Tests run under a share of the budget (withShare), so running out is
  * "unknown".
  */
-function chargeRead(d: RuntimeData, values: readonly string[]): void {
+function chargeRead(d: RuntimeData, values: readonly string[], sized = inLoop(d)): void {
   let n = 1;
-  for (const v of values) n += 1 + (v.length >> 6);
+  for (const v of values) n += 1 + (sized ? v.length >> 6 : 0);
   d.budget.consume(n);
 }
 
-/** What decodeHeaderValue costs: a scan of the value (a step per 2 KiB); a
- * step per 64 characters when it holds CR or LF to strip, or RFC 2047 encoded
- * words; and a step per encoded word, each a callback and a decoder (some
- * 0.6 us, however small). */
+/** RFC 2047 encoded words, as decodeHeaderValue finds them. */
+const ENCODED_WORD = /=\?[^?]+\?[bBqQ]\?[^?]*\?=/g;
+
+/** What decodeHeaderValue costs, charged in a loop (see inLoop): a scan of the
+ * value (a step per 2 KiB); a step per 64 characters when it holds CR or LF
+ * to strip, or "=?" for the decoder to search; and a step per encoded word it
+ * decodes, each a callback and a decoder (some 0.6 us, however small). */
 function decodeCost(v: string): number {
   let n = v.length >> 11;
-  let words = 0;
-  for (let i = v.indexOf("=?"); i !== -1; i = v.indexOf("=?", i + 2)) words++;
-  if (words > 0 || /[\r\n]/.test(v)) n += v.length >> 6;
-  return n + words;
+  const searched = v.includes("=?");
+  if (searched || /[\r\n]/.test(v)) n += v.length >> 6;
+  if (searched) n += v.match(ENCODED_WORD)?.length ?? 0;
+  return n;
 }
 
 export class AddressTest implements Test {
@@ -171,9 +186,10 @@ export class AddressTest implements Test {
       for (const part of parts) {
         for (const hdr of this.header) {
           const values = partHeader(d, part, expandVars(d, hdr));
-          // Parsing each value as addresses costs its size: inside loops the
-          // parts visited multiply with the iterations.
-          chargeRead(d, values);
+          // Parsing each value as addresses costs its size, wherever the test
+          // runs: a part's header is not capped as the message's are, and
+          // :anychild multiplies the parts read.
+          chargeRead(d, values, true);
           if (this.matchValues(d, values, state)) return true;
         }
       }
@@ -359,7 +375,7 @@ export class HeaderTest implements Test {
           entryCount++;
           continue;
         }
-        d.budget.consume(decodeCost(value));
+        if (inLoop(d)) d.budget.consume(decodeCost(value));
         const r = this.matcher.tryMatch(d, decodeHeaderValue(value), matchOpts(d));
         if (r === true) return true;
         if (r === "unknown") unknown = true;

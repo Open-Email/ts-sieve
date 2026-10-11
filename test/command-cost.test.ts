@@ -198,7 +198,63 @@ describe("inside a loop, a command is charged by the size of its work", () => {
   });
 });
 
+describe("a message cannot buy its way past later rules", () => {
+  // Charges on what a test reads apply inside loops, where they multiply. At
+  // top level a test runs once, and a size charge there let a big header,
+  // with a body test that spends the budget, cost the rules after it their
+  // reserve: a message-driven way to skip them.
+  const opts = { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 };
+  const exec = (script: string, eml: string) => {
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...opts });
+    const { headers, size, body } = parseEml(eml);
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    s.execute(d);
+    return d;
+  };
+
+  it("ten Subject rules decide over a Subject of 30,000 bare '=?'", () => {
+    const rules = Array.from({ length: 10 }, (_, i) => `if header :contains "subject" "word${i}" { fileinto "R${i}"; }`).join(" ");
+    const subject = `${Array.from({ length: 10 }, (_, i) => `word${i}`).join(" ")} ${"=?".repeat(30_000)}`;
+    const d = exec(`require ["fileinto"]; ${rules} if header :is "x-spam-flag" "yes" { fileinto "Junk"; }`, `From: a@x\r\nSubject: ${subject}\r\nX-Spam-Flag: yes\r\n\r\nbody\r\n`);
+    expect(d.mailboxes).toEqual([...Array.from({ length: 10 }, (_, i) => `R${i}`), "Junk"]);
+  });
+
+  it("a Subject rule over 60 KB of '=?' decides after a body test spent the budget", () => {
+    let body = "";
+    for (let i = 0; i < 40; i++) body += `--b\r\nContent-Type: text/plain\r\n\r\n${"x".repeat(16_000)}\r\n`;
+    const script = `require ["fileinto","body","regex"];
+      if body :regex "casino" { fileinto "Body"; }
+      if header :contains "subject" "word" { fileinto "Junk"; }`;
+    const d = exec(script, `From: a@x\r\nSubject: word ${"=?".repeat(30_000)}\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`);
+    expect(d.budgetExhausted).toBe(true);
+    expect(d.mailboxes).toEqual(["Junk"]);
+  });
+
+  it("an address rule over a 60 KB From decides after a body test spent the budget", () => {
+    // 150 long addresses: each probe costs a step, as it always has; the
+    // 60 KB parse is what no longer fits the rule's reserve.
+    const from = Array.from({ length: 150 }, (_, i) => `${"u".repeat(380)}${i}@example.com`).join(", ");
+    let body = "";
+    for (let i = 0; i < 40; i++) body += `--b\r\nContent-Type: text/plain\r\n\r\n${"x".repeat(16_000)}\r\n`;
+    const script = `require ["fileinto","body","regex"];
+      if body :regex "casino" { fileinto "Body"; }
+      if address :is "from" "${"u".repeat(380)}149@example.com" { fileinto "Junk"; }`;
+    const d = exec(script, `From: ${from}\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${body}--b--\r\n`);
+    expect(d.budgetExhausted).toBe(true);
+    expect(d.mailboxes).toEqual(["Junk"]);
+  });
+});
+
 describe("vacation's :addresses", () => {
+  it("are charged before vacation records that it ran", () => {
+    const list = `[${Array.from({ length: 2000 }, (_, i) => `"a${i}@b.c"`).join(",")}]`;
+    const s = load(`require ["foreverypart","vacation"]; foreverypart { vacation :addresses ${list} "away"; }`, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 1500 });
+    const { headers, size, body } = parseEml(flat(1, "s"));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect([d.budgetExhausted, d.vacationRan]).toEqual([true, false]);
+  });
+
   it("are charged per address in a loop", () => {
     const list = (k: number) => `[${Array.from({ length: k }, (_, i) => `"a${i}@b.c"`).join(",")}]`;
     const steps = (k: number) => stepsOf(`require ["foreverypart","vacation"]; foreverypart { vacation :addresses ${list(k)} "away"; }`, flat(10, "s"));
@@ -264,6 +320,15 @@ describe("a test is charged per header name, and per value by its size", () => {
     const keys = (k: number) => `[${Array.from({ length: k }, () => '"99999999"').join(",")}]`;
     const steps = (k: number) => stepsOf(`require ["foreverypart","relational"]; foreverypart { if header :count "ge" "subject" ${keys(k)} { stop; } }`, eml);
     expect(steps(100) - steps(1)).toBeGreaterThanOrEqual(10 * 99);
+  });
+
+  it("RFC 2047: a bare '=?' is no word", () => {
+    // The decoder searches it at the decode rate, and finds no word to charge.
+    const junk = "=?".repeat(30_000);
+    const m = `From: a@x\r\nSubject: ${junk}\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${"--b\r\nContent-Type: text/plain\r\n\r\nx\r\n".repeat(10)}--b--\r\n`;
+    const steps = stepsOf('require ["foreverypart"]; foreverypart { if header :contains "subject" "x" { stop; } }', m);
+    // With :contains' own charge, some 1,200 a part; a step per "=?" was 30,000.
+    expect(steps).toBeLessThan(10 * 2 * (junk.length >> 6));
   });
 
   it("RFC 2047: a step per encoded word, and CR or LF decoded at its rate", () => {
