@@ -133,6 +133,20 @@ export function compile(scriptSrc: string, opts: RunOptions = {}): void {
   load(scriptSrc, { enabledExtensions: opts.enabledExtensions ?? ALL_EXTENSIONS, ...opts.options });
 }
 
+/** `list` behind a proxy, and how many of its entries were read through it:
+ * what the cost tests count where a bound in time flakes on a loaded runner,
+ * or lets the regression pass on a quiet one. */
+export function readCounted(list: string[]): [string[], () => number] {
+  let reads = 0;
+  const proxy = new Proxy(list, {
+    get(target, key, recv) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, recv);
+    },
+  });
+  return [proxy, () => reads];
+}
+
 // Standard fixtures for the execution conformance tests.
 export const eml = `Date: Tue, 1 Apr 1997 09:06:31 -0800 (PST)
 From: coyote@desert.example.org

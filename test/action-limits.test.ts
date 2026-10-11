@@ -17,7 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
-import { ALL_EXTENSIONS, parseEml, R, run } from "./harness.js";
+import { ALL_EXTENSIONS, parseEml, R, readCounted, run } from "./harness.js";
 
 /** A multipart of `parts` text parts, each with its own X-N. */
 function parts(n: number): string {
@@ -297,18 +297,6 @@ describe("the names a host pushed", () => {
     expect(reads()).toBeLessThanOrEqual(2); // the host's two, once
   });
 });
-
-/** `list` behind a proxy, and how many of its entries were read through it. */
-function readCounted(list: string[]): [string[], () => number] {
-  let reads = 0;
-  const proxy = new Proxy(list, {
-    get(target, key, recv) {
-      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
-      return Reflect.get(target, key, recv);
-    },
-  });
-  return [proxy, () => reads];
-}
 
 it("an address the host's policy appended is held, not redirected to again", () => {
   const policy = new (class extends DummyPolicy {
