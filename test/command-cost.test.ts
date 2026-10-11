@@ -330,6 +330,13 @@ describe("a test is charged per header name, and per value by its size", () => {
     expect(steps(`not exists :mime ${names("content-type", 100)}`) - steps(`not exists :mime ${names("content-type", 1)}`)).toBeGreaterThanOrEqual(10 * 99 * 2);
   });
 
+  it("address :count in a loop, a step per value however short", () => {
+    const tos = Array.from({ length: 3000 }, (_, i) => `To: t${i}@x`).join("\r\n");
+    const m = `From: a@x\r\n${tos}\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${"--b\r\nContent-Type: text/plain\r\n\r\nx\r\n".repeat(10)}--b--\r\n`;
+    const steps = stepsOf('require ["foreverypart","relational"]; foreverypart { if address :count "ge" "to" "99999999" { stop; } }', m);
+    expect(steps).toBeGreaterThanOrEqual(10 * 3000);
+  });
+
   it("envelope :count, per field", () => {
     expect(extra((k) => `envelope :count "ge" ${names("from", k)} "99999999"`)).toBeGreaterThanOrEqual(10 * 99);
   });
