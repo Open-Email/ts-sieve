@@ -258,6 +258,7 @@ export class TestDovecotCompile implements Test {
         maxBlockNesting: d.testMaxNesting,
         maxTestNesting: d.testMaxNesting,
         maxRedirects: d.script.opts.maxRedirects,
+        maxFileintos: d.script.opts.maxFileintos,
         enabledExtensions: [], // isolate: every `require` fails ⇒ invalid scripts fail
       });
       const toks = lex(source, { maxTokens: 5000, filename: this.scriptPath });

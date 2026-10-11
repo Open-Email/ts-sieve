@@ -16,8 +16,15 @@ export interface Options {
   maxBlockNesting?: number;
   /** Parser: max test nesting (default 15). */
   maxTestNesting?: number;
-  /** Interp: max redirect actions per message (default 5). */
+  /** Interp: max distinct redirect addresses per message (default 5). A
+   * redirect past it is dropped and sets indeterminate. */
   maxRedirects?: number;
+  /** Interp: max distinct fileinto targets per message (default 32, the
+   * default of Pigeonhole's sieve_max_actions, which counts every action and
+   * fails the script past it; 0 allows none). A fileinto past it is dropped
+   * and sets indeterminate: inside a foreverypart loop the message decides how
+   * many targets a script files into. */
+  maxFileintos?: number;
   maxVariableCount?: number;
   maxVariableNameLen?: number;
   maxVariableLen?: number;
@@ -53,6 +60,7 @@ export function defaultOptions(): Required<Options> {
     maxBlockNesting: 15,
     maxTestNesting: 15,
     maxRedirects: 5,
+    maxFileintos: 32,
     maxVariableCount: 128,
     maxVariableNameLen: 63, // Pigeonhole's limit; RFC 5229 asks for at least 32
     maxVariableLen: 4000,

@@ -133,7 +133,10 @@ export interface Message {
 }
 
 export interface PolicyReader {
-  /** Gate (and optionally rate-limit) a redirect target. The default allows all. */
+  /** Gate (and optionally rate-limit) a redirect target. The default allows all.
+   * It may append to `d.redirectAddr` or `d.mailboxes`, but not edit or remove
+   * an entry: the commands index those lists, and rebuild the index only when
+   * a list's length shows it changed. */
   redirectAllowed(d: RuntimeData, addr: string): boolean;
 }
 

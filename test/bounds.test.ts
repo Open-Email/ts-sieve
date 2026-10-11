@@ -26,11 +26,12 @@ describe("bounds", () => {
     ).toThrow();
   });
 
-  it("maxRedirects caps redirect actions at execute time", () => {
+  it("maxRedirects caps redirect actions at execute time: the rest are dropped and disclosed", () => {
     const six = Array.from({ length: 6 }, (_, i) => `redirect "u${i}@x.com";`).join(" ");
     const script = load(six, { enabledExtensions: [] });
     const d = newRuntimeData(script, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(1, new Map()));
-    expect(() => script.execute(d)).toThrow();
+    script.execute(d);
+    expect([d.redirectAddr.length, d.indeterminate]).toEqual([5, true]);
   });
 
   it("a redirect count within the cap succeeds", () => {
