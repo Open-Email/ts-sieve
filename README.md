@@ -141,7 +141,9 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, ≤ 250 nested
+compiled program ≤ 10 000 instructions and ≤ 100 000 compile calls (a key
+compiled at delivery is charged for them to the budget each time its
+expansion changes), `{n,m}` counts ≤ 1000, ≤ 250 nested
 groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
 deepen it too; a `{n,}` counts twice), input ≤ 256 KiB unless
 `maxMatchInputLength` sets another cut (byte-truncated at a character

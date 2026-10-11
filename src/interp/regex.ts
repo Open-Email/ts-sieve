@@ -26,6 +26,15 @@ const MAX_PROGRAM_SIZE = 10_000;
 // seeing it, hence the second cap: "(((a**…)**…)**…)**…" is ~1000 levels deep.
 const MAX_NESTING = 250;
 const MAX_COMPILE_DEPTH = 500;
+// The program-size cap bounds expansion only while every copy emits something:
+// a repeat of a node that emits nothing ("(?:)", "(?i)") adds no instructions,
+// so nested repeats of one went unchecked ("(?:(?:(?:(?:){1000}){1000}){1000}){1000}"
+// is 10^12 calls). Compile calls are counted too. Work is about instructions
+// times wrapper depth: real patterns need a few calls per instruction (2.5 at
+// most in Pigeonhole's corpus), synthetic wrapping up to ~250x. Compile work
+// is not charged to the step budget here; a caller compiling a key at run
+// time charges it (matcher.ts runtimeKey), using compileWork.
+export const MAX_COMPILE_WORK = 10 * MAX_PROGRAM_SIZE;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -412,12 +421,14 @@ type Inst =
 class Compiler {
   prog: Inst[] = [];
   private depth = 0;
+  work = 0;
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
     return this.prog.length - 1;
   }
   compile(node: Node): void {
+    if (++this.work > MAX_COMPILE_WORK) throw new SieveError("regex: pattern too complex to compile");
     if (++this.depth > MAX_COMPILE_DEPTH) throw new SieveError("regex: nested too deeply");
     try {
       switch (node.t) {
@@ -566,11 +577,17 @@ interface StepBudget {
 }
 
 export interface CompiledRegex {
+  /** Compile calls it took (see MAX_COMPILE_WORK). */
+  readonly compileWork: number;
   findSubmatch(input: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null;
 }
 
 class Program implements CompiledRegex {
-  constructor(private readonly prog: Inst[], private readonly ncaps: number) {}
+  constructor(
+    private readonly prog: Inst[],
+    private readonly ncaps: number,
+    readonly compileWork: number,
+  ) {}
 
   findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null {
     const maxInput = opts?.maxInputLength ?? MAX_INPUT_LENGTH;
@@ -742,7 +759,7 @@ export function compileRegex(
   // A leading Save(0) is implicit via the seed caps; add trailing Match.
   compiler.compile(ast);
   compiler.emit({ op: "match" });
-  return new Program(compiler.prog, ncaps);
+  return new Program(compiler.prog, ncaps, compiler.work);
 }
 
 /**
