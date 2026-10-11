@@ -36,7 +36,7 @@ import { CmdReject } from "./reject.js";
 import { CmdVacation } from "./vacation.js";
 import { CmdSet, SET_MODIFIERS, TestString, unusableVarRef } from "./variables.js";
 import type { AddressPart } from "./matching.js";
-import type { Cmd, Test } from "./runtime.js";
+import { type Cmd, SharedTest, type Test } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
 import {
@@ -643,6 +643,7 @@ function loadDeleteHeader(s: Script, pcmd: PCmd): Cmd {
     } catch (e) {
       throw new SieveError(`deleteheader: ${e instanceof Error ? e.message : String(e)}`);
     }
+    cmd.shareIndex = s.budgetedCount++;
   }
   return cmd;
 }
@@ -1031,6 +1032,7 @@ export function loadBlock(s: Script, cmds: PCmd[]): Cmd[] {
     if (cmd === null) continue;
     loaded.push(cmd);
   }
+  s.commandCount += loaded.length;
   return loaded;
 }
 
@@ -1040,8 +1042,15 @@ function loadCmd(s: Script, cmd: PCmd): Cmd | null {
   return factory(s, cmd);
 }
 
+/** Tests that do no work of their own: the composites spend through their
+ * operands, and true/false spend nothing. The testsuite's tests run
+ * sub-scripts, which share the budget their own way. */
+const UNSHARED_TESTS = new Set(["allof", "anyof", "not", "true", "false"]);
+
 function loadTest(s: Script, t: PTest): Test {
-  const factory = tests[t.id.toLowerCase()];
-  if (!factory) throw at(t, `unsupported test: ${t.id.toLowerCase()}`);
-  return factory(s, t);
+  const id = t.id.toLowerCase();
+  const factory = tests[id];
+  if (!factory) throw at(t, `unsupported test: ${id}`);
+  const test = factory(s, t);
+  return UNSHARED_TESTS.has(id) || id.startsWith("test_") ? test : new SharedTest(test, s.budgetedCount++);
 }

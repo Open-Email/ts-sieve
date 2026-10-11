@@ -51,14 +51,19 @@ describe("bounds", () => {
     expect(performance.now() - start).toBeLessThan(1000);
   });
 
-  it("maxExecSteps aborts a pathological match with a bounded budget", () => {
+  it("maxExecSteps stops a pathological match: the test is unknown, the script completes", () => {
+    // It once threw, skipping every rule; see budget.test.ts.
     const headers = new Map([["subject", ["a".repeat(5000)]]]);
     const script = load(`if header :matches "Subject" "${"*a".repeat(20)}*b" { discard; }`, {
       enabledExtensions: [],
       maxExecSteps: 500,
     });
     const d = newRuntimeData(script, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(1, headers));
-    expect(() => script.execute(d)).toThrow(/budget/);
+    script.execute(d);
+    expect(d.budget.remaining).toBeGreaterThanOrEqual(0);
+    expect(d.implicitKeep).toBe(true); // the discard did not fire
+    expect(d.indeterminate).toBe(true);
+    expect(d.budgetExhausted).toBe(true);
   });
 
   it("a generous budget completes normally", () => {
