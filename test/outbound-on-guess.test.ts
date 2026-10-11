@@ -256,6 +256,14 @@ describe("the #69 review's oracle findings", () => {
     expect(sentUnflagged).toEqual([]);
   });
 
+  it("an elsif whose test ran out of its budget does too", () => {
+    const long = Array.from({ length: 3 }, () => `X-Long: ${"a".repeat(15_000)}q`).join("\r\n");
+    const m = `From: a@x\r\nTo: b@y\r\nX-A: alice\r\n${long}\r\nSubject: s\r\n\r\nbody\r\n`;
+    const script = 'require ["variables","fileinto","copy"]; if header :matches "x-a" "*" {} if false {} elsif header :matches "x-long" "*a*a*a*q" { fileinto "x"; } if string :is "${1}" "alice" { redirect :copy "boss@x.test"; }';
+    const { sentUnflagged } = execO(script, m, { maxExecSteps: 200_000 });
+    expect(sentUnflagged).toEqual([]);
+  });
+
   it("an if whose string test read a value in doubt doubts the captures it may have set", () => {
     const m = `From: a@x\r\nTo: b@y\r\nX-Long: ${"b".repeat(20_000)}q\r\nSubject: s\r\n\r\nbody\r\n`;
     const script = 'require ["variables","copy"]; if header :matches "x-long" "*" { set "v" "${1}x"; } if string :matches "${v}" "*q*" { } redirect :copy "${2}@x.test";';
