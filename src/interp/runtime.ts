@@ -495,6 +495,17 @@ export function onGuess(d: RuntimeData): boolean {
   return d.guessDepth > 0 || d.guessAfter;
 }
 
+/**
+ * A stop or break ran on a guess: read whole, the run may have gone on past
+ * it, to a reject or a vacation the script holds. Conservative, by the
+ * script: it only keeps a host from answering.
+ */
+export function cutOffOnGuess(d: RuntimeData): void {
+  if (!onGuess(d)) return;
+  if (d.script.hasReject) d.rejectOnGuess = true;
+  if (d.script.hasVacation && d.vacationResponses.size > 0) d.vacationOnGuess = true;
+}
+
 export function newRuntimeData(
   script: Script,
   policy: PolicyReader,

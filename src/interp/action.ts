@@ -2,7 +2,7 @@
 // String arguments are expanded through RFC 5229 variables at execution time
 // (expandVars is identity when the script does not require `variables`).
 
-import { type Cmd, onGuess, type RuntimeData, StopSignal } from "./runtime.js";
+import { type Cmd, cutOffOnGuess, onGuess, type RuntimeData, StopSignal } from "./runtime.js";
 import { expandMarked, expandVars, setVar } from "./variables.js";
 
 /**
@@ -77,7 +77,8 @@ function canonicalFlagsOrdered(
 }
 
 export class CmdStop implements Cmd {
-  execute(_d: RuntimeData): void {
+  execute(d: RuntimeData): void {
+    cutOffOnGuess(d);
     throw new StopSignal();
   }
 }

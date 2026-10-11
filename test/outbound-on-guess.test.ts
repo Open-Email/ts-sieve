@@ -204,3 +204,35 @@ describe("an arm a definite test skipped over state a guess wrote", () => {
     expect([d.rejectOnGuess, d.vacationOnGuess]).toEqual([false, false]);
   });
 });
+
+describe("a stop or break that ran while a guess is in force", () => {
+  const exec2 = (script: string, message = longSubject) => {
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...CORE });
+    const { headers, size, body } = parseEml(message);
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("from@test.com", "to@test.com"), new MessageStatic(size, headers, body, false));
+    s.execute(d);
+    return d;
+  };
+  const STEER = `if ${U} { set "x" "1"; } if string :is "\${x}" "" { stop; }`;
+
+  it("may cut off a reject the whole input runs", () => {
+    const d = exec2(`require ["variables","reject"]; ${STEER} reject "No.";`);
+    expect([d.rejected, d.rejectOnGuess]).toEqual([false, true]);
+  });
+
+  it("may cut off a vacation that would replace the one recorded", () => {
+    const d = exec2(`require ["variables","vacation"]; vacation "GENERIC"; ${STEER} vacation "SPECIAL";`);
+    expect(d.vacationOnGuess).toBe(true);
+  });
+
+  it("a break does too", () => {
+    const m = "From: a@x\r\nTo: b@y\r\nSubject: " + "x".repeat(20_000) + "\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
+    const d = exec2(`require ["variables","reject","foreverypart"]; if ${U} { set "x" "1"; } foreverypart { if string :is "\${x}" "" { break; } reject "No."; }`, m);
+    expect([d.rejected, d.rejectOnGuess]).toEqual([false, true]);
+  });
+
+  it("one that ran with no guess in force cuts off nothing a guess decided", () => {
+    const d = exec2('require ["reject","vacation"]; vacation "A"; stop; reject "No."; vacation "B";');
+    expect([d.rejectOnGuess, d.vacationOnGuess]).toEqual([false, false]);
+  });
+});

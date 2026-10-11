@@ -17,7 +17,7 @@
 import { currentPart, mimeTree, partText, subtree } from "./mime.js";
 import { MAX_INPUT_LENGTH } from "./regex.js";
 import { armSkipped } from "./control.js";
-import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
+import { type Cmd, cutOffOnGuess, type RuntimeData, withShare } from "./runtime.js";
 import { applySetModifiers, setVar } from "./variables.js";
 
 /** Thrown by break; the loop it names (or the closest one) catches it. */
@@ -127,7 +127,8 @@ function firstChars(s: string, n: number): string | null {
 export class CmdBreak implements Cmd {
   name = "";
 
-  execute(_d: RuntimeData): void {
+  execute(d: RuntimeData): void {
+    cutOffOnGuess(d);
     throw new BreakSignal(this.name);
   }
 }

@@ -20,13 +20,14 @@ import type { Cmd } from "./runtime.js";
 import type { Script } from "./script.js";
 import { CmdVacation } from "./vacation.js";
 
-type Counts = { redirects: number; vacations: number };
+type Counts = { redirects: number; vacations: number; rejects: number };
 
 /** Redirect and vacation commands in `cmds`, one in a loop counting as many. */
 function count(cmds: Cmd[], inLoop: boolean, n: Counts): void {
   for (const c of cmds) {
     if (c instanceof CmdRedirect) n.redirects += inLoop ? Number.POSITIVE_INFINITY : 1;
     else if (c instanceof CmdVacation) n.vacations += inLoop ? 2 : 1;
+    else if (c instanceof CmdReject) n.rejects += 1;
     const block = blockOf(c);
     if (block !== null) count(block, inLoop || c instanceof CmdForEveryPart, n);
   }
@@ -40,8 +41,10 @@ function blockOf(c: Cmd): Cmd[] | null {
 /** Set mayAffectLater on every arm and loop of the script, and the script's
  * redirectsMayCap. */
 export function analyzeGuessScope(s: Script): void {
-  const n: Counts = { redirects: 0, vacations: 0 };
+  const n: Counts = { redirects: 0, vacations: 0, rejects: 0 };
   count(s.cmds, false, n);
+  s.hasReject = n.rejects > 0;
+  s.hasVacation = n.vacations > 0;
   // A redirect can change which later one the limit drops only if the script
   // can reach the limit; a vacation, which response is recorded, only if
   // there are two.

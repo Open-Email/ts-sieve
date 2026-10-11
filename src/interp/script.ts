@@ -101,6 +101,10 @@ export class Script {
   /** The script has a hasflag test: a flag written is a flag a later test
    * may read (see guess.ts). */
   readsFlags = false;
+  /** The script holds a reject, a vacation: what a stop or break that ran on
+   * a guess may have cut off (see cutOffOnGuess). True until analysed. */
+  hasReject = true;
+  hasVacation = true;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };
