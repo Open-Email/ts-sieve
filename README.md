@@ -63,8 +63,9 @@ A `:matches`/`:regex` key holding a variable reference compiles when the test
 runs; if the expanded text does not compile, or is past the pattern-length
 cap, the comparison is "unknown" rather than an error. An `envelope`
 envelope-part built from a variable that names no part the test reads has no
-value, like a missing header. No other path from message content to a throw
-is known: report one as an issue.
+value, like a missing header. No other value from the message is known to
+reach a throw; a literal error in a branch the message picks still can
+(a variable name past `maxVariableNameLen`, #41).
 
 ### What the host implements
 

@@ -25,6 +25,11 @@ describe("a part from a variable", () => {
     );
   });
 
+  it("no value is not an empty value: neither \"*\" nor \"\" matches it", () => {
+    expect(run(fromHeader('envelope :matches "${1}" "*"'), "X-P: bogus\r\n\r\nx\r\n", ENV)).toEqual(R({ fileinto: ["Other"] }));
+    expect(run(fromHeader('envelope :is "${1}" ""'), "X-P: bogus\r\n\r\nx\r\n", ENV)).toEqual(R({ fileinto: ["Other"] }));
+  });
+
   it(":count does not count it", () => {
     const script = `require ["envelope","variables","relational","fileinto"];
       if header :matches "x-p" "*" { if envelope :count "eq" ["\${1}", "from"] "1" { fileinto "One"; } }`;
