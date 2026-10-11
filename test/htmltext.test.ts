@@ -118,33 +118,52 @@ describe("HTML to text: no drop state a browser would not enter", () => {
     expect(textIs("<textarea>a &amp; b</textarea>", "a & b")).toBe(true);
   });
 
-  it("script and style inside svg/math are ordinary elements", () => {
+  it("past svg, math or select nothing is hidden beyond the next '>'", () => {
+    // The browser's tokenizer state depends on tree-builder rules (foreign
+    // content, integration points, the select mode) this reduction does not
+    // model, so from such a tag on it keeps every drop bounded — CSS shows,
+    // but no construct can hide the rest of the body.
     expect(textIs("<svg><style></svg>Buy cheap pills now", "Buy cheap pills now")).toBe(true);
-    expect(textIs("<svg><script></svg>Buy", "Buy")).toBe(true);
     expect(textIs("<math><style></math>Buy", "Buy")).toBe(true);
-    expect(textIs("<svg><svg></svg><style></svg>Buy", "Buy")).toBe(true);
-    // Outside foreign content again, style drops as before.
-    expect(textIs("<svg></svg><style>x</style>Buy", "Buy")).toBe(true);
+    expect(textIs("<svg></svg><style>x</style>Buy", "x Buy")).toBe(true);
+    expect(textIs("<select><style></select>W0", "W0")).toBe(true);
+    expect(textIs("<table><select><noembed></select>W0", "W0")).toBe(true);
+    expect(textIs("<math><mi><mglyph><style></math>W0", "W0")).toBe(true);
+    expect(textIs("<svg><desc><b></svg></b></desc><style></svg>W0", "W0")).toBe(true);
+    expect(textIs("<svg><foreignObject><div></svg></div></foreignObject><style></svg>W0", "W0")).toBe(true);
+    expect(textIs("<math><mi><div><svg><g></math><style></svg>W0", "W0")).toBe(true);
+    expect(textIs("<svg><desc><g></svg></desc><style></svg>W0", "W0")).toBe(true);
+    expect(textIs("<math><annotation-xml encoding=text/html></br></annotation-xml><style></math>W0", "W0")).toBe(true);
+    expect(textIs("<svg><font color=x><math></svg><style></math>W0", "W0")).toBe(true);
+    expect(textIs("<svg><textarea><!--</textarea></svg>--><style></svg>W0", "<!-- --> W0")).toBe(true);
+    expect(textIs("<svg><textarea></svg><style></textarea><!--</style>W0-->", "</svg><style> W0-->")).toBe(true);
   });
 
-  it("an HTML breakout tag or an integration point leaves foreign content", () => {
-    expect(textIs("<svg><p><xmp><!--</xmp>Buy", "<!-- Buy")).toBe(true);
-    expect(textIs("<svg><foreignObject><xmp><!--</xmp>Buy", "<!-- Buy")).toBe(true);
-    // <math><svg> is a MathML "svg": its <title> is no integration point.
-    expect(textIs("<math><svg><title><style>x</style></svg>Buy", "x Buy")).toBe(true);
+  it("there, CDATA and kept raw text still show", () => {
+    expect(textIs("<svg><![CDATA[W0 > W1]]>W2", "W0 > W1W2")).toBe(true);
+    expect(textIs("<svg><p><textarea><a W0 W1>", "<a W0 W1>")).toBe(true);
+    expect(textIs("<math><xmp><!--</xmp>W0", "<!-- W0")).toBe(true);
   });
 
-  it("a foreign end tag pops to the foreign element it names", () => {
-    // </noembed> closes the MathML noembed around the <mi> integration point,
-    // so the CDATA after it is foreign content again: text.
-    expect(textIs("<math><noembed><mi></noembed>W0<![CDATA[W1 <!x>]]>W2", "W0W1 <!x>W2")).toBe(true);
+  it("an escaped script (<!-- inside it) makes what follows bounded too", () => {
+    expect(textIs("<script><!--<script></script><style></script>W0</style>", "W0")).toBe(true);
+    expect(textIs("<script><!--<script></script><!--</script>W0-->", "W0-->")).toBe(true);
+    // A plain script still drops exactly.
+    expect(textIs("<script>x</script><style>y</style>W0", "W0")).toBe(true);
   });
+});
 
-  it("kept raw text stays raw inside foreign content too", () => {
-    // A browser parses it as markup there and shows less, never more.
-    expect(textIs("<b><noscript><svg>--</noscript>W0<xmp><img alt=<math>W1</xmp>W2", "-- W0 <img alt=<math>W1 W2")).toBe(
-      true,
-    );
+describe("HTML to text: cost", () => {
+  // Every search here must resume where the last one stopped: a search per
+  // construct that runs to the end of the input is quadratic, and 1 MiB of
+  // small scripts took 41 s. A generous bound — linear runs in milliseconds.
+  it("many small constructs over a large input stay linear", { timeout: 30_000 }, () => {
+    for (const unit of ["<script>x</script>", "<!-- x -->", '<a title="x">', "<style>x</style>", "<"]) {
+      const html = unit.repeat(Math.ceil(1_048_576 / unit.length));
+      const t = performance.now();
+      textIs(html, "");
+      expect(performance.now() - t).toBeLessThan(2000);
+    }
   });
 });
 

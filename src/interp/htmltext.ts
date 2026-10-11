@@ -8,10 +8,13 @@
 //   browser enters it, because a sender who can open one where a browser does
 //   not hides the whole visible body from every body rule. So tags are read
 //   with the tokenizer's attribute states (a ">" inside a quoted value does
-//   not end the tag), markup inside RCDATA/RAWTEXT elements is text, and
-//   inside svg/math (until an HTML breakout tag or an integration point),
-//   script and style are ordinary elements. Where the reduction and a browser
-//   still differ, it shows MORE, never less;
+//   not end the tag) and markup inside RCDATA/RAWTEXT elements is text;
+// - which of those states a browser is in also depends on tree-builder rules
+//   not modelled here: foreign content (svg, math), the select insertion mode,
+//   the escape states inside a script. From the first such construct on
+//   ("bounded" mode), nothing is dropped beyond the next ">" and raw text
+//   (textarea, xmp, plaintext, CDATA) is kept, so the reduction can only show
+//   more than a browser — stylesheets included;
 // - comments, script, style, title, iframe, noembed and noframes drop with
 //   their content; textarea and xmp keep theirs as text; plaintext runs to the
 //   end; every other tag becomes a space;
@@ -66,85 +69,9 @@ const RAW_TEXT: ReadonlyMap<string, { keep: boolean; decode: boolean; closer: Re
   ).map(([name, keep, decode]) => [name, { keep, decode, closer: new RegExp(`</${name}(?=[\\t\\n\\f\\r />]|$)`, "gi") }]),
 );
 
-/** HTML start tags that end foreign (svg/math) content (WHATWG "in foreign
- * content", minus <font>, which breaks out only with certain attributes —
- * staying in foreign content there shows more, never less). </br> and </p>
- * break out too. */
-const BREAKOUT = new Set([
-  "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3",
-  "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s",
-  "small", "span", "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
-]);
-
-/** Foreign elements inside which content is parsed as HTML again, by the
- * namespace they are in. */
-const INTEGRATION_POINTS: Record<"svg" | "math", ReadonlySet<string>> = {
-  svg: new Set(["foreignobject", "desc", "title"]),
-  math: new Set(["mi", "mo", "mn", "ms", "mtext"]),
-};
-
-/**
- * The open svg/math elements and the integration points inside them, top
- * last: an entry in the svg or math namespace puts the tokenizer in foreign
- * content, an integration point (namespace "html" here) back in HTML. An
- * approximation of the tree builder's stack, kept only as far as it decides
- * which constructs drop content. Inside foreign content a new element takes
- * its parent's namespace, so <math><svg> is a MathML element named "svg" and
- * its <title> is no SVG integration point. (MathML annotation-xml is not
- * modelled: staying foreign there shows more, never less.)
- */
-class Context {
-  private readonly stack: { ns: "svg" | "math" | "html"; name: string }[] = [];
-  /** How many entries of each name the stack holds, so an end tag with no
-   * match is ignored in O(1) — scanning the stack for it was quadratic in
-   * hostile nesting. Every other pop removes an entry pushed once: linear. */
-  private readonly counts = new Map<string, number>();
-
-  private push(ns: "svg" | "math" | "html", name: string): void {
-    this.stack.push({ ns, name });
-    this.counts.set(name, (this.counts.get(name) ?? 0) + 1);
-  }
-
-  private pop(): string {
-    const e = this.stack.pop()!;
-    this.counts.set(e.name, this.counts.get(e.name)! - 1);
-    return e.name;
-  }
-
-  get foreign(): boolean {
-    const top = this.stack[this.stack.length - 1];
-    return top !== undefined && top.ns !== "html";
-  }
-
-  start(name: string, selfClosing: boolean): void {
-    if (selfClosing) return;
-    const top = this.stack[this.stack.length - 1];
-    if (top === undefined || top.ns === "html") {
-      if (name === "svg" || name === "math") this.push(name, name);
-    } else if (INTEGRATION_POINTS[top.ns].has(name)) {
-      this.push("html", name);
-    } else {
-      // Every foreign element is tracked, so a foreign end tag pops to the
-      // element it names, as the tree builder does ("</noembed>" inside
-      // <math><noembed><mi> leaves the integration point).
-      this.push(top.ns, name);
-    }
-  }
-
-  /** Leave foreign content back to the nearest integration point (or HTML). */
-  breakOut(): void {
-    while (this.foreign) this.pop();
-  }
-
-  end(name: string): void {
-    // Pop to the most recent element of that name; an unmatched end tag is
-    // ignored.
-    if (!this.counts.get(name)) return;
-    while (this.pop() !== name) {
-      // popping
-    }
-  }
-}
+/** Start tags past which a browser's tokenizer state depends on tree-builder
+ * rules this reduction does not model (foreign content, the select mode). */
+const BOUNDING_TAGS = new Set(["svg", "math", "select"]);
 
 /** Accumulates visible text under the white-space rules. */
 class TextOut {
@@ -206,7 +133,7 @@ class TextOut {
 
 export function htmlToText(s: string): string {
   const w = new TextOut();
-  const ctx = new Context();
+  const ctx: Ctx = { bounded: false, gt: -2, escape: -2 };
   const n = s.length;
   let i = 0;
   while (i < n) {
@@ -215,7 +142,7 @@ export function htmlToText(s: string): string {
     if (end > i) w.text(s, i, end, true);
     if (lt === -1) break;
     if (lt + 1 < n && opensTag(s.charCodeAt(lt + 1))) {
-      i = markup(s, lt + 1, w, ctx);
+      i = ctx.bounded ? boundedMarkup(s, lt + 1, w, ctx) : markup(s, lt + 1, w, ctx);
     } else {
       w.char("<");
       i = lt + 1;
@@ -224,23 +151,28 @@ export function htmlToText(s: string): string {
   return w.out; // pending white space is the trailing white space, and goes
 }
 
+type Ctx = {
+  /** Past a construct that makes the browser's state undecidable here. */
+  bounded: boolean;
+  /** The next ">" at or after the last bounded search (-1: none left; -2:
+   * not searched), so many "<" without a ">" scan the input once. */
+  gt: number;
+  /** The same for "<!--", searched from each script's content: an unbounded
+   * search per script made many small scripts quadratic. */
+  escape: number;
+};
+
 /**
  * Consume the construct whose "<" sits just before `j`, writing what it shows
  * to `w`; returns the index after it — `s.length` when it never closes, as the
  * tokenizer drops an open construct at the end of the input.
  */
-function markup(s: string, j: number, w: TextOut, ctx: Context): number {
+function markup(s: string, j: number, w: TextOut, ctx: Ctx): number {
   const n = s.length;
   const c = s.charCodeAt(j);
   if (c === 0x21 /* ! */) {
     if (s.startsWith("!--", j)) return comment(s, j + 3, w);
-    if (ctx.foreign && s.startsWith("![CDATA[", j)) {
-      // A CDATA section is text in foreign content (a bogus comment outside).
-      const close = s.indexOf("]]>", j + 8);
-      w.text(s, j + 8, close === -1 ? n : close, false);
-      return close === -1 ? n : close + 3;
-    }
-    return bogusComment(s, j, w);
+    return bogusComment(s, j, w); // CDATA too: it is text only in foreign content
   }
   if (c === 0x3f /* ? */) return bogusComment(s, j, w);
   if (c === SLASH) {
@@ -250,30 +182,21 @@ function markup(s: string, j: number, w: TextOut, ctx: Context): number {
     const tag = scanTag(s, j + 1);
     if (tag.next === -1) return n;
     w.space();
-    if (ctx.foreign && (tag.name === "br" || tag.name === "p")) ctx.breakOut();
-    else ctx.end(tag.name);
     return tag.next;
   }
   // A start tag.
   const tag = scanTag(s, j);
   if (tag.next === -1) return n;
   w.space();
-  if (ctx.foreign && BREAKOUT.has(tag.name)) ctx.breakOut();
+  if (BOUNDING_TAGS.has(tag.name)) {
+    ctx.bounded = true;
+    return tag.next;
+  }
   if (tag.name === "plaintext") {
     w.text(s, tag.next, n, false);
     return n;
   }
   const raw = RAW_TEXT.get(tag.name);
-  // The elements whose content is DROPPED are ordinary inside svg/math. Those
-  // whose content is KEPT stay raw text there too: in foreign content a
-  // browser parses that content as markup and shows less of it, so where the
-  // reduction cannot tell the two apart, it shows more, never less.
-  if (ctx.foreign || tag.name === "svg" || tag.name === "math") {
-    if (raw === undefined || !raw.keep) {
-      ctx.start(tag.name, tag.selfClosing);
-      return tag.next;
-    }
-  }
   if (raw === undefined) return tag.next;
   // The content runs to the element's own closing tag. A self-closing flag
   // does not stop it: "<script/>" still starts a script element.
@@ -281,11 +204,60 @@ function markup(s: string, j: number, w: TextOut, ctx: Context): number {
   const m = raw.closer.exec(s);
   const contentEnd = m === null ? n : m.index;
   if (raw.keep) w.text(s, tag.next, contentEnd, raw.decode);
+  // "<!--" inside a script enters the escape states, where a nested "<script"
+  // moves its end past this closing tag: what follows is undecidable here.
+  if (tag.name === "script") {
+    if (ctx.escape !== -1 && ctx.escape < tag.next) ctx.escape = s.indexOf("<!--", tag.next);
+    if (ctx.escape !== -1 && ctx.escape < contentEnd) ctx.bounded = true;
+  }
   if (m === null) return n;
   const close = scanTag(s, m.index + 2);
   if (close.next === -1) return n;
   w.space();
   return close.next;
+}
+
+/**
+ * Bounded mode: every construct ends at the next ">" — or, with none left,
+ * is not a construct at all and its "<" is text — so nothing past that ">"
+ * is hidden. Raw text a browser could be showing stays text: CDATA (shown in
+ * foreign content), and textarea, xmp and plaintext content (shown in HTML;
+ * in foreign content a browser parses it as markup and shows less).
+ */
+function boundedMarkup(s: string, j: number, w: TextOut, ctx: Ctx): number {
+  const n = s.length;
+  if (s.startsWith("![CDATA[", j)) {
+    const close = s.indexOf("]]>", j + 8);
+    w.text(s, j + 8, close === -1 ? n : close, false);
+    return close === -1 ? n : close + 3;
+  }
+  const gt = nextGt(s, j, ctx);
+  if (gt === -1) {
+    w.char("<");
+    return j;
+  }
+  w.space();
+  if (!isAsciiAlpha(s.charCodeAt(j))) return gt + 1;
+  let k = j;
+  while (k < gt && !endsTagName(s.charCodeAt(k))) k++;
+  const name = k - j <= 16 ? s.slice(j, k).toLowerCase() : "";
+  if (name === "plaintext") {
+    w.text(s, gt + 1, n, false);
+    return n;
+  }
+  const raw = RAW_TEXT.get(name);
+  if (raw === undefined || !raw.keep) return gt + 1;
+  raw.closer.lastIndex = gt + 1;
+  const m = raw.closer.exec(s);
+  w.text(s, gt + 1, m === null ? n : m.index, raw.decode);
+  return m === null ? n : m.index; // the closing tag is read as markup next
+}
+
+/** The first ">" at or after `j`, reusing the last search while it qualifies. */
+function nextGt(s: string, j: number, ctx: Ctx): number {
+  if (ctx.gt === -1 || ctx.gt >= j) return ctx.gt;
+  ctx.gt = s.indexOf(">", j);
+  return ctx.gt;
 }
 
 /** "<!--" … "-->" (or "--!>"); "<!-->" and "<!--->" close at once. `k` is just
