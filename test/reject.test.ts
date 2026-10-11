@@ -137,6 +137,11 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
     }
   });
 
+  it("flags stand beside a conflict too", () => {
+    const d = exec('require ["reject","fileinto","imap4flags"]; addflag "\\\\Seen"; fileinto "X"; reject "a";');
+    expect([d.flags, d.mailboxes, d.rejectConflict]).toEqual([["\\seen"], ["X"], "fileinto"]);
+  });
+
   it("a second reject does not hide a conflict", () => {
     const d = exec('require "reject"; keep; reject "a"; reject "b";');
     expect([d.rejected, d.rejectReason, d.indeterminate, d.keep, d.rejectConflict]).toEqual([true, "a", true, true, "keep"]);
@@ -269,7 +274,7 @@ test "A" {
 `,
       mapNamespace({ "k.sieve": "keep;" }),
     );
-    expect(r.report()).not.toMatch(/sub-run succeeded/);
+    expect(r.failures).toEqual([]);
   });
 
   it("checks a block that ends in stop too", () => {

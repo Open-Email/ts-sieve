@@ -136,7 +136,9 @@ export interface PolicyReader {
   /** Gate (and optionally rate-limit) a redirect target. The default allows all.
    * It may append to `d.redirectAddr` or `d.mailboxes`, but not edit or remove
    * an entry: the commands index those lists, and rebuild the index only when
-   * a list's length shows it changed. */
+   * a list's length shows it changed. What it reads of `d` is provisional: a
+   * reject cancels the implicit keep only once the script has run, so read
+   * `d.rejected` rather than `d.implicitKeep`. */
   redirectAllowed(d: RuntimeData, addr: string): boolean;
 }
 
@@ -220,10 +222,13 @@ export class RuntimeData {
    */
   indeterminate = false;
 
-  /** RFC 5429 §2.4: the action a reject stood beside ("" for none). The run
-   * is then indeterminate and everything else stands as if the reject had
-   * not run: refuse the reject, deliver the rest. Under strictReject this is
-   * an error instead. */
+  /** RFC 5429 §2.4: the action a reject stood beside ("" for none), the first
+   * of keep, fileinto, redirect, vacation when there are several. The run is
+   * then indeterminate and everything else stands as if the reject had not
+   * run: refuse the reject, deliver the rest. Under strictReject this is an
+   * error instead. "As if it had not run" holds within one execute(): a run
+   * on a clone (test_script_run) cannot restore an implicit keep that an
+   * earlier run's standing reject cancelled. */
   rejectConflict: "" | "keep" | "fileinto" | "redirect" | "vacation" = "";
 
   /** A test ran out of its share of the step budget and answered "unknown"
