@@ -503,6 +503,37 @@ describe("a multipart in a part that ended at a boundary: its end of input reach
     expect(exeCount(edge(2380))).toEqual(UNKNOWN);
     expect(runRaw(anychild, edge(2381))).toEqual(R({ implicitKeep: true }));
   });
+
+  it("a loop that goes on past that list may have missed an iteration, even one that breaks or stops", () => {
+    // The list left open is the first outer part's: the outer list goes on.
+    // In core the exe part comes before the text part, so a loop that
+    // reaches the text part has gone past where it would have run.
+    const body = `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n--c\r\n${eofLine(4096)}\r\n--b\r\n${text}--b--\r\n`;
+    const loop = (then: string) =>
+      `require ["foreverypart","mime","fileinto"]; foreverypart { if header :mime :type "content-type" "text" { fileinto "T"; ${then} } }`;
+    expect(runRaw(loop("break;"), body)).toEqual(R({ fileinto: ["T"], indeterminate: true }));
+    expect(runRaw(loop("stop;"), body)).toEqual(R({ fileinto: ["T"], indeterminate: true }));
+    // One that breaks before it, or at the part whose list it is, did not.
+    const at = (test: string) => `require ["foreverypart","mime","fileinto"]; foreverypart { if ${test} { fileinto "X"; break; } }`;
+    expect(runRaw(at('header :mime :subtype "content-type" "mixed"'), body)).toEqual(R({ fileinto: ["X"] }));
+    expect(runRaw(at('header :mime :param "boundary" "content-type" "c"'), body)).toEqual(R({ fileinto: ["X"] }));
+    // Nor one that breaks on a part the open list does hold, before the gap.
+    const held = `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n--c\r\n${text}--c\r\n${eofLine(4096)}\r\n--b\r\n${text}--b--\r\n`;
+    expect(runRaw(loop("break;"), held)).toEqual(R({ fileinto: ["T"] }));
+  });
+});
+
+describe("a loop past a multipart deeper than the depth cap", () => {
+  it("may have missed the iterations of the parts it did not walk", () => {
+    // 101 nested multiparts in the first part, then a text part.
+    let deep = "";
+    for (let i = 1; i <= 101; i++) deep += `--d${i - 1}\r\nContent-Type: multipart/mixed; boundary=d${i}\r\n\r\n`;
+    deep += `--d101\r\n${exe}`;
+    for (let i = 101; i >= 0; i--) deep += `--d${i}--\r\n`;
+    const body = `--b\r\nContent-Type: multipart/mixed; boundary=d0\r\n\r\n${deep}--b\r\n${text}--b--\r\n`;
+    const script = 'require ["foreverypart","mime","fileinto"]; foreverypart { if header :mime :type "content-type" "text" { fileinto "T"; break; } }';
+    expect(runRaw(script, body)).toEqual(R({ fileinto: ["T"], indeterminate: true }));
+  });
 });
 
 describe("the part cap", () => {

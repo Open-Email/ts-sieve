@@ -6,7 +6,10 @@
 // a body the host's read window cut: every part the prefix does not show comes
 // after every part it does, in document order. A part whose children may go on
 // past the cut (or past a cap) is `open`; a part is only in the tree once its
-// header block is complete, so its headers are definite.
+// header block is complete, so its headers are definite. Past the depth cap,
+// and where a part's list turns on core's buffering (see InputEnd in body.ts),
+// an open part can have parts after it: foreverypart discloses an iteration
+// past one.
 
 import {
   binaryToBytes,
