@@ -15,7 +15,7 @@
 // breaks before the end missed nothing.
 
 import { currentPart, mimeTree, partText, subtree } from "./mime.js";
-import { byteLen, MAX_INPUT_LENGTH } from "./regex.js";
+import { MAX_INPUT_LENGTH } from "./regex.js";
 import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
 import { applySetModifiers, setVar } from "./variables.js";
 
@@ -94,11 +94,9 @@ export class CmdExtractText implements Cmd {
         }
       }
     }
-    let cut = false;
-    value = applySetModifiers(d, this.modifiers, value, () => (cut = true));
-    if (byteLen(value) > d.script.opts.maxVariableLen) cut = true; // setVar keeps a prefix
-    if (!exact || cut) d.indeterminate = true;
-    setVar(d, this.name, value);
+    if (!exact) d.indeterminate = true;
+    // Each discloses its own cut to the variable size limit.
+    setVar(d, this.name, applySetModifiers(d, this.modifiers, value));
   }
 }
 

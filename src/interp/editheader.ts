@@ -141,7 +141,12 @@ export class CmdAddHeader implements Cmd {
   execute(d: RuntimeData): void {
     const fieldName = expandVars(d, this.fieldName);
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
-    const value = foldHeaderValue(expandVars(d, this.value));
+    // A full ledger takes nothing, so nothing is folded for it.
+    if (!editFits(d, 0)) return;
+    const raw = expandVars(d, this.value);
+    // In a loop the fold is charged by size: a literal has no expansion to pay.
+    if (d.budget.shares > 0) d.budget.consume(raw.length >> 7);
+    const value = foldHeaderValue(raw);
     if (!editFits(d, value.length)) return;
     d.headerEditBytes += value.length;
     d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0 });

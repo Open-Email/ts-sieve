@@ -46,15 +46,20 @@ export class CmdVacation implements Cmd {
   reason = "";
 
   execute(d: RuntimeData): void {
-    // RFC 5429 §2.4: vacation conflicts with reject whether or not it records
-    // a response (a null sender or one of :addresses records none).
-    d.vacationRan = true;
     // "" = unset; the host applies the RFC 5230 §5.4 default it can compute.
+    // Expanded first: in a loop an expansion is charged and may run out of
+    // the loop's share, and then the command must have done nothing.
     const subject = expandVars(d, this.subject);
     const from = expandVars(d, this.from);
     const reason = expandVars(d, this.reason);
     const handle = expandVars(d, this.handle);
     const addresses = expandVarsList(d, this.addresses);
+    // In a loop, a step per address it compares: a literal list costs no
+    // expansion, and it may hold thousands.
+    if (d.budget.shares > 0) d.budget.consume(1 + addresses.length);
+    // RFC 5429 §2.4: vacation conflicts with reject whether or not it records
+    // a response (a null sender or one of :addresses records none).
+    d.vacationRan = true;
 
     // A null envelope sender (MAIL FROM:<>) is a bounce or another
     // autoresponder — RFC 5230 §4.6 says never answer it. Record nothing and

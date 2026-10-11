@@ -83,6 +83,28 @@ export class CmdStop implements Cmd {
   }
 }
 
+/** Each list's members, for addOnce. */
+const members = new WeakMap<string[], Set<string>>();
+
+/**
+ * Append v to list unless it is there; false when it was. A Set answers, not a
+ * scan of the list: in a loop, a message can drive fileinto to 100,000
+ * distinct names, and scanning for each took 37 s at core's options. The Set
+ * is rebuilt when the list's length shows it changed outside this function (a
+ * host, or a clone, may push to it or replace it).
+ */
+function addOnce(list: string[], v: string): boolean {
+  let seen = members.get(list);
+  if (seen === undefined || seen.size !== list.length) {
+    seen = new Set(list);
+    members.set(list, seen);
+  }
+  if (seen.has(v)) return false;
+  seen.add(v);
+  list.push(v);
+  return true;
+}
+
 export class CmdFileInto implements Cmd {
   mailbox = "";
   flags: string[] | null = null;
@@ -91,14 +113,14 @@ export class CmdFileInto implements Cmd {
 
   execute(d: RuntimeData): void {
     const mailbox = expandVars(d, this.mailbox);
-    if (d.mailboxes.includes(mailbox)) return;
-    d.mailboxes.push(mailbox);
-
-    if (this.create && !d.mailboxesCreate.includes(mailbox)) {
-      d.mailboxesCreate.push(mailbox);
-    }
+    if (!addOnce(d.mailboxes, mailbox)) return;
+    if (this.create) addOnce(d.mailboxesCreate, mailbox);
     if (!this.copy) d.implicitKeep = false;
-    if (this.flags !== null) d.flags = canonicalFlags(expandVarsList(d, this.flags), null, d.flagAliases);
+    if (this.flags !== null) {
+      const flags = expandVarsList(d, this.flags);
+      chargeFlags(d, flags);
+      d.flags = canonicalFlags(flags, null, d.flagAliases);
+    }
   }
 }
 
@@ -122,7 +144,11 @@ export class CmdKeep implements Cmd {
 
   execute(d: RuntimeData): void {
     d.keep = true; // keep does NOT cancel implicit keep
-    if (this.flags !== null) d.flags = canonicalFlags(expandVarsList(d, this.flags), null, d.flagAliases);
+    if (this.flags !== null) {
+      const flags = expandVarsList(d, this.flags);
+      chargeFlags(d, flags);
+      d.flags = canonicalFlags(flags, null, d.flagAliases);
+    }
   }
 }
 
@@ -139,12 +165,28 @@ function flagVar(d: RuntimeData, name: string): string[] {
   return v ? [v] : [];
 }
 
+/**
+ * Under a share of the budget (a foreverypart loop, or a test; see withShare),
+ * charge flag work by the flags it handles, a step per 4 characters: each call
+ * splits, folds and sorts every flag held as well as the new ones, some 40 ns
+ * a flag, and in a loop the held set grows with each distinct flag a message
+ * supplies (800 flags added 200,000 times took 15 s). A top-level command runs
+ * once and is not charged, as for expandVars.
+ */
+export function chargeFlags(d: RuntimeData, ...lists: string[][]): void {
+  if (d.budget.shares === 0) return;
+  let n = 0;
+  for (const l of lists) for (const f of l) n += f.length + 1;
+  d.budget.consume(n >> 2);
+}
+
 export class CmdSetFlag implements Cmd {
   variableName: string | null = null; // null ⇒ the internal flag set
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
     const flags = expandVarsList(d, this.flags);
+    chargeFlags(d, flags);
     if (this.variableName !== null) {
       setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "));
     } else {
@@ -160,8 +202,10 @@ export class CmdAddFlag implements Cmd {
     if (this.flags === null) return;
     const flags = expandVarsList(d, this.flags);
     if (this.variableName !== null) {
+      chargeFlags(d, flagVar(d, this.variableName), flags);
       setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "));
     } else {
+      chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags([...d.flags, ...flags], null, d.flagAliases);
     }
   }
@@ -174,8 +218,10 @@ export class CmdRemoveFlag implements Cmd {
     if (this.flags === null) return;
     const flags = expandVarsList(d, this.flags);
     if (this.variableName !== null) {
+      chargeFlags(d, flagVar(d, this.variableName), flags);
       setVar(d, this.variableName, canonicalFlagsOrdered(flagVar(d, this.variableName), flags, d.flagAliases).join(" "));
     } else {
+      chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags(d.flags, flags, d.flagAliases);
     }
   }
