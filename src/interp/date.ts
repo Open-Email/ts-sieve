@@ -115,6 +115,21 @@ function expandYear(y: number, digits: number): number {
 }
 
 /**
+ * Strip a trailing CFWS comment ("(...)" without nested parentheses, with the
+ * white space around it). Two searches back from the end: the regular
+ * expression this replaces retried from every white-space position and went
+ * quadratic on a long run of it, which no match-input cap bounds.
+ */
+export function stripTrailingComment(s: string): string {
+  const t = s.trimEnd();
+  const close = t.length - 1;
+  if (close < 0 || t.charCodeAt(close) !== 0x29 /* ) */) return s;
+  const open = t.lastIndexOf("(", close - 1);
+  if (open === -1 || t.lastIndexOf(")", close - 1) > open) return s;
+  return t.slice(0, open).trimEnd();
+}
+
+/**
  * Parse an RFC 5322 date header into a ZonedTime, or null if unparseable.
  * Parses the common shapes of RFC 5322 date-time, plus fallback
  * layouts with a linear tokenizer (no backtracking regex over attacker input).
@@ -123,8 +138,7 @@ function parseDateHeader(value: string): ZonedTime | null {
   if (value.includes("\r") && !value.includes("\r\n")) return null;
   let s = value.replace(/[\r\n]/g, "").trim();
   if (s === "") return null;
-  // Strip a trailing CFWS comment: linear ([^()]* has no nesting).
-  s = s.replace(/\s*\([^()]*\)\s*$/, "").trim();
+  s = stripTrailingComment(s).trim();
 
   // ISO 8601 / RFC 3339: YYYY-MM-DD[T ]HH:MM:SS(Z|±HH:MM)
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/);

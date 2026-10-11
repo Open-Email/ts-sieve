@@ -53,7 +53,7 @@ export function defaultOptions(): Required<Options> {
     maxTestNesting: 15,
     maxRedirects: 5,
     maxVariableCount: 128,
-    maxVariableNameLen: 32,
+    maxVariableNameLen: 63, // Pigeonhole's limit; RFC 5229 asks for at least 32
     maxVariableLen: 4000,
     maxMatchInputLength: 0,
     maxExecSteps: 0,
@@ -68,6 +68,12 @@ export class Script {
   readonly enabledExtensions: string[] | null;
   readonly opts: Required<Options>;
   cmds: Cmd[] = [];
+  /** Commands at every nesting level: what dispatch can cost at most, kept
+   * back from tests (see withShare). */
+  commandCount = 0;
+  /** Tests and deleteheader commands, numbered in script order: each spends a
+   * share of the step budget (see withShare). */
+  budgetedCount = 0;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };

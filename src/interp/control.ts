@@ -1,5 +1,5 @@
 // if / elsif / else. The if/elsif chain is threaded through RuntimeData.ifResult
-// (elsif/else run only when the prior test was false).
+// (elsif/else run only when the prior test was not true: false, or unknown).
 //
 // A branch is where three-valued evaluation must collapse to two. An "unknown"
 // condition (see runtime.ts's Tri) is NOT TAKEN — a condition unprovable from

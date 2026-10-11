@@ -4,8 +4,8 @@
 // implicit keep (RFC 5228 §2.10.6) — so EVERY rule of the script is skipped,
 // not only the test that tripped. If a sender can trigger that with the message
 // they send, they can bypass a recipient's filtering at will. Script errors
-// (budget, redirect caps, a malformed regex) may still throw; malformed mail
-// may not. Structure this interpreter declines to walk (past the nesting and
+// (redirect caps, a malformed literal regex) may still throw; malformed mail,
+// and work a message makes a test do (see budget.test.ts), may not. Structure this interpreter declines to walk (past the nesting and
 // part caps) is "unknown", as a body cut by the host's read window is.
 
 import { describe, expect, it } from "vitest";
@@ -61,7 +61,7 @@ function siblings(n: number, at: number, leaf: string): string {
 // Depth: Dovecot's message-parser limit (100, added for CVE-2020-12100).
 // Parts: 1024 — Dovecot allows 10000, but there is no step budget behind its
 // limit, and here every body test charges every part: 10000 tiny parts under
-// a handful of body rules would exhaust a host's budget and throw. Past either
+// a handful of body rules would exhaust a host's budget. Past either
 // cap the structure is unknown, which lets a rule not fire but never throws.
 describe("MIME nesting and part count are capped", () => {
   it("ordinary nesting is walked to the leaf", () => {

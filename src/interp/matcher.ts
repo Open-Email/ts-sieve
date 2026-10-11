@@ -1,6 +1,7 @@
 // The shared match-type/comparator
 // state for header/address/envelope/string/date/body/hasflag tests. `:is` and
-// `:contains` route through testString; `:matches`/`:regex` compile to the
+// `:contains` fold the value once and compare (compareFolded, or testString for
+// i;ascii-numeric); `:matches`/`:regex` compile to the
 // linear regex engine (patterns without variable refs precompile at load);
 // `:value`/`:count` route through the relational kernel.
 
@@ -10,6 +11,8 @@ import {
   type Comparator,
   type Match,
   type MatchOptions,
+  comparatorFold,
+  compareFolded,
   testString,
   testStringPrefix,
   toLowerASCII,
@@ -218,8 +221,7 @@ export class MatcherTest {
    * every rule"; the caller reads null as "unknown" instead. The length cap
    * still applies to an expanded key. The step budget charges one step per VM
    * thread visit, but a character class is one instruction however many
-   * ranges it scans, and the parser recurses once per nesting level, so the
-   * pattern's length is what bounds the work per step and the stack depth.
+   * ranges it scans, so the pattern's length is what bounds the work per step.
    */
   private runtimeKey(d: RuntimeData, i: number): { re: CompiledRegex | null; pattern: string } {
     const key = this.key[i]!;
@@ -253,7 +255,7 @@ export class MatcherTest {
    * Three-valued: `sourceTruncated` marks `source` as a PREFIX of the real
    * value (the host's body read window cut it); `:matches`/`:regex` inputs can
    * additionally be cut by the engine's own maxMatchInputLength. A definite
-   * answer must be provable from the prefix (see testStringPrefix and the
+   * answer must be provable from the prefix (see compareFolded and the
    * sound-on-prefix pattern rules above); anything else is "unknown", which the
    * caller accumulates instead of treating as a miss — the miss reading is how
    * a `not`-guarded test used to invert on bytes the engine never read. An
@@ -265,6 +267,8 @@ export class MatcherTest {
     // own default when the host sets none. Either cut leaves a prefix.
     const cap = opts.maxMatchInputLength || MAX_INPUT_LENGTH;
     const reOpts = { maxInputLength: cap, budget: d.budget };
+    let foldedSource: string | undefined;
+    let valueFolded: string | undefined;
     let unknown = false;
     for (let i = 0; i < this.key.length; i++) {
       d.budget.consume(1);
@@ -326,16 +330,34 @@ export class MatcherTest {
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
+            // Folded once per comparison, as for :is/:contains below.
             const fold = this.comparator === "i;octet" ? (x: string) => x : toLowerASCII;
-            if (compareString(this.relational, fold(source), fold(k))) return true;
+            if (valueFolded === undefined) {
+              d.budget.consume(source.length >> 10);
+              valueFolded = fold(source);
+            }
+            if (compareString(this.relational, valueFolded, fold(k))) return true;
           }
         }
-      } else if (sourceTruncated) {
-        const r = testStringPrefix(this.comparator, this.match, source, expandVars(d, key));
+      } else {
+        // :is/:contains. The value is folded once per comparison, not once per
+        // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
+        // and charged by the value's size, a step per KiB: once for the fold,
+        // and for :contains once per key searched through it.
+        const k = expandVars(d, key);
+        let r: Tri;
+        if (this.match === "contains") d.budget.consume(source.length >> 10);
+        if (this.comparator === "i;ascii-numeric") {
+          r = sourceTruncated ? testStringPrefix(this.comparator, this.match, source, k) : testString(this.comparator, this.match, source, k, opts);
+        } else {
+          if (foldedSource === undefined) {
+            d.budget.consume(source.length >> 10);
+            foldedSource = comparatorFold(this.comparator)(source);
+          }
+          r = compareFolded(this.match, foldedSource, comparatorFold(this.comparator)(k), sourceTruncated);
+        }
         if (r === true) return true;
         if (r === "unknown") unknown = true;
-      } else if (testString(this.comparator, this.match, source, expandVars(d, key), opts)) {
-        return true;
       }
     }
     return unknown ? "unknown" : false;

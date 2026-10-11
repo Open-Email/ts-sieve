@@ -17,14 +17,20 @@ export type Match = "is" | "contains" | "matches" | "value" | "count" | "regex";
 
 export type AddressPart = "all" | "localpart" | "domain" | "user" | "detail";
 
-/** ASCII-only lowercasing (i;ascii-casemap fold). */
+/** ASCII-only lowercasing (i;ascii-casemap fold), one UTF-16 unit at a time
+ * into a buffer: building the result a character at a time made folding a
+ * large body slow, and lowering runs of A–Z by replace was slowest on
+ * alternating case. Lone surrogates are copied as they are. */
 export function toLowerASCII(s: string): string {
-  let out = "";
+  if (!/[A-Z]/.test(s)) return s;
+  const out = new Uint16Array(s.length);
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    out += c >= 65 && c <= 90 ? String.fromCharCode(c + 32) : s[i];
+    out[i] = c >= 65 && c <= 90 ? c + 32 : c;
   }
-  return out;
+  let r = "";
+  for (let i = 0; i < out.length; i += 0x2000) r += String.fromCharCode(...out.subarray(i, i + 0x2000));
+  return r;
 }
 
 /**
@@ -46,6 +52,29 @@ export function toUnicodeCasemapFold(s: string): string {
 
 export interface MatchOptions {
   maxMatchInputLength?: number;
+}
+
+/** The fold a comparator compares under: i;octet compares as is, and
+ * i;ascii-numeric compares numbers, never folded text. */
+export function comparatorFold(comparator: Comparator): (s: string) => string {
+  if (comparator === "i;ascii-casemap") return toLowerASCII;
+  if (comparator === "i;unicode-casemap") return (s) => s.toLowerCase();
+  return (s) => s;
+}
+
+/**
+ * `:is`/`:contains` of a folded key against a folded value. `truncated`: the
+ * value is a prefix of the real one, read as testStringPrefix reads it.
+ */
+export function compareFolded(match: Match, value: string, key: string, truncated: boolean): Tri {
+  switch (match) {
+    case "is":
+      return truncated ? (key.startsWith(value) ? "unknown" : false) : value === key;
+    case "contains":
+      return value.includes(key) ? true : truncated ? "unknown" : false;
+    default:
+      throw new SieveError(`match type '${match}' must not reach compareFolded`);
+  }
 }
 
 /**
