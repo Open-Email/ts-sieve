@@ -78,6 +78,16 @@ describe("the variable size limit", () => {
     expect(run(script, one(`${"x".repeat(4500)} unsubscribe`))).toMatchObject({ indeterminate: true });
   });
 
+  it("exactly maxVariableLen bytes is exact; a byte more is disclosed", () => {
+    expect(run(extract(""), one("x".repeat(4000))).indeterminate).toBe(false);
+    expect(run(extract(""), one("x".repeat(4001))).indeterminate).toBe(true);
+  });
+
+  it(":quotewildcard pushing the value past the limit is disclosed", () => {
+    // 2,500 "*" quote to 5,000 bytes, cut back to the limit before it is set.
+    expect(run(extract(":quotewildcard"), one("*".repeat(2500))).indeterminate).toBe(true);
+  });
+
   it(":first counts characters, and a long first is still cut by bytes", () => {
     expect(run(extract(":first 2000"), one("日".repeat(3000), "text/plain; charset=utf-8")).indeterminate).toBe(true);
   });
@@ -93,6 +103,10 @@ describe("decoding", () => {
   it("quoted-printable and base64", () => {
     expect(runBytes(ex, "text/plain; charset=utf-8", ascii("caf=C3=A9"), { cte: "quoted-printable" }).fileinto).toEqual(["[café]"]);
     expect(runBytes(ex, "text/plain", ascii("aGVsbG8="), { cte: "base64" }).fileinto).toEqual(["[hello]"]);
+  });
+
+  it("the utf16 label decodes as the body test decodes it", () => {
+    expect(runBytes(ex, "text/plain; charset=utf16", [0, 0x68, 0, 0x69]).fileinto).toEqual(["[hi]"]);
   });
 
   it("latin1, and utf-16 by its BOM or big-endian without one (RFC 2781)", () => {
@@ -138,10 +152,37 @@ describe("a cut left open in the decoding", () => {
     expect(runBytes(ex, "text/html", ascii("a &am"), { cut: true })).toEqual({ fileinto: ["[a]"], indeterminate: true });
   });
 
-  it("inside a nested part", () => {
+  // The loop breaks once it has the text, so it discloses nothing itself:
+  // only extracttext's own disclosure can set indeterminate.
+  const found = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; if string :contains "${t}" "hello" { fileinto "[${t}]"; break; } }';
+
+  it("inside a part nested in a multipart", () => {
     const eml =
       "From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=o\r\n\r\n--o\r\nContent-Type: multipart/mixed; boundary=i\r\n\r\n--i\r\nContent-Type: text/plain\r\n\r\nhello wor";
-    expect(run(ex, eml, CUT)).toMatchObject({ indeterminate: true });
+    expect(run(found, eml, CUT)).toEqual(R({ fileinto: ["[hello wor]"], indeterminate: true }));
+  });
+
+  it("inside a nested message", () => {
+    const eml = "From: a@x\r\nTo: b@y\r\nContent-Type: message/rfc822\r\n\r\nSubject: s\r\nContent-Type: text/plain\r\n\r\nhello wor";
+    expect(run(found, eml, CUT)).toEqual(R({ fileinto: ["[hello wor]"], indeterminate: true }));
+  });
+
+  it("a UTF-16 code unit split by the cut, behind a BOM", () => {
+    const first2 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 2 "t"; fileinto "[${t}]"; }';
+    expect(runBytes(first2, "text/plain; charset=utf-16", [0xff, 0xfe, 0x68, 0, 0x69], { cut: true })).toEqual({
+      fileinto: ["[h]"],
+      indeterminate: true,
+    });
+  });
+
+  it("a non-text leaf's character split by the cut", () => {
+    const first3 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 3 "t"; fileinto "[${t}]"; }';
+    expect(runBytes(first3, "application/octet-stream", [0x61, 0x62, 0xc3], { cut: true })).toEqual({ fileinto: ["[ab]"], indeterminate: true });
+  });
+
+  it(":first exactly the characters read is exact", () => {
+    const first9 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 9 "t"; fileinto "[${t}]"; }';
+    expect(run(first9, one("hello wor"), CUT)).toEqual(R({ fileinto: ["[hello wor]"] }));
   });
 
   it("an undecodable part on a cut is \"\" and complete: there is no text to miss", () => {
@@ -166,7 +207,8 @@ describe("cost", () => {
     const { headers, size, body } = parseEml(one("x".repeat(100_000)));
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
     s.execute(d);
-    expect(LIMIT - d.budget.remaining).toBeGreaterThan(10 * (100_000 >> 10));
+    // Ten calls and one decode of the part, each a step per KiB.
+    expect(LIMIT - d.budget.remaining).toBeGreaterThan(11 * (100_000 >> 10));
   });
 
   it("conflicting modifiers fail at load", () => {

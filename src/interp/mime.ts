@@ -224,7 +224,9 @@ export function partText(d: RuntimeData, p: MimePart, limit: number): { text: st
 
 function charsetKnown(charset: string): boolean {
   const cs = charset.toLowerCase().trim();
+  // The labels charsetDecode handles itself, then whatever TextDecoder knows.
   if (cs === "" || cs === "us-ascii" || cs === "ascii" || cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") return true;
+  if (cs === "utf-16" || cs === "utf16" || cs === "utf8") return true;
   try {
     new TextDecoder(cs);
     return true;
