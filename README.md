@@ -72,7 +72,7 @@ script's own, reached by the branches a message picks.
 
 | Interface | Purpose |
 | --- | --- |
-| `Message` | `headerGet(name)` (case-insensitive, values in order), `messageSize()`, `bodyRaw()` (`null` ⇒ `body` test never matches). Implement over your MIME source (e.g. `postal-mime`). |
+| `Message` | `headerGet(name)` (case-insensitive, values in order), `messageSize()`, `bodyRaw()` (`null` ⇒ `body` test never matches, and a multipart message's parts are unseen to `:mime`/`foreverypart`). Implement over your MIME source (e.g. `postal-mime`). |
 | `Envelope` | SMTP `MAIL FROM`, `RCPT TO`, and the authenticated username. |
 | `PolicyReader` | `redirectAllowed(d, addr)` — gate/rate-limit/validate redirect targets. `DummyPolicy` allows everything. |
 | `MailboxChecker` (optional, `d.mailboxChecker`) | Backs `mailboxexists`; when absent the test is optimistic ("exists"). |
@@ -113,7 +113,8 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `subaddress` | 5233 | `:user`/`:detail` (separator `+`) |
 | `date` | 5260 | `date`/`currentdate`, all date-parts, `:zone`/`:originalzone`; `Received:` headers extract the date after the final `;` |
 | `index` | 5260 | `:index`/`:last` on `header`, `address`, and `date` |
-| `editheader` | 5293 | virtual: edits go to the `headerEdits` ledger and are replayed on every header read; protected headers (`Received`, `Auto-Submitted`) are immune |
+| `mime` / `foreverypart` | 5703 | `:mime` and `:anychild` on `header`, `address` and `exists`; `:type`, `:subtype`, `:contenttype` and `:param` (RFC 2231 continuations and charsets) on `header`; `foreverypart [:name]` (nested up to four deep, as in Pigeonhole) and `break [:name]`. `address :mime` reads any header field, not only the address headers; `:index`/`:last` are ignored with `:mime` (as in go-sieve). The part tree is built once per message from the same Content-Type field, boundary parameter and splitter the `body` test uses, under the same caps, so the two never disagree about which parts exist. Over a cut body — or a body the host did not read (`bodyRaw()` null) under a multipart root — every unseen part comes after the seen ones, so an `:anychild` miss that may continue is "unknown", and a loop that reaches the end of a part list that may continue sets `indeterminate`. Each part a test examines, each header value it reads (sized on first parse) and each part a loop walks costs steps, and loop iterations spend a share of `maxExecSteps`: a loop that runs out stops, disclosed the same way. With `foreverypart` enabled, set `maxExecSteps`: nested loops over a deep tree are otherwise unbounded in practice. `extracttext`, `replace` and `enclose` are not implemented |
+| `editheader` | 5293 | virtual: edits go to the `headerEdits` ledger and are replayed on every header read; protected headers (`Received`, `Auto-Submitted`) are immune. At most 1024 edits and 1 MiB of added values per execution (`foreverypart` repeats commands); an edit past either is dropped and sets `indeterminate` |
 | `mailbox` | 5490 | `mailboxexists`, `fileinto :create` |
 | `regex` | draft-murchison-sieve-regex | on the linear engine: classes, alternation, bounded `{n,m}`, anchors, `\b`, inline `(?ism)` flags; **no** backreferences or lookaround (rejected at load) |
 | `comparator-i;octet`, `comparator-i;ascii-casemap`, `comparator-i;ascii-numeric`, `comparator-i;unicode-casemap` | 4790/5228 | `i;octet` and `i;ascii-casemap` are built-in; the other two must be required (RFC 5228 §2.7.3) |
@@ -151,8 +152,8 @@ execution budget.
 
 - **No backtracking anywhere.** `:matches`/`:regex` compile to a Pike-VM
   program that is O(program × input); scanning (`${…}` expansion, RFC 2047
-  decode, MIME walking, date parsing) is linear and regex-free on
-  attacker-controlled text.
+  decode, MIME walking and part headers, date parsing) is linear: no regular
+  expression that can backtrack runs on attacker-controlled text.
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
   script upload, not when a message arrives. A pattern built from variables
@@ -251,11 +252,12 @@ When the corpus is absent the corpus tests self-skip; the inline DSL tests
 auto-classifies each
 `.svtest`: in-scope files (every extension this interpreter implements) are run and must
 report zero sub-test failures; files requiring an unimplemented extension
-(`enotify`, `include`, `mime`, `duplicate`, `extlists`, `metadata`, …), the
+(`enotify`, `include`, `extracttext`, `duplicate`, `extlists`, `metadata`, …), the
 action-result DSL this interpreter does not implement
 (`test_result_execute`/`test_message`), or a
 Pigeonhole-only feature (`test_error` detail counts, `test_config_set` keys other
 than `sieve_variables_max_variable_size`, the imap4flags variable-name form) are
-skipped with a recorded reason. **43 in-scope corpus files pass**, covering core,
+skipped with a recorded reason. **48 in-scope corpus files pass**, covering core,
 comparators, match-types, and the `body`, `date`, `encoded-character`, `envelope`,
-`index`, `regex`, `relational`, `subaddress`, and `variables` extensions.
+`index`, `mime`, `foreverypart`, `regex`, `relational`, `subaddress`, and
+`variables` extensions.

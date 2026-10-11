@@ -30,7 +30,9 @@ import {
 } from "./dovecot-testsuite.js";
 import { CmdAddHeader, CmdDeleteHeader } from "./editheader.js";
 import { decodeEncodedChars } from "./encoded.js";
+import { CmdBreak, CmdForEveryPart } from "./foreverypart.js";
 import { MailboxExistsTest } from "./mailbox.js";
+import { MimeOpts } from "./mime.js";
 import { MatcherTest } from "./matcher.js";
 import { CmdReject } from "./reject.js";
 import { CmdVacation } from "./vacation.js";
@@ -61,6 +63,8 @@ import {
  */
 const supportedRequires = new Set([
   "fileinto",
+  "mime",
+  "foreverypart",
   "envelope",
   "imap4flags",
   "subaddress",
@@ -451,7 +455,11 @@ function loadAddressTest(s: Script, ptest: PTest): Test {
       { minStrCount: 1, matchStr: (val) => (key = val) },
     ],
   });
+  const mime = new MimeOpts();
+  mime.addSpecTags(spec.tags!, false);
   loadSpec(s, spec, ptest, ptest.args, ptest.tests, null);
+  const whyMime = mime.invalid(s.requiresExtension("mime"));
+  if (whyMime !== null) throw at(ptest, whyMime);
   matcher.setKey(s, key);
   if (addressPartCnt > 1) throw new SieveError("multiple address-parts are not allowed");
   if (useSubaddress && !s.requiresExtension("subaddress")) throw at(ptest, "missing require 'subaddress'");
@@ -459,6 +467,7 @@ function loadAddressTest(s: Script, ptest: PTest): Test {
   const t = new AddressTest(matcher, addressPart, header);
   t.index = index;
   t.last = last;
+  if (mime.enabled) t.mime = mime;
   return t;
 }
 
@@ -519,12 +528,17 @@ function loadHeaderTest(s: Script, ptest: PTest): Test {
       { minStrCount: 1, matchStr: (val) => (key = val) },
     ],
   });
+  const mime = new MimeOpts();
+  mime.addSpecTags(spec.tags!, true);
   loadSpec(s, spec, ptest, ptest.args, ptest.tests, null);
+  const whyMime = mime.invalid(s.requiresExtension("mime"));
+  if (whyMime !== null) throw at(ptest, whyMime);
   matcher.setKey(s, key);
   checkIndexTags(s, ptest, "header", index, last);
   const t = new HeaderTest(matcher, header);
   t.index = index;
   t.last = last;
+  if (mime.enabled) t.mime = mime;
   return t;
 }
 
@@ -568,15 +582,86 @@ function loadHasFlagTest(s: Script, ptest: PTest): Test {
 
 function loadExistsTest(s: Script, ptest: PTest): Test {
   let fields: string[] = [];
+  const mime = new MimeOpts();
+  const tags: Record<string, SpecTag> = {};
+  mime.addSpecTags(tags, false);
   loadSpec(
     s,
-    { pos: [{ minStrCount: 1, matchStr: (val) => (fields = val) }] },
+    { tags, pos: [{ minStrCount: 1, matchStr: (val) => (fields = val) }] },
     ptest,
     ptest.args,
     ptest.tests,
     null,
   );
-  return new ExistsTest(fields);
+  const whyMime = mime.invalid(s.requiresExtension("mime"));
+  if (whyMime !== null) throw at(ptest, whyMime);
+  const t = new ExistsTest(fields);
+  if (mime.enabled) t.mime = mime;
+  return t;
+}
+
+/** Pigeonhole's SIEVE_MAX_LOOP_DEPTH; RFC 5703 §3 asks for one level. */
+const MAX_LOOP_NESTING = 4;
+
+function loadForEveryPart(s: Script, pcmd: PCmd): Cmd {
+  if (!s.requiresExtension("foreverypart")) throw at(pcmd, "missing require 'foreverypart'");
+  if (s.loops.length >= MAX_LOOP_NESTING) {
+    throw at(pcmd, `foreverypart nested deeper than ${MAX_LOOP_NESTING} levels`);
+  }
+  const cmd = new CmdForEveryPart();
+  // Numbered before its block, so the tests inside count as after it.
+  cmd.shareIndex = s.budgetedCount++;
+  // The tag loads before the block, so a break inside sees the loop's name.
+  s.loops.push("");
+  try {
+    loadSpec(
+      s,
+      {
+        tags: {
+          name: {
+            needsValue: true,
+            minStrCount: 1,
+            maxStrCount: 1,
+            noVariables: true,
+            matchStr: (v) => {
+              cmd.name = v[0]!;
+              s.loops[s.loops.length - 1] = cmd.name;
+            },
+          },
+        },
+        addBlock: (cmds) => (cmd.block = cmds),
+      },
+      pcmd,
+      pcmd.args,
+      pcmd.tests,
+      pcmd.block,
+    );
+  } finally {
+    s.loops.pop();
+  }
+  return cmd;
+}
+
+function loadBreak(s: Script, pcmd: PCmd): Cmd {
+  if (!s.requiresExtension("foreverypart")) throw at(pcmd, "missing require 'foreverypart'");
+  const cmd = new CmdBreak();
+  loadSpec(
+    s,
+    {
+      tags: {
+        name: { needsValue: true, minStrCount: 1, maxStrCount: 1, noVariables: true, matchStr: (v) => (cmd.name = v[0]!) },
+      },
+    },
+    pcmd,
+    pcmd.args,
+    pcmd.tests,
+    pcmd.block,
+  );
+  if (s.loops.length === 0) throw at(pcmd, "break outside foreverypart");
+  if (cmd.name !== "" && !s.loops.includes(cmd.name)) {
+    throw at(pcmd, `break: no enclosing foreverypart named "${cmd.name}"`);
+  }
+  return cmd;
 }
 
 function loadFalseTest(s: Script, ptest: PTest): Test {
@@ -1011,6 +1096,8 @@ const commands: Record<string, (s: Script, cmd: PCmd) => Cmd | null> = {
   addflag: loadAddFlag,
   removeflag: loadRemoveFlag,
   addheader: loadAddHeader,
+  foreverypart: loadForEveryPart,
+  break: loadBreak,
   deleteheader: loadDeleteHeader,
   set: loadSet,
   vacation: loadVacation,

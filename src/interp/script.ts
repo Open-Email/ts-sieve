@@ -74,6 +74,9 @@ export class Script {
   /** Tests and deleteheader commands, numbered in script order: each spends a
    * share of the step budget (see withShare). */
   budgetedCount = 0;
+  /** Load time: the names of the foreverypart loops being loaded, outermost
+   * first ("" for an unnamed one), for break and the nesting cap. */
+  loops: string[] = [];
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };

@@ -113,6 +113,20 @@ export function unusableVarRef(script: Script, s: string): string | null {
   return null;
 }
 
+/**
+ * expandVars for a value a test then matches, charged by the expansion's size
+ * (a step per 128 characters). Building it and hashing it are linear, and a
+ * few references to a variable filled from the message can expand to millions
+ * of characters, every iteration of a loop. Only for tests and the matcher,
+ * which run under a share of the budget (withShare): running out there is
+ * "unknown", never a throw.
+ */
+export function expandForMatch(d: RuntimeData, s: string): string {
+  const out = expandVars(d, s);
+  if (out.length !== s.length) d.budget.consume(out.length >> 7);
+  return out;
+}
+
 export function expandVarsList(d: RuntimeData, list: string[]): string[] {
   if (!d.script.requiresExtension("variables")) return list;
   return list.map((v) => expandVars(d, v));
@@ -202,12 +216,12 @@ export class TestString implements Test {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     if (this.matcher.isCount()) {
       let n = 0;
-      for (const src of this.source) if (expandVars(d, src) !== "") n++;
+      for (const src of this.source) if (expandForMatch(d, src) !== "") n++;
       return this.matcher.countMatches(d, n);
     }
     let unknown = false;
     for (const src of this.source) {
-      const r = this.matcher.tryMatch(d, expandVars(d, src), opts);
+      const r = this.matcher.tryMatch(d, expandForMatch(d, src), opts);
       if (r === true) return true;
       if (r === "unknown") unknown = true;
     }

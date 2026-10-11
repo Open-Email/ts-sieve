@@ -253,7 +253,7 @@ class Parser {
     }
     if (this.peek() !== "]") throw new SieveError("regex: missing ]");
     this.pos++;
-    return { t: "class", ranges, negated, fold: this.flags.i };
+    return { t: "class", ranges: normalizeRanges(ranges), negated, fold: this.flags.i };
   }
 
   private parseClassEscape(): number | [number, number][] {
@@ -307,13 +307,13 @@ class Parser {
       case "D":
         return { t: "class", ranges: [[48, 57]], negated: true, fold: false };
       case "w":
-        return { t: "class", ranges: WORD_RANGES.slice(), negated: false, fold: false };
+        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: false, fold: false };
       case "W":
-        return { t: "class", ranges: WORD_RANGES.slice(), negated: true, fold: false };
+        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: true, fold: false };
       case "s":
-        return { t: "class", ranges: SPACE_RANGES.slice(), negated: false, fold: false };
+        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: false, fold: false };
       case "S":
-        return { t: "class", ranges: SPACE_RANGES.slice(), negated: true, fold: false };
+        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: true, fold: false };
       case "b":
         return { t: "assert", kind: "wordb" };
       case "B":
@@ -370,6 +370,31 @@ function negate(ranges: [number, number][]): [number, number][] {
   return out;
 }
 
+/** Sort ranges and merge the overlapping or adjacent ones, into new tuples
+ * (WORD_RANGES and the like are shared and must not change), so a class is
+ * matched by binary search. Done once per class node, when it is parsed: every
+ * class node is built by parseClass or parseEscape. A reversed range ("z-a")
+ * stays empty. */
+function normalizeRanges(ranges: [number, number][]): [number, number][] {
+  if (ranges.length === 0) return [];
+  const sorted = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: [number, number][] = [];
+  let curLo = sorted[0]![0];
+  let curHi = sorted[0]![1];
+  for (let i = 1; i < sorted.length; i++) {
+    const [nextLo, nextHi] = sorted[i]!;
+    if (nextLo <= curHi + 1) {
+      if (nextHi > curHi) curHi = nextHi;
+    } else {
+      out.push([curLo, curHi]);
+      curLo = nextLo;
+      curHi = nextHi;
+    }
+  }
+  out.push([curLo, curHi]);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Compiler → program
 // ---------------------------------------------------------------------------
@@ -405,6 +430,8 @@ class Compiler {
           this.emit({ op: "any", dotall: node.dotall });
           return;
         case "class":
+          // Ranges were normalized when the node was parsed. A repeat compiles
+          // its node once per copy, and every copy shares this one array.
           this.emit({ op: "class", ranges: node.ranges, negated: node.negated, fold: node.fold });
           return;
         case "assert":
@@ -509,12 +536,26 @@ function isWord(cp: number): boolean {
   return (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || cp === 95;
 }
 
+/** Whether cp lies in sorted, merged ranges: O(log n), so a class of many
+ * ranges costs about what the one budget step charged for it allows. */
+function binarySearchRanges(ranges: [number, number][], cp: number): boolean {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const r = ranges[mid]!;
+    if (cp < r[0]) hi = mid - 1;
+    else if (cp > r[1]) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
 function classMatch(inst: { ranges: [number, number][]; negated: boolean; fold: boolean }, cp: number): boolean {
-  const test = (c: number) => inst.ranges.some(([lo, hi]) => c >= lo && c <= hi);
-  let hit = test(cp);
+  let hit = binarySearchRanges(inst.ranges, cp);
   if (!hit && inst.fold) {
     const swapped = cp >= 65 && cp <= 90 ? cp + 32 : cp >= 97 && cp <= 122 ? cp - 32 : cp;
-    if (swapped !== cp) hit = test(swapped);
+    if (swapped !== cp) hit = binarySearchRanges(inst.ranges, swapped);
   }
   return inst.negated ? !hit : hit;
 }
