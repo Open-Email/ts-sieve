@@ -12,6 +12,18 @@ import type { MimePart } from "./mime.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
+/**
+ * Captures a match took from an input the engine cut (matcher.ts): the last
+ * may be a prefix of what the whole input holds. Keyed by the array, so code
+ * that saves and restores RuntimeData.matchVariables restores the mark too.
+ */
+const cutCaptures = new WeakSet<string[]>();
+
+/** Mark captures as taken from a cut input (see matchVariable). */
+export function markCutCaptures(caps: string[]): void {
+  cutCaptures.add(caps);
+}
+
 /** Thrown by Budget.consume when a share runs out; withShare catches it. */
 const SHARE_EXHAUSTED = Symbol("share exhausted");
 
@@ -297,9 +309,13 @@ export class RuntimeData {
   /** FS that `test_script_compile` reads sub-scripts from. */
   namespace: Namespace | null = null;
 
-  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). */
+  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). A capture from a cut input
+   * may be a prefix of the real one, with nothing to say so: reading it sets
+   * indeterminate, as a variable cut to its size limit does. */
   matchVariable(i: number): string {
-    return i >= 0 && i < this.matchVariables.length ? this.matchVariables[i]! : "";
+    if (i < 0 || i >= this.matchVariables.length) return "";
+    if (cutCaptures.has(this.matchVariables)) this.indeterminate = true;
+    return this.matchVariables[i]!;
   }
 
   /** Cooperative CPU budget; `maxExecSteps <= 0` ⇒ unlimited. */
@@ -345,6 +361,7 @@ export class RuntimeData {
     c.headerEditBytes = this.headerEditBytes;
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
+    if (cutCaptures.has(this.matchVariables)) cutCaptures.add(c.matchVariables);
     c.partStack = [...this.partStack];
     c.vacationResponses = new Map(this.vacationResponses);
     c.testName = this.testName;
