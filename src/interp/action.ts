@@ -82,37 +82,37 @@ export class CmdStop implements Cmd {
   }
 }
 
-/** Each list's members, by the key the list is read with (see memberSet). */
-const members = new WeakMap<string[], Set<string>>();
+/** A list's members by the key it is read with, and the list's length when
+ * they were read (see memberSet). */
+type Members = { keys: Set<string>; length: number };
+const members = new WeakMap<string[], Members>();
 
 /**
  * The keys of a list's members, answering membership without a scan: in a
  * loop, a message can drive fileinto to 100,000 distinct names, and scanning
- * for each took 37 s at core's options. Rebuilt when the list's length shows
- * it changed outside the commands that append to it (a host, or a clone, may
- * push to it or replace it). A list is always read with the same `key`.
+ * for each took 37 s at core's options. Rebuilt when the list's length is not
+ * the one recorded: a host, or a clone, may push to it or replace it (but not
+ * edit an entry in place; see PolicyReader). The length is recorded, not read
+ * off the set, so a duplicate a host pushed does not rebuild it on every call.
+ * A list is always read with the same `key`.
  */
-function memberSet(list: string[], key: (v: string) => string): Set<string> {
-  let seen = members.get(list);
-  if (seen === undefined || seen.size !== list.length) {
-    seen = new Set(list.map(key));
-    members.set(list, seen);
+function memberSet(list: string[], key: (v: string) => string): Members {
+  let m = members.get(list);
+  if (m === undefined || m.length !== list.length) {
+    m = { keys: new Set(list.map(key)), length: list.length };
+    members.set(list, m);
   }
-  return seen;
+  return m;
+}
+
+/** Append v to list, its key to m. */
+function append(m: Members, list: string[], v: string, key: string): void {
+  m.keys.add(key);
+  list.push(v);
+  m.length = list.length;
 }
 
 const same = (v: string) => v;
-
-/** Append v to list: "added", or "held" when it is there, or "full" when it is
- * not and the list holds `max`. */
-function addOnce(list: string[], v: string, max = Number.POSITIVE_INFINITY): "added" | "held" | "full" {
-  const seen = memberSet(list, same);
-  if (seen.has(v)) return "held";
-  if (list.length >= max) return "full";
-  seen.add(v);
-  list.push(v);
-  return "added";
-}
 
 export class CmdFileInto implements Cmd {
   mailbox = "";
@@ -122,23 +122,31 @@ export class CmdFileInto implements Cmd {
 
   execute(d: RuntimeData): void {
     const mailbox = expandVars(d, this.mailbox);
+    const names = memberSet(d.mailboxes, same);
     // A repeat files nothing new (RFC 5228 §2.10.3), but its :create and
     // :flags apply as a first fileinto's would: the last flag list wins (RFC
     // 5232 §5).
-    const added = addOnce(d.mailboxes, mailbox, d.script.opts.maxFileintos);
-    if (added === "full") {
+    const held = names.keys.has(mailbox);
+    if (!held && d.mailboxes.length >= d.script.opts.maxFileintos) {
       // Dropped, with nothing else it would have done: inside a loop the
       // message chooses how many targets there are (see maxFileintos).
       d.indeterminate = true;
       return;
     }
-    if (!this.copy) d.implicitKeep = false;
-    if (this.create) addOnce(d.mailboxesCreate, mailbox);
+    // Expanded and charged before anything changes: in a loop a charge may
+    // run out of the loop's share, and the command must then have done nothing.
+    let flags: string[] | null = null;
     if (this.flags !== null) {
-      const flags = expandVarsList(d, this.flags);
+      flags = expandVarsList(d, this.flags);
       chargeFlags(d, flags);
-      d.flags = canonicalFlags(flags, null, d.flagAliases);
     }
+    if (!held) append(names, d.mailboxes, mailbox, mailbox);
+    if (!this.copy) d.implicitKeep = false;
+    if (this.create) {
+      const created = memberSet(d.mailboxesCreate, same);
+      if (!created.keys.has(mailbox)) append(created, d.mailboxesCreate, mailbox, mailbox);
+    }
+    if (flags !== null) d.flags = canonicalFlags(flags, null, d.flagAliases);
   }
 }
 
@@ -171,8 +179,7 @@ export class CmdRedirect implements Cmd {
     // allowed (one it refused is held nowhere, and is asked again).
     // A literal's key is computed once; an expansion was charged by its size.
     const key = addr === this.addr ? (this.literalKey ??= redirectKey(addr)) : redirectKey(addr);
-    const held = memberSet(d.redirectAddr, redirectKey);
-    if (held.has(key)) {
+    if (memberSet(d.redirectAddr, redirectKey).keys.has(key)) {
       if (!this.copy) d.implicitKeep = false;
       return;
     }
@@ -183,8 +190,9 @@ export class CmdRedirect implements Cmd {
       return;
     }
     if (!d.policy.redirectAllowed(d, addr)) return;
-    held.add(key);
-    d.redirectAddr.push(addr);
+    // Read again: the policy may have appended to the list.
+    const held = memberSet(d.redirectAddr, redirectKey);
+    if (!held.keys.has(key)) append(held, d.redirectAddr, addr, key);
     if (!this.copy) d.implicitKeep = false;
   }
 }
@@ -193,10 +201,11 @@ export class CmdKeep implements Cmd {
   flags: string[] | null = null;
 
   execute(d: RuntimeData): void {
+    // Expanded and charged first, as for fileinto.
+    const flags = this.flags === null ? null : expandVarsList(d, this.flags);
+    if (flags !== null) chargeFlags(d, flags);
     d.keep = true; // keep does NOT cancel implicit keep
-    if (this.flags !== null) {
-      const flags = expandVarsList(d, this.flags);
-      chargeFlags(d, flags);
+    if (flags !== null) {
       d.flags = canonicalFlags(flags, null, d.flagAliases);
     }
   }

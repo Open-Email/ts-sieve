@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
-import { ALL_EXTENSIONS, R, run } from "./harness.js";
+import { ALL_EXTENSIONS, parseEml, R, run } from "./harness.js";
 
 /** A multipart of `parts` text parts, each with its own X-N. */
 function parts(n: number): string {
@@ -221,4 +221,69 @@ describe("which redirect addresses are the same", () => {
     // 920 ms before, 75 ms after: loose enough for an instrumented CI run.
     expect(performance.now() - t0).toBeLessThan(450);
   });
+});
+
+describe("a fileinto or keep that runs out of the loop's share has done nothing", () => {
+  // In a loop, :flags is expanded and charged; running out of the loop's
+  // share stops the command midway, and nothing it would have done may stand.
+  const flags = Array.from({ length: 9000 }, (_, i) => `f${i}`).join(" ");
+  const tight = (cmd: string): RuntimeData => {
+    const s = load(`require ["foreverypart","fileinto","imap4flags","mailbox"]; foreverypart { ${cmd} }`, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 5000 });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(0, new Map(), null));
+    s.execute(d);
+    return d;
+  };
+
+  it("fileinto :flags", () => {
+    const d = tight(`fileinto :create :flags "${flags}" "Box";`);
+    expect([d.budgetExhausted, d.mailboxes, d.mailboxesCreate, d.implicitKeep, d.flags]).toEqual([true, [], [], true, []]);
+  });
+
+  it("keep :flags", () => {
+    const d = tight(`keep :flags "${flags}";`);
+    expect([d.budgetExhausted, d.keep, d.flags]).toEqual([true, false, []]);
+  });
+});
+
+describe("the names a host pushed", () => {
+  it("a :create repeat is created once", () => {
+    const d = exec('require ["fileinto","mailbox"]; fileinto :create "X"; fileinto :create "X";');
+    expect([d.mailboxes, d.mailboxesCreate]).toEqual([["X"], ["X"]]);
+  });
+
+  it("a duplicate a host pushed does not make every fileinto re-read the list", () => {
+    // Two "Z": the names' set is smaller than the list for good, and was
+    // rebuilt on every fileinto, the old scan again.
+    let body = "";
+    for (let i = 1; i <= 30; i++) body += `--b${i - 1}\r\nX-N: n${i}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
+    body += "--b30\r\nX-N: leaf\r\nContent-Type: text/plain\r\n\r\nx\r\n";
+    for (let i = 30; i >= 0; i--) body += `--b${i}--\r\n`;
+    const { headers, size, body: raw } = parseEml(`From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`);
+    const keepN = (v: string) => `if header :mime :matches "x-n" "*" { set "${v}" "\${1}"; }`;
+    const files = Array.from({ length: 10 }, (_, i) => `fileinto "\${a}.\${b}.\${c}.\${e}.${i}";`).join(" ");
+    const s = load(
+      `require ["mime","foreverypart","fileinto","variables"];
+       foreverypart { ${keepN("a")} foreverypart { ${keepN("b")} foreverypart { ${keepN("c")} foreverypart { ${keepN("e")} ${files} } } } }`,
+      { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024, maxFileintos: 1_000_000 },
+    );
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
+    d.mailboxes.push("Z", "Z");
+    const t0 = performance.now();
+    s.execute(d);
+    expect(d.mailboxes.length).toBeGreaterThan(10_000);
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
+});
+
+it("an address the host's policy appended is held, not redirected to again", () => {
+  const policy = new (class extends DummyPolicy {
+    override redirectAllowed(d: RuntimeData, addr: string): boolean {
+      if (addr === "a@x.com") d.redirectAddr.push("z@x.com");
+      return true;
+    }
+  })();
+  const s = load('redirect "a@x.com"; redirect "z@x.com";', { enabledExtensions: [] });
+  const d = newRuntimeData(s, policy, new EnvelopeStatic(), new MessageStatic(0, new Map(), null));
+  s.execute(d);
+  expect(d.redirectAddr).toEqual(["z@x.com", "a@x.com"]);
 });
