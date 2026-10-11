@@ -65,7 +65,8 @@ cap, the comparison is "unknown" rather than an error. An `envelope`
 envelope-part built from a variable that names no part the test reads has no
 value, like a missing header. No other value from the message is known to
 reach a throw; the runtime errors left (too many redirects, conflicting
-reject actions) are the script's own, reached by the branches a message picks.
+reject actions, a `maxExecSteps` below the commands a run dispatches) are the
+script's own, reached by the branches a message picks.
 
 ### What the host implements
 
@@ -133,7 +134,7 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxTokens` | 5000 | lexer token cap |
 | `maxBlockNesting` / `maxTestNesting` | 15 / 15 | parser nesting caps |
 | `maxRedirects` | 5 | `redirect` actions per execution |
-| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 32 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe) |
+| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 63 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe); a name past the length limit fails at load |
 | `maxMatchInputLength` | 0 (engine default, 256 KiB) | truncate values before `:matches`/`:regex`; a comparison over a cut value is three-valued |
 | `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |

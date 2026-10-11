@@ -552,8 +552,8 @@ function loadHasFlagTest(s: Script, ptest: PTest): Test {
     key = second;
     if (!s.requiresExtension("variables")) throw at(ptest, "hasflag: missing require 'variables'");
     for (const v of variables) {
-      const why = badVariableName(s, v);
-      if (why !== null) throw at(ptest, `hasflag: ${why}`);
+      // Only read, so only the pattern: a name too long to be set has no value.
+      if (!VARIABLE_NAME.test(v)) throw at(ptest, `hasflag: invalid variable name: ${v}`);
     }
   }
   // RFC 5232 §5: the flag set matches if any of its flags matches any flag NAME
@@ -775,13 +775,15 @@ function loadSet(s: Script, pcmd: PCmd): Cmd {
   return cmd;
 }
 
+const VARIABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
 /**
  * Why a variable a command sets cannot be one, or null. The length is checked
  * here, not only when the command runs: there it threw, whenever a branch the
  * message picked reached the command, and a thrown execute() skips every rule.
  */
 function badVariableName(s: Script, name: string): string | null {
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) return `invalid variable name: ${name}`;
+  if (!VARIABLE_NAME.test(name)) return `invalid variable name: ${name}`;
   if (name.length > s.opts.maxVariableNameLen) {
     return `variable name too long: ${name} (${name.length} > ${s.opts.maxVariableNameLen})`;
   }
