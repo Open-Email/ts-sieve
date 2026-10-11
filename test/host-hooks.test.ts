@@ -214,6 +214,14 @@ describe("RuntimeData.clone() — sub-script isolation", () => {
     expect(parent.clone().indeterminate).toBe(true);
   });
 
+  it("carries the drop counts to the child, as indeterminate", () => {
+    const parent = base();
+    parent.redirectsDropped = 2;
+    parent.fileintosDropped = 1;
+    const child = parent.clone();
+    expect([child.redirectsDropped, child.fileintosDropped]).toEqual([2, 1]);
+  });
+
   it("shares envelope, message and policy by reference", () => {
     const parent = base();
     const child = parent.clone();
