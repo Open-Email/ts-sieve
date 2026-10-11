@@ -222,10 +222,10 @@ export class CmdDiscard implements Cmd {
   execute(d: RuntimeData): void {
     d.implicitKeep = false;
     d.flags = [];
+    d.flagsMarked = false;
   }
 }
 
-/** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
 /** The flags a command names, expanded, and whether any came from a marked
  * value (see Mark): a canonical list rebuilt from one may differ anywhere, so
  * a flag variable stored from it is in doubt. */
@@ -240,6 +240,7 @@ function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: 
   return { flags, doubt, literal };
 }
 
+/** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
 function flagVar(d: RuntimeData, name: string): string[] {
   const v = d.variables.get(name.toLowerCase());
   return v ? [v] : [];
@@ -272,6 +273,7 @@ export class CmdSetFlag implements Cmd {
       setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "), doubt ? "doubt" : "", !literal);
     } else {
       d.flags = canonicalFlags(flags, null, d.flagAliases);
+      d.flagsMarked = doubt;
     }
   }
 }
@@ -285,10 +287,13 @@ export class CmdAddFlag implements Cmd {
     if (this.variableName !== null) {
       chargeFlags(d, flagVar(d, this.variableName), flags);
       const held = d.varMarks.has(this.variableName.toLowerCase());
-      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "), doubt || held ? "doubt" : "", !literal || held);
+      // Its cut is always marked: even a literal list is joined onto a held
+      // value, which may be the message's.
+      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "), doubt || held ? "doubt" : "", true);
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags([...d.flags, ...flags], null, d.flagAliases);
+      d.flagsMarked ||= doubt;
     }
   }
 }
@@ -306,6 +311,7 @@ export class CmdRemoveFlag implements Cmd {
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags(d.flags, flags, d.flagAliases);
+      d.flagsMarked ||= doubt;
     }
   }
 }

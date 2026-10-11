@@ -7,8 +7,9 @@
 
 import { decodeHeaderValue } from "./header.js";
 import { MatcherTest } from "./matcher.js";
-import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
-import { expandMarked, expandVars, expandVarsList } from "./variables.js";
+import type { MatchOptions } from "./matching.js";
+import { type Cmd, type Mark, type RuntimeData, type Tri, withShare } from "./runtime.js";
+import { expandMarked, expandVarsList } from "./variables.js";
 
 export interface HeaderEdit {
   action: "add" | "delete";
@@ -16,6 +17,9 @@ export interface HeaderEdit {
   value: string;
   last: boolean; // add: append vs prepend; delete: count :index from the end
   index: number; // delete: 1-based specific occurrence (0 = all)
+  /** add: the value was built from one the engine could not hold whole (see
+   * Mark). Absent for a value held whole. */
+  mark?: Mark;
 }
 
 const PROTECTED_HEADERS = new Set(["received", "auto-submitted"]);
@@ -83,8 +87,34 @@ function isProtectedHeader(name: string): boolean {
 }
 
 /** Per execution and field: the replay of the first `n` edits over the
- * values the host returned (`src`). */
-const replays = new WeakMap<RuntimeData, Map<string, { n: number; src: string[]; out: string[] }>>();
+ * values the host returned (`src`), and the marks of its values (null while
+ * none is marked). */
+const replays = new WeakMap<RuntimeData, Map<string, { n: number; src: string[]; out: string[]; marks: Mark[] | null }>>();
+
+/** The marks of a replay's values, by position, when any is marked. */
+const replayMarks = new WeakMap<string[], Mark[]>();
+
+/**
+ * The marks of the values getHeader returned, by position (see Mark), or
+ * undefined when every one is held whole. An added value built from a marked
+ * one is a prefix of what the script meant, or in doubt: a test over it
+ * answers as TestString does over a marked source (see matchHeaderValue).
+ */
+export function valueMarks(values: string[]): readonly Mark[] | undefined {
+  return replayMarks.get(values);
+}
+
+/**
+ * Match a header value at `mark`: whole, after decoding; a prefix, as a cut
+ * header is matched (a definite answer only where the prefix proves it); in
+ * doubt, unknown. A prefix that holds an encoded word is in doubt too: the
+ * whole may decode where the prefix does not, or drop the white space between
+ * two encoded words the prefix ends between.
+ */
+export function matchHeaderValue(d: RuntimeData, matcher: MatcherTest, value: string, mark: Mark, opts: MatchOptions): Tri {
+  if (mark === "doubt" || (mark === "prefix" && value.includes("=?"))) return "unknown";
+  return matcher.tryMatch(d, decodeHeaderValue(value), opts, mark === "prefix");
+}
 
 /**
  * Replay the header-edit ledger over a header's raw values. Field match is
@@ -108,29 +138,50 @@ export function applyHeaderEditsToValues(d: RuntimeData, fieldName: string, valu
   const same = last !== undefined && (last.src === values || (last.src.length === 0 && values.length === 0));
   if (same && last.n === n) return last.out;
   const out = same ? last.out.slice() : [...values];
-  replayInto(out, d.headerEdits, fn, same ? last.n : 0, n);
-  memo.set(fn, { n, src: values, out });
+  const marks = replayInto(out, same ? (last.marks?.slice() ?? null) : null, d.headerEdits, fn, same ? last.n : 0, n);
+  if (marks !== null) replayMarks.set(out, marks);
+  memo.set(fn, { n, src: values, out, marks });
   return out;
 }
 
-/** Apply edits[from, to) for field `fn` to `result`, in place. */
-function replayInto(result: string[], edits: HeaderEdit[], fn: string, from: number, to: number): void {
+/** Apply edits[from, to) for field `fn` to `result`, in place, with `marks`
+ * kept beside it: returned, or created when the first marked value is added.
+ * Null while no value is marked. */
+function replayInto(result: string[], marks: Mark[] | null, edits: HeaderEdit[], fn: string, from: number, to: number): Mark[] | null {
   for (let i = from; i < to; i++) {
     const edit = edits[i]!;
     if (edit.fieldName.toLowerCase() !== fn) continue;
     if (edit.action === "add") {
-      if (edit.last) result.push(edit.value);
-      else result.unshift(edit.value);
+      const mark = edit.mark ?? "";
+      if (marks === null && mark !== "") marks = result.map(() => "");
+      if (edit.last) {
+        result.push(edit.value);
+        marks?.push(mark);
+      } else {
+        result.unshift(edit.value);
+        marks?.unshift(mark);
+      }
     } else if (edit.index > 0) {
       const idx = edit.last ? result.length - edit.index : edit.index - 1;
-      if (idx >= 0 && idx < result.length) result.splice(idx, 1);
+      if (idx >= 0 && idx < result.length) {
+        result.splice(idx, 1);
+        marks?.splice(idx, 1);
+      }
     } else if (edit.value !== "") {
-      const idx = result.indexOf(edit.value);
-      if (idx !== -1) result.splice(idx, 1);
+      // The value deleteheader matched, which is never a marked one (see
+      // CmdDeleteHeader): a marked one of the same text is not it.
+      let idx = result.indexOf(edit.value);
+      while (marks !== null && idx !== -1 && marks[idx] !== "") idx = result.indexOf(edit.value, idx + 1);
+      if (idx !== -1) {
+        result.splice(idx, 1);
+        marks?.splice(idx, 1);
+      }
     } else {
       result.length = 0;
+      if (marks !== null) marks.length = 0;
     }
   }
+  return marks;
 }
 
 export class CmdAddHeader implements Cmd {
@@ -139,17 +190,28 @@ export class CmdAddHeader implements Cmd {
   last = false;
 
   execute(d: RuntimeData): void {
-    const fieldName = expandVars(d, this.fieldName);
+    const { value: fieldName, mark: nameMark } = expandMarked(d, this.fieldName);
+    // A name built from a value the engine could not hold whole is not the
+    // script's: nothing is added under it, and the guess is disclosed (as
+    // deleteheader's).
+    if (nameMark !== "") {
+      d.indeterminate = true;
+      return;
+    }
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
     // A full ledger takes nothing, so nothing is folded for it.
     if (!editFits(d, 0)) return;
-    const raw = expandVars(d, this.value);
+    // The value keeps its mark: every later read of the field weighs it (see
+    // valueMarks). Folding a prefix gives a prefix of the folded whole: a run
+    // of line breaks the cut ended is removed, where whole it is removed or
+    // becomes a space.
+    const { value: raw, mark } = expandMarked(d, this.value);
     // In a loop the fold is charged by size: a literal has no expansion to pay.
     if (d.budget.shares > 0) d.budget.consume(raw.length >> 7);
     const value = foldHeaderValue(raw);
     if (!editFits(d, value.length)) return;
     d.headerEditBytes += value.length;
-    d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0 });
+    d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0, ...(mark !== "" ? { mark } : {}) });
   }
 }
 
@@ -181,6 +243,7 @@ export class CmdDeleteHeader implements Cmd {
 
     const values = applyHeaderEditsToValues(d, fieldName, d.msg.headerGet(fieldName));
     if (values.length === 0) return;
+    const marks = valueMarks(values);
 
     // The matching spends a share of the step budget, as a test does. When the
     // share runs out nothing is deleted, and the guess is disclosed as for an
@@ -191,13 +254,14 @@ export class CmdDeleteHeader implements Cmd {
       if (this.index > 0) {
         let idx = this.index - 1;
         if (this.last) idx = values.length - this.index;
-        if (idx >= 0 && idx < values.length && this.valueMatchesPatterns(d, values[idx]!)) {
+        if (idx >= 0 && idx < values.length && this.valueMatchesPatterns(d, values[idx]!, marks?.[idx] ?? "")) {
           edits.push({ action: "delete", fieldName, value: values[idx]!, index: this.index, last: this.last });
         }
         return true;
       }
-      for (const val of values) {
-        if (this.valueMatchesPatterns(d, val)) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false });
+      for (let i = 0; i < values.length; i++) {
+        const val = values[i]!;
+        if (this.valueMatchesPatterns(d, val, marks?.[i] ?? "")) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false });
       }
       return true;
     });
@@ -209,13 +273,18 @@ export class CmdDeleteHeader implements Cmd {
     for (const e of edits) if (editFits(d, 0)) d.headerEdits.push(e);
   }
 
-  private valueMatchesPatterns(d: RuntimeData, value: string): boolean {
-    const v = decodeHeaderValue(value).trim();
-    // An "unknown" (a glob over a value past the match-input cap) reads as
-    // no-match here — deleting a header on an unproven match would corrupt what
-    // every later test reads — but the guess is disclosed like a branch's:
-    // later tests may read a header this delete would have removed.
-    const r = this.matcher.tryMatch(d, v, { maxMatchInputLength: d.script.opts.maxMatchInputLength });
+  private valueMatchesPatterns(d: RuntimeData, value: string, mark: Mark): boolean {
+    // An "unknown" (a glob over a value past the match-input cap, or over one
+    // an addheader built from a marked value) reads as no-match here —
+    // deleting a header on an unproven match would corrupt what every later
+    // test reads — but the guess is disclosed like a branch's: later tests may
+    // read a header this delete would have removed. Trimming a prefix keeps
+    // it a prefix of the trimmed whole.
+    const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
+    let r: Tri = "unknown";
+    if (mark === "" || (mark === "prefix" && !value.includes("=?"))) {
+      r = this.matcher.tryMatch(d, decodeHeaderValue(value).trim(), opts, mark === "prefix");
+    }
     if (r === "unknown") d.indeterminate = true;
     return r === true;
   }

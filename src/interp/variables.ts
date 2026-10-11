@@ -226,6 +226,20 @@ function firstChar(s: string, f: (c: string) => string): string {
   return f(s.slice(0, w)) + s.slice(w);
 }
 
+/**
+ * :lower over a prefix of the value. Lowering maps each character alone but
+ * for a capital sigma, which lowers to final ς at the end of a word and to σ
+ * elsewhere (Final_Sigma): one the cut left at the end is either. The result
+ * is cut back to where the two readings agree, which is a prefix of the whole
+ * value lowered.
+ */
+function lowerPrefix(s: string): string {
+  const lowered = s.toLowerCase();
+  const inWord = (s + "a").toLowerCase();
+  for (let i = 0; i < lowered.length; i++) if (lowered.charCodeAt(i) !== inWord.charCodeAt(i)) return lowered.slice(0, i);
+  return lowered;
+}
+
 export const SET_MODIFIERS: Record<string, Modifier> = {
   lower: { precedence: 40, apply: (s) => s.toLowerCase() },
   upper: { precedence: 40, apply: (s) => s.toUpperCase() },
@@ -290,7 +304,7 @@ export function applySetModifiers(d: RuntimeData, modifiers: string[], value: st
   for (const m of ordered) {
     if (charge) d.budget.consume(v.length >> 7);
     const before = v.length;
-    v = SET_MODIFIERS[m]!.apply(v);
+    v = m === "lower" && mark === "prefix" ? lowerPrefix(v) : SET_MODIFIERS[m]!.apply(v);
     if (m === "length" && mark !== "") mark = "doubt";
     if (charge && m === "quotewildcard") d.budget.consume((v.length - before) >> 4);
     lastPrec = SET_MODIFIERS[m]!.precedence;

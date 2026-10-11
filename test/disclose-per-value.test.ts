@@ -133,3 +133,157 @@ describe("extracttext's text from a cut part", () => {
     expect(missed).toMatchObject({ fileinto: [], indeterminate: true });
   });
 });
+
+describe("a cut value through the editheader ledger", () => {
+  // The subject-rewrite idiom: the Subject is stored, deleted and added back
+  // under a tag. What is added is a prefix of the whole, and every later read
+  // of the field reads it.
+  const REWRITE = 'if header :matches "subject" "*" { set "s" "${1}"; deleteheader "subject"; addheader "Subject" "[EXT] ${s}"; }';
+  const ex = (rule: string) => `require ["variables","editheader","fileinto"]; ${REWRITE} ${rule}`;
+
+  it("a header test over the field answers for the prefix only", () => {
+    // The whole Subject holds "[ticket]".
+    const r = run(ex('if not header :contains "subject" "[ticket]" { discard; }'), msg(`From: a@x\r\nSubject: ${"x".repeat(4500)} [ticket]`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("a key the prefix holds is proven", () => {
+    const r = run(ex('if header :contains "subject" "[EXT] xx" { fileinto "Ext"; }'), msg(`From: a@x\r\nSubject: ${"x".repeat(4500)}`), CORE);
+    expect(r).toMatchObject({ fileinto: ["Ext"], indeterminate: false });
+  });
+
+  it("an encoded word in the prefix puts it in doubt: the whole may decode otherwise", () => {
+    // X-S decodes to an encoded word, held literally and cut inside it. Whole,
+    // the added field would decode again, to "... abcdefgh".
+    const word = "=?utf-8?q?=3D=3Futf-8=3Fq=3Fabcdefgh=3F=3D?=";
+    const script = 'require ["variables","editheader","fileinto"]; if header :matches "x-s" "*" { set "s" "${1}"; } addheader "X-T" "${s}"; if header :contains "x-t" "=?utf-8" { fileinto "Enc"; }';
+    const r = run(script, msg(`From: a@x\r\nX-S: ${"x".repeat(3985)} ${word}`), CORE);
+    expect(r).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("deleteheader cannot match the prefix: nothing is deleted, and it discloses", () => {
+    const script = `require ["variables","editheader"]; ${STORE} addheader "X-S" "\${s}"; deleteheader :contains "x-s" "keep"; if exists "x-s" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: ${"x".repeat(4500)} keep`), CORE);
+    expect(r.indeterminate).toBe(true);
+  });
+
+  it("an address test over it is unknown", () => {
+    const script = `require ["variables","editheader"]; ${STORE} addheader "Reply-To" "\${s}"; if not address :domain :is "reply-to" "trusted.example" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: ${"y".repeat(4500)} <boss@trusted.example>`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("a date test over it is unknown", () => {
+    const script = 'require ["variables","editheader","date"]; if header :matches "x-d" "*" { set "s" "${1}"; } addheader "X-Date" "${s}"; if not date :is "x-date" "year" "2024" { discard; }';
+    const r = run(script, msg(`From: a@x\r\nX-D: Mon, 1 Jan 2024 10:00:00 +0000 (${"c".repeat(4500)})`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("a :mime header test over it is unknown", () => {
+    const script = `require ["variables","editheader","mime"]; ${STORE} addheader "X-S" "\${s}"; if not header :mime :contains "x-s" "unsubscribe" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: ${"x".repeat(4500)} unsubscribe`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("a field name built from a value in doubt is not added, and discloses", () => {
+    const script = 'require ["variables","editheader","regex"]; if header :regex "x-route" "^([a-z-]+);" { set "h" "${1}"; } addheader "${h}" "1"; if exists "x-team" { discard; }';
+    const r = run(script, msg(`From: a@x\r\nX-Route: x-team;${"y".repeat(20_000)}`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+});
+
+describe("a cut value in the internal flag set", () => {
+  const KW = 'if header :matches "x-kw" "*" { set "kw" "${1}"; }';
+  const kw = (tail: string) => msg(`From: a@x\r\nX-Kw: ${"x".repeat(4000)} ${tail}`);
+
+  it("addflag of it puts the set in doubt", () => {
+    const r = run(`require ["variables","imap4flags"]; ${KW} addflag "\${kw}"; if not hasflag "important" { discard; }`, kw("important"), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("removeflag of it too", () => {
+    const r = run(`require ["variables","imap4flags"]; ${KW} setflag "junk"; removeflag "\${kw}"; if hasflag "junk" { discard; }`, kw("junk"), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+
+  it("a setflag of a literal clears the doubt", () => {
+    const r = run(`require ["variables","imap4flags","fileinto"]; ${KW} addflag "\${kw}"; setflag "seen"; if hasflag "seen" { fileinto "Seen"; }`, kw("important"), CORE);
+    expect(r).toMatchObject({ fileinto: ["Seen"], indeterminate: false });
+  });
+});
+
+describe("addflag of a literal onto a held value", () => {
+  it("marks the cut of what it joined", () => {
+    // 3,995 + " \Flagged" is 4,004 bytes: the literal is what is cut.
+    const BS = String.fromCharCode(92);
+    const script = `require ["variables","imap4flags"]; if header :matches "x-kw" "*" { set "f" "\${1}"; } addflag "f" "${BS}${BS}Flagged"; if not hasflag "f" "${BS}${BS}flagged" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nX-Kw: ${"a".repeat(3995)}`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+});
+
+describe(":lower over a prefix", () => {
+  it("does not read a capital sigma at the cut as the end of a word", () => {
+    // Whole, the Subject lowers to "...σα"; its prefix ends in the Σ.
+    const SIGMA = String.fromCharCode(0x3a3);
+    const ALPHA = String.fromCharCode(0x391);
+    const FINAL = String.fromCharCode(0x3c2);
+    const script = `require ["variables","fileinto"]; ${STORE} set :lower "l" "\${s}"; if string :contains :comparator "i;octet" "\${l}" "${FINAL}" { fileinto "Final"; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: ${"x".repeat(3998)}${SIGMA}${ALPHA}`), CORE);
+    expect(r).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("still proves a key the prefix holds", () => {
+    const script = `require ["variables","fileinto"]; ${STORE} set :lower "l" "\${s}"; if string :contains "\${l}" "abc" { fileinto "Abc"; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: ABC${"x".repeat(4500)}`), CORE);
+    expect(r).toMatchObject({ fileinto: ["Abc"], indeterminate: false });
+  });
+});
+
+describe("a marked ledger value, by position and by count", () => {
+  const long = (tail: string) => msg(`From: a@x\r\nSubject: ${"y".repeat(4500)} ${tail}`);
+  const ADD = 'if header :matches "subject" "*" { set "s" "${1}"; } addheader "X-S" "${s}";';
+
+  it(":index finds the marked value where it is", () => {
+    const script = `require ["variables","editheader","index"]; ${ADD} if not header :index 1 :contains "x-s" "ticket" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nX-S: plain\r\nSubject: ${"y".repeat(4500)} ticket`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+    // The second is the message's own, held whole.
+    const second = `require ["variables","editheader","index"]; ${ADD} if not header :index 2 :contains "x-s" "ticket" { discard; }`;
+    const r2 = run(second, msg(`From: a@x\r\nX-S: plain\r\nSubject: ${"y".repeat(4500)} ticket`), CORE);
+    expect([r2.implicitKeep, r2.indeterminate]).toEqual([false, false]);
+  });
+
+  it("an address :count over it is unknown", () => {
+    const script = `require ["variables","editheader","relational","comparator-i;ascii-numeric","fileinto"]; ${ADD.replace('"X-S"', '"Reply-To"')} if address :count "ge" :comparator "i;ascii-numeric" "reply-to" "1" { fileinto "One"; }`;
+    expect(run(script, long("<boss@trusted.example>"), CORE)).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("a date :count over it is unknown", () => {
+    const script = 'require ["variables","editheader","relational","comparator-i;ascii-numeric","date","fileinto"]; if header :matches "x-d" "*" { set "s" "${1}"; } addheader "X-Date" "${s}"; if date :count "eq" :comparator "i;ascii-numeric" "x-date" "year" "0" { fileinto "None"; }';
+    const r = run(script, msg(`From: a@x\r\nX-D: Mon, 1 Jan 2024 10:00:00 +0000 (${"c".repeat(4500)})`), CORE);
+    expect(r).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("a header :count counts it: a marked value is still a field", () => {
+    const script = `require ["variables","editheader","relational","comparator-i;ascii-numeric","fileinto"]; ${ADD} if header :count "eq" :comparator "i;ascii-numeric" "x-s" "1" { fileinto "One"; }`;
+    expect(run(script, long("z"), CORE)).toMatchObject({ fileinto: ["One"], indeterminate: false });
+  });
+
+  it("deleteheader of a value removes that value, not a marked one of the same text", () => {
+    // Added first: the Subject's 4,000-byte prefix. Then the message's own
+    // X-S, the same text. :is proves only the message's own one equal.
+    const x = "x".repeat(4000);
+    const script = `require ["variables","editheader","fileinto"]; ${ADD} deleteheader :is "x-s" "${x}"; if header :is "x-s" "${x}" { fileinto "Same"; }`;
+    const r = run(script, msg(`From: a@x\r\nX-S: ${x}\r\nSubject: ${"x".repeat(4500)}`), CORE);
+    expect(r).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+});
+
+describe("the flag set after a discard", () => {
+  it("holds nothing marked", () => {
+    const script = 'require ["variables","imap4flags","fileinto"]; if header :matches "x-kw" "*" { set "kw" "${1}"; } addflag "${kw}"; discard; if not hasflag "important" { fileinto "F"; }';
+    const r = run(script, msg(`From: a@x\r\nX-Kw: ${"x".repeat(4000)} important`), CORE);
+    expect(r).toMatchObject({ fileinto: ["F"], indeterminate: false });
+  });
+});

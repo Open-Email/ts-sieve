@@ -12,19 +12,21 @@ import {
   stripRFC2822Comments,
   SUBADDRESS_SEPARATOR,
 } from "./address.js";
-import { getHeader, decodeHeaderValue } from "./header.js";
+import { matchHeaderValue, valueMarks } from "./editheader.js";
+import { getHeader } from "./header.js";
 import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
 import { type MimeOpts, partHeader } from "./mime.js";
-import { doubtCaptures, type RuntimeData, type Test, type Tri } from "./runtime.js";
+import { doubtCaptures, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
-/** RFC 5260 §6 `:index`/`:last` — select the indexth field instance (1-based). */
-function selectIndexed(values: string[], index: number, last: boolean): string[] {
-  if (index <= 0) return values;
-  const idx = last ? values.length - index : index - 1;
-  return idx >= 0 && idx < values.length ? [values[idx]!] : [];
+/** RFC 5260 §6 `:index`/`:last` — the positions [from, to) of the indexth
+ * field instance (1-based) among `n`: all of them without :index. */
+function indexRange(n: number, index: number, last: boolean): [number, number] {
+  if (index <= 0) return [0, n];
+  const idx = last ? n - index : index - 1;
+  return idx >= 0 && idx < n ? [idx, idx + 1] : [0, 0];
 }
 
 function matchOpts(d: RuntimeData): MatchOptions {
@@ -192,10 +194,10 @@ export class AddressTest implements Test {
           // runs: a part's header is not capped as the message's are, and
           // :anychild multiplies the parts read.
           chargeRead(d, values, true);
-          if (this.matchValues(d, values, state)) return true;
+          if (this.matchValues(d, values, valueMarks(values), state)) return true;
         }
       }
-      if (this.matcher.isCount()) return countOver(d, this.matcher, state.entryCount, open);
+      if (this.matcher.isCount()) return state.unknown ? "unknown" : countOver(d, this.matcher, state.entryCount, open);
       return state.unknown || open ? "unknown" : false;
     }
     for (let hdr of this.header) {
@@ -206,17 +208,21 @@ export class AddressTest implements Test {
       }
       const all = getHeader(d, hdr);
       chargeRead(d, all);
-      if (this.matchValues(d, selectIndexed(all, this.index, this.last), state)) return true;
+      const [from, to] = indexRange(all.length, this.index, this.last);
+      if (this.matchValues(d, all.slice(from, to), valueMarks(all)?.slice(from, to), state)) return true;
     }
-    if (this.matcher.isCount()) return this.matcher.countMatches(d, state.entryCount);
+    if (this.matcher.isCount()) return state.unknown ? "unknown" : this.matcher.countMatches(d, state.entryCount);
     return state.unknown ? "unknown" : false;
   }
 
   /** One header's values: true on a definite match. Counts addresses into
    * `state.entryCount` under :count; an unknown lands in `state.unknown`.
-   * Header values are complete, so unknowns here come only from the engine's
-   * match-input cap on an oversized value. */
-  private matchValues(d: RuntimeData, values: string[], state: { entryCount: number; unknown: boolean }): boolean {
+   * Header values are complete, so unknowns here come from the engine's
+   * match-input cap on an oversized value, and from a value an addheader
+   * built from a marked one (`marks`, see valueMarks): a prefix of an address
+   * list may end inside a quoted name or a comment, so it proves nothing, and
+   * its addresses are not counted. */
+  private matchValues(d: RuntimeData, values: string[], marks: readonly Mark[] | undefined, state: { entryCount: number; unknown: boolean }): boolean {
     // "unknown" is truthy as a string — never `if (tryMatch(...))` a Tri;
     // accumulate through this probe instead.
     const probe = (address: string): boolean => {
@@ -225,8 +231,12 @@ export class AddressTest implements Test {
       return r === true;
     };
     if (values.length === 0) return !this.matcher.isCount() && probe("");
-    for (const value of values) {
-      const cleanValue = stripRFC2822Comments(value);
+    for (let i = 0; i < values.length; i++) {
+      if ((marks?.[i] ?? "") !== "") {
+        state.unknown = true;
+        continue;
+      }
+      const cleanValue = stripRFC2822Comments(values[i]!);
 
       // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
       // §3.4: name-addr = [display-name] angle-addr), and a non-ASCII local
@@ -371,14 +381,17 @@ export class HeaderTest implements Test {
     for (const hdr of this.header) {
       const all = getHeader(d, expandVars(d, hdr));
       d.budget.consume(1 + (inLoop(d) ? all.length : 0)); // the name; in a loop, the values found
-      const values = selectIndexed(all, this.index, this.last);
-      for (const value of values) {
+      const marks = valueMarks(all);
+      const [from, to] = indexRange(all.length, this.index, this.last);
+      for (let i = from; i < to; i++) {
+        // A marked value is still a field: :count counts it.
         if (this.matcher.isCount()) {
           entryCount++;
           continue;
         }
+        const value = all[i]!;
         if (inLoop(d)) d.budget.consume(decodeCost(value));
-        const r = this.matcher.tryMatch(d, decodeHeaderValue(value), matchOpts(d));
+        const r = matchHeaderValue(d, this.matcher, value, marks?.[i] ?? "", matchOpts(d));
         if (r === true) return true;
         if (r === "unknown") unknown = true;
       }
@@ -394,11 +407,21 @@ export class HeaderTest implements Test {
     const params = mime.params.map((p) => expandVars(d, p));
     let entryCount = 0;
     let unknown = false;
+    // A value an addheader built from a marked one (see valueMarks) is left
+    // out of what the MIMEOPT derives: what it would read there is unknown,
+    // under :count too.
+    let marked = false;
     for (const part of parts) {
       for (const hdr of this.header) {
         const name = expandVars(d, hdr);
         d.budget.consume(1); // the name; mime.values charges each value
-        const values = mime.values(d, name, partHeader(d, part, name), params);
+        let raw = partHeader(d, part, name);
+        const marks = valueMarks(raw);
+        if (marks?.some((m) => m !== "")) {
+          marked = true;
+          raw = raw.filter((_, i) => marks[i] === "");
+        }
+        const values = mime.values(d, name, raw, params);
         if (this.matcher.isCount()) {
           entryCount += values.length;
           continue;
@@ -410,8 +433,8 @@ export class HeaderTest implements Test {
         }
       }
     }
-    if (this.matcher.isCount()) return countOver(d, this.matcher, entryCount, open);
-    return unknown || open ? "unknown" : false;
+    if (this.matcher.isCount()) return marked ? "unknown" : countOver(d, this.matcher, entryCount, open);
+    return unknown || open || marked ? "unknown" : false;
   }
 }
 
@@ -509,6 +532,7 @@ export class HasFlagTest implements Test {
       flags = canonicalFlags(lists, null, d.flagAliases).filter((f) => f !== "");
     } else {
       flags = d.flags;
+      if (d.flagsMarked) d.testDoubt = true; // as a marked flag variable
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, flags.length);
     let unknown = false;

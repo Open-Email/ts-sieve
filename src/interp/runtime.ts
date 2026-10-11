@@ -302,6 +302,10 @@ export class RuntimeData {
   mailboxes: string[] = [];
   mailboxesCreate: string[] = []; // RFC 5490 :create
   flags: string[] = [];
+  /** The internal flag set was built from a value the engine could not hold
+   * whole (see Mark): hasflag over it cannot answer for the whole input. A
+   * setflag of values held whole, or a discard, clears it. */
+  flagsMarked = false;
   keep = false;
   implicitKeep = true;
 
@@ -420,6 +424,7 @@ export class RuntimeData {
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];
     c.flags = [...this.flags];
+    c.flagsMarked = this.flagsMarked;
     c.keep = this.keep;
     c.implicitKeep = this.implicitKeep;
     c.rejected = this.rejected;
