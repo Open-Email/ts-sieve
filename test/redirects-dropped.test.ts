@@ -4,17 +4,20 @@
 // from a value it could not hold whole (a cut prefix, a capture an unknown
 // doubted; see disclose-per-value.test.ts), and one past maxRedirects. Both
 // set indeterminate, which says the run guessed, not that a forward did not
-// go, or how many. The host never sees these addresses, so it could not count
-// them with the forwards it withholds itself (core's meta.sieve.withheld):
-// redirectsDropped does. A redirect the host's own policy refused is its own
-// decision, and a repeat of a target held is no new target: neither is a
-// drop. fileintosDropped counts the fileintos dropped past maxFileintos.
+// go, or how many. The host never sees these addresses, so it could not say
+// why such a forward did not go: redirectsDropped counts them. A redirect the
+// host's own policy refused is its own decision, and a repeat of a target
+// held is no new target: neither is a drop. fileintosDropped counts the
+// fileintos dropped past maxFileintos.
 //
 // Both count commands run, not addresses or names: in a loop one command is
-// dropped once per iteration.
+// dropped once per iteration. So a host reports redirectsDropped beside the
+// forwards it withholds itself (core's meta.sieve.withheld, which counts
+// addresses), not added to them. Only commands that ran are counted.
 
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type PolicyReader, type RuntimeData } from "../src/index.js";
+import { Reporter } from "./dovecot/harness.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
 const CORE = { maxMatchInputLength: 16 * 1024 };
@@ -108,5 +111,40 @@ describe("fileintosDropped", () => {
     expect([marked.mailboxes.length, marked.fileintosDropped]).toEqual([1, 0]);
     const redirect = exec('require "fileinto"; redirect "a@x.test"; redirect "b@x.test"; fileinto "A";', plain, { maxRedirects: 1 });
     expect([redirect.redirectsDropped, redirect.fileintosDropped]).toEqual([1, 0]);
+  });
+});
+
+describe("both counts", () => {
+  it("count a drop with :copy, which keeps the message as well", () => {
+    const d = exec(
+      `require ["variables","copy","fileinto"]; ${STORE} redirect :copy "\${a}"; redirect :copy "a@x.test"; redirect :copy "b@x.test"; fileinto :copy "A"; fileinto :copy "B";`,
+      longTo,
+      { maxRedirects: 1, maxFileintos: 1 },
+    );
+    expect([d.redirectAddr, d.redirectsDropped, d.mailboxes, d.fileintosDropped]).toEqual([["a@x.test"], 2, ["A"], 1]);
+  });
+
+  it("count a drop in an arm an unknown chose, and nothing in an arm it kept from running", () => {
+    const m = `From: a@x\r\nTo: b@y\r\n${LONG_TO}Subject: ${"x".repeat(20_000)}\r\n\r\nbody\r\n`;
+    const U = 'header :matches "subject" "*zzz"';
+    const arm = 'redirect "${a}"; redirect "b@x.test"; fileinto "F";';
+    const REQ = `require ["variables","fileinto"]; ${STORE}`;
+    const limits = { maxRedirects: 0, maxFileintos: 0 };
+    const chosen = exec(`${REQ} if ${U} {} else { ${arm} }`, m, limits);
+    expect([chosen.redirectsDropped, chosen.fileintosDropped, chosen.indeterminate]).toEqual([2, 1, true]);
+    // Not run: only indeterminate discloses it.
+    const skipped = exec(`${REQ} if ${U} { ${arm} }`, m, limits);
+    expect([skipped.redirectsDropped, skipped.fileintosDropped, skipped.indeterminate]).toEqual([0, 0, true]);
+  });
+
+  it("are not reset by a testsuite test block", () => {
+    const script = `require ["vnd.dovecot.testsuite","fileinto"];
+      test "A" { redirect "a@x.test"; fileinto "A"; }
+      test "B" { redirect "b@x.test"; fileinto "B"; }`;
+    const reporter = new Reporter();
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, testEnv: reporter, maxRedirects: 0, maxFileintos: 0 });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(0, new Map(), null));
+    s.execute(d);
+    expect([reporter.failures, d.redirectsDropped, d.fileintosDropped]).toEqual([[], 2, 2]);
   });
 });

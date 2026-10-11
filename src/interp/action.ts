@@ -129,8 +129,9 @@ export class CmdFileInto implements Cmd {
     // 5232 §5).
     const held = names.keys.has(mailbox);
     if (!held && d.mailboxes.length >= d.script.opts.maxFileintos) {
-      // Dropped, with nothing else it would have done: inside a loop the
-      // message chooses how many targets there are (see maxFileintos).
+      // Dropped, with nothing else it would have done, disclosed and counted:
+      // inside a loop the message chooses how many targets there are (see
+      // maxFileintos).
       d.indeterminate = true;
       d.fileintosDropped++;
       return;
@@ -207,8 +208,8 @@ export class CmdRedirect implements Cmd {
       return;
     }
     if (d.redirectAddr.length >= d.script.opts.maxRedirects) {
-      // Dropped and disclosed, not thrown: a throw fails the whole script, and
-      // a host's fail-open turns that into every rule skipped.
+      // Dropped, disclosed and counted, not thrown: a throw fails the whole
+      // script, and a host's fail-open turns that into every rule skipped.
       d.indeterminate = true;
       d.redirectsDropped++;
       return;

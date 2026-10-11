@@ -301,16 +301,20 @@ export class RuntimeData {
    * (see withShare). The script completed; this says why it guessed. */
   budgetExhausted = false;
 
-  /** Redirects the engine dropped, each disclosed on indeterminate: one to an
-   * address built from a value it could not hold whole (see Mark), or one
-   * past maxRedirects. Its address is in no list, so this is how a host can
-   * say a forward did not go. It counts redirects run, not addresses: a loop
-   * drops one redirect once per iteration, to the same address or not. A
-   * redirect the host's policy refused, or a repeat of a target held, is no
-   * drop. */
+  /** Redirects that ran and the engine dropped, each disclosed on
+   * indeterminate: one to an address built from a value it could not hold
+   * whole (see Mark), or one past maxRedirects, which never reached the
+   * host's policy and so may be one it would have refused. Their addresses
+   * are in no list. It counts redirects run, not addresses: a loop drops one
+   * redirect once per iteration, to the same address or not. A host reports
+   * it beside the forwards it withholds, as its own number: those are
+   * addresses. A redirect in an arm an unknown kept from running, or in a
+   * loop iteration missed, did not run: it is neither here nor in
+   * redirectsOnGuess, and only indeterminate discloses it. A redirect the
+   * host's policy refused, or a repeat of a target held, is no drop. */
   redirectsDropped = 0;
-  /** Fileintos dropped past maxFileintos, counted as redirectsDropped is: per
-   * fileinto run, not per name. */
+  /** Fileintos that ran and were dropped past maxFileintos, counted as
+   * redirectsDropped is: per fileinto run, not per name. */
   fileintosDropped = 0;
 
   redirectAddr: string[] = [];
