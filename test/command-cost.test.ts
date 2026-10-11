@@ -378,6 +378,10 @@ describe("a test is charged per header name, and per value by its size", () => {
     };
     expect(one(words) - one("s")).toBeGreaterThanOrEqual(10 * 1500);
     expect(one(crlf) - one("s")).toBeGreaterThanOrEqual(10 * (crlf.length >> 6));
+    // The decoder resumes inside a word that does not decode (#67), so a
+    // chain of them, each one's closing "=" opening the next, is a word a link.
+    const chain = `${"=?x?b?!!!?".repeat(1500)}=`;
+    expect(one(chain) - one("s")).toBeGreaterThanOrEqual(10 * 1500);
   });
 
   it("body :content, per type per part", () => {
