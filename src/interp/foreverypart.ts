@@ -94,9 +94,10 @@ export class CmdExtractText implements Cmd {
         }
       }
     }
-    if (!exact) d.indeterminate = true;
-    // Each discloses its own cut to the variable size limit.
-    setVar(d, this.name, applySetModifiers(d, this.modifiers, value));
+    // Text a cut left incomplete is a prefix of the real text (see Mark), and
+    // so is a value the variable's size limit cuts.
+    const marked = applySetModifiers(d, this.modifiers, value, exact ? "" : "prefix");
+    setVar(d, this.name, marked.value, marked.mark);
   }
 }
 

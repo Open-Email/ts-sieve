@@ -15,8 +15,11 @@ const CUT = { bodyTruncated: true };
 const one = (body: string, ct = "text/plain") => `From: a@x\r\nTo: b@y\r\nContent-Type: ${ct}\r\n\r\n${body}`;
 const extract = (args: string) =>
   `require ["foreverypart","extracttext","variables","fileinto"];
-   foreverypart { extracttext ${args} "t"; fileinto "[\${t}]"; }`;
+   foreverypart { extracttext ${args} "t"; fileinto "[\${t}]"; if string :contains "\${t}" "~never~" { stop; } }`;
 
+// Each script reads `t` for a key it never holds: false over whole text,
+// unknown over a marked value, which then discloses (see the README's
+// indeterminate: a value is marked, not the run).
 describe("extracttext", () => {
   it("a whole part is exact", () => {
     expect(run(extract(""), one("hello world"))).toEqual(R({ fileinto: ["[hello world]"] }));
@@ -98,7 +101,7 @@ describe("the variable size limit", () => {
 });
 
 describe("decoding", () => {
-  const ex = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; fileinto "[${t}]"; }';
+  const ex = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } }';
 
   it("quoted-printable and base64", () => {
     expect(runBytes(ex, "text/plain; charset=utf-8", ascii("caf=C3=A9"), { cte: "quoted-printable" }).fileinto).toEqual(["[café]"]);
@@ -141,7 +144,7 @@ describe("decoding", () => {
 });
 
 describe("a cut left open in the decoding", () => {
-  const ex = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; fileinto "[${t}]"; }';
+  const ex = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } }';
 
   it("inside a UTF-8 sequence, a QP escape, an HTML entity", () => {
     expect(runBytes(ex, "text/plain; charset=utf-8", [...ascii("caf"), 0xc3], { cut: true })).toEqual({ fileinto: ["[caf]"], indeterminate: true });
@@ -154,7 +157,9 @@ describe("a cut left open in the decoding", () => {
 
   // The loop breaks once it has the text, so it discloses nothing itself:
   // only extracttext's own disclosure can set indeterminate.
-  const found = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; if string :contains "${t}" "hello" { fileinto "[${t}]"; break; } }';
+  // "hello" is in the prefix, so the rule decides; the probe after it can only
+  // be unknown if the nested part's cut marked the text.
+  const found = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; if string :contains "${t}" "hello" { fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } break; } }';
 
   it("inside a part nested in a multipart", () => {
     const eml =
@@ -168,7 +173,7 @@ describe("a cut left open in the decoding", () => {
   });
 
   it("a UTF-16 code unit split by the cut, whichever byte order", () => {
-    const first2 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 2 "t"; fileinto "[${t}]"; }';
+    const first2 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 2 "t"; fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } }';
     const utf16 = (b: number[]) => runBytes(first2, "text/plain; charset=utf-16", b, { cut: true });
     // Little-endian behind its BOM; big-endian behind its BOM and without one.
     expect(utf16([0xff, 0xfe, 0x68, 0, 0x69])).toEqual({ fileinto: ["[h]"], indeterminate: true });
@@ -177,12 +182,12 @@ describe("a cut left open in the decoding", () => {
   });
 
   it("a non-text leaf's character split by the cut", () => {
-    const first3 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 3 "t"; fileinto "[${t}]"; }';
+    const first3 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 3 "t"; fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } }';
     expect(runBytes(first3, "application/octet-stream", [0x61, 0x62, 0xc3], { cut: true })).toEqual({ fileinto: ["[ab]"], indeterminate: true });
   });
 
   it(":first exactly the characters read is exact", () => {
-    const first9 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 9 "t"; fileinto "[${t}]"; }';
+    const first9 = 'require ["foreverypart","extracttext","variables","fileinto"]; foreverypart { extracttext :first 9 "t"; fileinto "[${t}]"; if string :contains "${t}" "~never~" { stop; } }';
     expect(run(first9, one("hello wor"), CUT)).toEqual(R({ fileinto: ["[hello wor]"] }));
   });
 

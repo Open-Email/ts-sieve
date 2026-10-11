@@ -8,7 +8,7 @@
 import { decodeHeaderValue } from "./header.js";
 import { MatcherTest } from "./matcher.js";
 import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
-import { expandVars, expandVarsList } from "./variables.js";
+import { expandMarked, expandVars, expandVarsList } from "./variables.js";
 
 export interface HeaderEdit {
   action: "add" | "delete";
@@ -163,7 +163,13 @@ export class CmdDeleteHeader implements Cmd {
   shareIndex = 0;
 
   execute(d: RuntimeData): void {
-    const fieldName = expandVars(d, this.fieldName);
+    const { value: fieldName, mark } = expandMarked(d, this.fieldName);
+    // A name built from a value the engine could not hold whole is not the
+    // whole input's: nothing is deleted on it, and the guess is disclosed.
+    if (mark !== "") {
+      d.indeterminate = true;
+      return;
+    }
     if (!isValidHeaderName(fieldName)) return;
     if (isProtectedHeader(fieldName)) return; // RFC 5293 §6
 

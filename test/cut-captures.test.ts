@@ -15,6 +15,9 @@ import { ALL_EXTENSIONS, run } from "./harness.js";
 const CORE = { options: { maxMatchInputLength: 16 * 1024 } };
 const subject = (s: string) => `From: a@x\r\nTo: b@y\r\nSubject: ${s}\r\n\r\nbody\r\n`;
 const long = `${"x".repeat(18_000)} unsubscribe`;
+/** A rule that reads `v` for a key it never holds: false over a whole value,
+ * unknown over a marked one, which then discloses. */
+const probe = (v: string) => `if string :contains "\${${v}}" "~never~" { stop; }`;
 
 describe("a capture from a cut input", () => {
   it("is disclosed when a rule reads it", () => {
@@ -23,12 +26,12 @@ describe("a capture from a cut input", () => {
   });
 
   it("is disclosed through set as well", () => {
-    const script = 'require ["variables"]; if header :matches "subject" "x*" { set "v" "${1}"; }';
+    const script = `require ["variables"]; if header :matches "subject" "x*" { set "v" "\${1}"; } ${probe("v")}`;
     expect(run(script, subject(long), CORE).indeterminate).toBe(true);
   });
 
   it("and from :regex", () => {
-    const script = 'require ["variables","regex","fileinto"]; if header :regex "subject" "^(x+)" { fileinto "${1}"; }';
+    const script = `require ["variables","regex","fileinto"]; if header :regex "subject" "^(x+)" { ${probe("1")} }`;
     expect(run(script, subject(long), CORE).indeterminate).toBe(true);
   });
 
@@ -53,9 +56,7 @@ describe("a capture from a cut input", () => {
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(0, new Map([["subject", [long]]]), null));
     s.execute(d);
     const c = d.clone();
-    expect(c.indeterminate).toBe(false);
-    c.matchVariable(1);
-    expect(c.indeterminate).toBe(true);
+    expect([c.indeterminate, c.captureMark(1)]).toEqual([false, "prefix"]);
   });
 });
 
@@ -100,7 +101,7 @@ describe("captures an absorbed unknown leaves behind", () => {
     // Over the whole input the :regex matches and its captures replace From's.
     const script = `require ["variables","regex","fileinto"]; if header :matches "from" "*@*" { }
       if allof (header :regex "subject" "((a|b|c|d|e|f|g|h)+)c", header :is "x-none" "z") { }
-      fileinto "\${2}";`;
+      fileinto "\${2}"; ${probe("2")}`;
     const eml = msg(`From: a@spam.example\r\nSubject: ${"ab".repeat(8000)}c`);
     expect(run(script, eml, { options: { ...CORE.options, maxExecSteps: 100_000 } })).toMatchObject({ fileinto: ["spam.example"], indeterminate: true });
   });
@@ -124,8 +125,7 @@ describe("captures an absorbed unknown leaves behind", () => {
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(0, headers, null));
     s.execute(d);
     const c = d.clone();
-    c.matchVariable(1);
-    expect(c.indeterminate).toBe(true);
+    expect(c.captureMark(1)).toBe("doubt");
   });
 
   it("an unknown in a member that still answered is no doubt: the whole input answers it alike", () => {
@@ -216,12 +216,12 @@ describe("captures an absorbed unknown leaves behind", () => {
 
 describe("the mark, more closely", () => {
   it("a body test in between restores the mark with the captures", () => {
-    const script = 'require ["variables","body"]; if header :matches "subject" "*" { if body :raw :matches "*" { } set "v" "${1}"; }';
+    const script = `require ["variables","body"]; if header :matches "subject" "*" { if body :raw :matches "*" { } set "v" "\${1}"; } ${probe("v")}`;
     expect(run(script, subject(long), CORE).indeterminate).toBe(true);
   });
 
   it("${0} of a cut match is disclosed", () => {
-    const script = 'require ["variables"]; if header :matches "subject" "x*" { set "v" "${0}"; }';
+    const script = `require ["variables"]; if header :matches "subject" "x*" { set "v" "\${0}"; } ${probe("v")}`;
     expect(run(script, subject(long), CORE).indeterminate).toBe(true);
   });
 

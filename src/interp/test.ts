@@ -502,6 +502,9 @@ export class HasFlagTest implements Test {
     let flags: string[];
     if (this.variables.length > 0) {
       const lists = this.variables.map((v) => d.variables.get(v.toLowerCase()) ?? "");
+      // A flag variable stored from a marked value (see Mark) is read here,
+      // not through an expansion: the test cannot answer for the whole input.
+      if (this.variables.some((v) => d.varMarks.has(v.toLowerCase()))) d.testDoubt = true;
       chargeFlags(d, lists);
       flags = canonicalFlags(lists, null, d.flagAliases).filter((f) => f !== "");
     } else {

@@ -3,7 +3,7 @@
 // (expandVars is identity when the script does not require `variables`).
 
 import { type Cmd, type RuntimeData, StopSignal } from "./runtime.js";
-import { expandVars, expandVarsList, setVar } from "./variables.js";
+import { expandMarked, expandVars, expandVarsList, setVar } from "./variables.js";
 
 /**
  * Normalise a flag list: split space-delimited flags, apply aliases, lowercase
@@ -172,7 +172,14 @@ export class CmdRedirect implements Cmd {
   private literalKey: string | null = null;
 
   execute(d: RuntimeData): void {
-    const addr = expandVars(d, this.addr);
+    const { value: addr, mark } = expandMarked(d, this.addr);
+    // An address built from a value the engine could not hold whole is not
+    // the whole input's address, and a forward cannot be recalled: dropped,
+    // and disclosed (see Mark).
+    if (mark !== "") {
+      d.indeterminate = true;
+      return;
+    }
     // An address is redirected to once (as in Pigeonhole), and a repeat is no
     // new target: a loop redirecting once per matching part is not limited by
     // how many match. The host's policy is not asked again for an address it
@@ -219,6 +226,20 @@ export class CmdDiscard implements Cmd {
 }
 
 /** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
+/** The flags a command names, expanded, and whether any came from a marked
+ * value (see Mark): a canonical list rebuilt from one may differ anywhere, so
+ * a flag variable stored from it is in doubt. */
+function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: boolean; literal: boolean } {
+  let doubt = false;
+  const literal = list.every((f) => !f.includes("${"));
+  const flags = list.map((f) => {
+    const { value, mark } = expandMarked(d, f);
+    if (mark !== "") doubt = true;
+    return value;
+  });
+  return { flags, doubt, literal };
+}
+
 function flagVar(d: RuntimeData, name: string): string[] {
   const v = d.variables.get(name.toLowerCase());
   return v ? [v] : [];
@@ -244,10 +265,11 @@ export class CmdSetFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     chargeFlags(d, flags);
     if (this.variableName !== null) {
-      setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "));
+      // A literal list is the script's own value: its cut is no mark (as set's).
+      setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "), doubt ? "doubt" : "", !literal);
     } else {
       d.flags = canonicalFlags(flags, null, d.flagAliases);
     }
@@ -259,10 +281,11 @@ export class CmdAddFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     if (this.variableName !== null) {
       chargeFlags(d, flagVar(d, this.variableName), flags);
-      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "));
+      const held = d.varMarks.has(this.variableName.toLowerCase());
+      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "), doubt || held ? "doubt" : "", !literal || held);
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags([...d.flags, ...flags], null, d.flagAliases);
@@ -275,10 +298,11 @@ export class CmdRemoveFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     if (this.variableName !== null) {
       chargeFlags(d, flagVar(d, this.variableName), flags);
-      setVar(d, this.variableName, canonicalFlagsOrdered(flagVar(d, this.variableName), flags, d.flagAliases).join(" "));
+      const held = d.varMarks.has(this.variableName.toLowerCase());
+      setVar(d, this.variableName, canonicalFlagsOrdered(flagVar(d, this.variableName), flags, d.flagAliases).join(" "), doubt || held ? "doubt" : "", !literal || held);
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags(d.flags, flags, d.flagAliases);
