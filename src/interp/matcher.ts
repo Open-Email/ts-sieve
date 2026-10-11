@@ -14,7 +14,7 @@ import {
   testStringPrefix,
   toLowerASCII,
 } from "./matching.js";
-import { byteLen, type CompiledRegex, compileRegex, patternToRegex } from "./regex.js";
+import { byteLen, type CompiledRegex, compileRegex, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
 import {
   RELATIONAL_OPS,
   compareNumericValue,
@@ -259,8 +259,10 @@ export class MatcherTest {
    * the verdict it supports is not returned.
    */
   tryMatch(d: RuntimeData, source: string, opts: MatchOptions, sourceTruncated = false): Tri {
-    const reOpts = { maxInputLength: opts.maxMatchInputLength || undefined, budget: d.budget };
-    const cap = opts.maxMatchInputLength || 0;
+    // The engine cuts every :matches/:regex input: at the host's cap, or at its
+    // own default when the host sets none. Either cut leaves a prefix.
+    const cap = opts.maxMatchInputLength || MAX_INPUT_LENGTH;
+    const reOpts = { maxInputLength: cap, budget: d.budget };
     let unknown = false;
     for (let i = 0; i < this.key.length; i++) {
       d.budget.consume(1);
@@ -271,7 +273,7 @@ export class MatcherTest {
           unknown = true;
           continue;
         }
-        const truncated = sourceTruncated || (cap > 0 && byteLen(source) > cap);
+        const truncated = sourceTruncated || byteLen(source) > cap;
         const caps = re.findSubmatch(source, reOpts);
         if (caps !== null) {
           if (!truncated || (this.soundKeys[i] ?? globEndsWithStar(pattern))) {
@@ -299,7 +301,7 @@ export class MatcherTest {
           unknown = true;
           continue;
         }
-        const truncated = sourceTruncated || (cap > 0 && byteLen(value) > cap);
+        const truncated = sourceTruncated || byteLen(value) > cap;
         const caps = re.findSubmatch(value, reOpts);
         if (caps !== null) {
           // Search semantics: a hit inside the prefix is a hit in the whole,

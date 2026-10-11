@@ -11,7 +11,8 @@
 import { SieveError } from "../errors.js";
 
 const MAX_PATTERN_LENGTH = 1000;
-const MAX_INPUT_LENGTH = 256 * 1024;
+/** The match-input cut when the host sets no maxMatchInputLength. */
+export const MAX_INPUT_LENGTH = 256 * 1024;
 // {n,m} repetition is compiled by expansion, so a small count in the pattern can
 // multiply into a huge program ("a{999999999}" is 12 chars). Cap the counts (like
 // RE2's 1000) and the total compiled program size so compile work stays bounded
@@ -674,9 +675,12 @@ const encoder = new TextEncoder();
 export function byteLen(s: string): number {
   return encoder.encode(s).length;
 }
+/** The longest prefix of s within maxBytes. A character the byte cut splits is
+ * dropped, not decoded as U+FFFD: the cut input is matched as a prefix of the
+ * real one, and a U+FFFD there is content the real input does not have. */
 function truncateToBytes(s: string, maxBytes: number): string {
   const bytes = encoder.encode(s);
-  return new TextDecoder().decode(bytes.subarray(0, maxBytes));
+  return new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true });
 }
 
 /** Compile a regex pattern, enforcing the compile-time pattern-length cap. */

@@ -29,9 +29,22 @@ export function splitSubaddress(localPart: string): { user: string; detail: stri
   return { user: localPart.slice(0, idx), detail: localPart.slice(idx + SUBADDRESS_SEPARATOR.length) };
 }
 
-/** Remove RFC 2822 comments (text in parentheses) and trim. */
+/** Remove RFC 2822 comments (text in parentheses) and trim: each "(" up to
+ * the first ")" after it, unnested. One scan: a regular expression retried
+ * the search for ")" from every "(" and went quadratic on a header of many
+ * "(" with none, which no match-input cap bounds. */
 export function stripRFC2822Comments(addr: string): string {
-  return addr.replace(/\([^)]*\)/g, "").trim();
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const open = addr.indexOf("(", i);
+    if (open === -1) break;
+    const close = addr.indexOf(")", open + 1);
+    if (close === -1) break; // no ")" left, so no later "(" closes either
+    out += addr.slice(i, open);
+    i = close + 1;
+  }
+  return (out + addr.slice(i)).trim();
 }
 
 /**
