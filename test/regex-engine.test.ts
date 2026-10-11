@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { compileRegex, patternToRegex } from "../src/interp/regex.js";
-import { R, run } from "./harness.js";
 
 function m(pattern: string, input: string): string[] | null {
   return compileRegex(pattern).findSubmatch(input);
@@ -72,6 +71,7 @@ describe("regex engine", () => {
     expect(classes(compileRegex(`[^${"\\W".repeat(400)}]`))[0]!.ranges).toHaveLength(5);
     expect(m("^[ac]$", "b")).toBeNull(); // adjacent only when they touch
     expect(m("^[a-zc]$", "z")).not.toBeNull(); // a range inside another keeps the outer end
+    expect(m("^\\W$", "_")).toBeNull(); // \w's constant is unsorted ("_" last); its class is not
   });
 
   it("every copy of a repeated class shares one ranges array", () => {
