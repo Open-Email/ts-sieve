@@ -29,6 +29,8 @@ export const ALL_EXTENSIONS = [
   "body",
   "reject",
   "ereject",
+  "mime",
+  "foreverypart",
 ];
 
 export interface Result {

@@ -8,6 +8,7 @@
 import { SieveError } from "../errors.js";
 import type { Position } from "../parser/command.js";
 import type { HeaderEdit } from "./editheader.js";
+import type { MimePart } from "./mime.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
@@ -239,12 +240,23 @@ export class RuntimeData {
 
   /** RFC 5293 editheader ledger, replayed over raw header values on every read. */
   headerEdits: HeaderEdit[] = [];
+  /** Characters of the values headerEdits adds (editheader.ts caps it). */
+  headerEditBytes = 0;
 
   /** RFC 5229 user variables (keyed by lowercased name). */
   variables: Map<string, string> = new Map();
 
   /** Match variables ${0..N}: [0] = whole match, [1..] = capture groups. */
   matchVariables: string[] = [];
+
+  /** Folds of large values, per fold kind, for this execution (matcher.ts
+   * foldOnce). */
+  foldCache: Map<string, Map<string, string>> = new Map();
+  /** UTF-16 units foldCache holds, values and folds together. */
+  foldCacheUnits = 0;
+
+  /** RFC 5703: the part each running foreverypart has reached, innermost last. */
+  partStack: MimePart[] = [];
 
   /**
    * RFC 5230 vacation intents, keyed by envelope-from sender. The library only
@@ -312,8 +324,10 @@ export class RuntimeData {
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
+    c.headerEditBytes = this.headerEditBytes;
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
+    c.partStack = [...this.partStack];
     c.vacationResponses = new Map(this.vacationResponses);
     c.testName = this.testName;
     c.testFailMessage = this.testFailMessage;
