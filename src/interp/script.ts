@@ -21,7 +21,8 @@ export interface Options {
   maxVariableCount?: number;
   maxVariableNameLen?: number;
   maxVariableLen?: number;
-  /** Truncate a matched value to this many chars before `:matches` (0 = no cap). */
+  /** Cut a `:matches`/`:regex` input to this many UTF-8 bytes (0 = the engine's
+   * default, 256 KiB). A comparison over a cut input is three-valued. */
   maxMatchInputLength?: number;
   /**
    * Cooperative CPU budget: total interpreter "steps" (command dispatch, match

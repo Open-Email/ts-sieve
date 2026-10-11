@@ -61,10 +61,9 @@ the caps below is "unknown"), and a test that runs out of its share of
 `maxExecSteps` answers "unknown" while the script runs on (`budgetExhausted`).
 A `:matches`/`:regex` key holding a variable reference compiles when the test
 runs; if the expanded text does not compile, or is past the pattern-length
-cap, the comparison is "unknown" rather than an error. Paths from message
-content to a throw that remain are tracked as issues (a `:regex` key nested
-deep enough to overflow the matcher's stack, #21; an `envelope` test whose
-envelope-part comes from a variable, #36).
+cap, the comparison is "unknown" rather than an error. One path from message
+content to a throw remains and is tracked as an issue: an `envelope` test
+whose envelope-part comes from a variable (#36).
 
 ### What the host implements
 
@@ -133,13 +132,17 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxBlockNesting` / `maxTestNesting` | 15 / 15 | parser nesting caps |
 | `maxRedirects` | 5 | `redirect` actions per execution |
 | `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 32 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe) |
-| `maxMatchInputLength` | 0 (off) | truncate values before `:matches`/`:regex` |
+| `maxMatchInputLength` | 0 (engine default, 256 KiB) | truncate values before `:matches`/`:regex`; a comparison over a cut value is three-valued |
 | `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256 KiB
-(byte-truncated), and it charges every VM step to the execution budget.
+compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, ≤ 250 nested
+groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
+deepen it too; a `{n,}` counts twice), input ≤ 256 KiB unless
+`maxMatchInputLength` sets another cut (byte-truncated at a character
+boundary, and evaluated as a cut), and it charges every VM step to the
+execution budget.
 
 ## Robustness properties
 
@@ -203,7 +206,9 @@ on them and this one follows the RFC strictly:
   boundaries, last-value headers). It descends at most 100 levels (Dovecot's
   limit) and visits at most 1024 parts; a no-match that depends on structure
   past either cap is "unknown" (`indeterminate`), as for a body the host's read
-  window cut.
+  window cut. A part that window cut is decoded and reduced to text only as far
+  as the cut proves: a character, quoted-printable escape, HTML construct or
+  character reference left open at the cut is dropped, never guessed.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of

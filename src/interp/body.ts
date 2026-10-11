@@ -27,11 +27,15 @@ function binaryToBytes(s: string): Uint8Array {
 
 // -------- transfer-encoding decode --------
 
-function qpDecode(bytes: Uint8Array): Uint8Array {
+/** `cut`: the bytes are a prefix of the encoded part, so an escape (or soft
+ * break) the cut split is dropped: its meaning lies past the cut, and kept as
+ * text it would be content the part does not have. */
+function qpDecode(bytes: Uint8Array, cut: boolean): Uint8Array {
   const out: number[] = [];
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i]!;
     if (b === 0x3d /* = */) {
+      if (cut && i + 2 >= bytes.length) break;
       const h1 = bytes[i + 1];
       const h2 = bytes[i + 2];
       if (h1 === 0x0d && h2 === 0x0a) {
@@ -111,21 +115,25 @@ function base64Decode(bytes: Uint8Array): Uint8Array {
   return out.subarray(0, o);
 }
 
-/** Returns transfer-decoded bytes, or null on an unknown encoding (skip part). */
-function cteDecode(bytes: Uint8Array, cte: string): Uint8Array | null {
+/** Returns transfer-decoded bytes, or null on an unknown encoding (skip part).
+ * `cut`: the bytes are a prefix of the part, and decode to a prefix of it. */
+function cteDecode(bytes: Uint8Array, cte: string, cut: boolean): Uint8Array | null {
   const e = cte.toLowerCase().trim();
   if (e === "" || e === "7bit" || e === "8bit" || e === "binary") return bytes;
   if (e === "base64") return base64Decode(bytes);
-  if (e === "quoted-printable") return qpDecode(bytes);
+  if (e === "quoted-printable") return qpDecode(bytes, cut);
   return null;
 }
 
 // -------- charset decode --------
 
-function charsetDecode(bytes: Uint8Array, charset: string): string {
+/** `cut`: the bytes are a prefix of the part, so a character the cut split is
+ * dropped (a streaming decode holds it back) rather than decoded as U+FFFD,
+ * which would be content the part does not have. */
+function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string {
   const cs = charset.toLowerCase().trim();
   if (cs === "" || cs === "utf-8" || cs === "utf8" || cs === "us-ascii" || cs === "ascii") {
-    return new TextDecoder("utf-8").decode(bytes);
+    return new TextDecoder("utf-8").decode(bytes, { stream: cut });
   }
   if (cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") {
     // True Latin-1 (byte → code point). TextDecoder maps this label to cp1252.
@@ -134,7 +142,7 @@ function charsetDecode(bytes: Uint8Array, charset: string): string {
     return s;
   }
   try {
-    return new TextDecoder(cs, { fatal: false }).decode(bytes);
+    return new TextDecoder(cs, { fatal: false }).decode(bytes, { stream: cut });
   } catch {
     return bytesToBinary(bytes); // unknown charset ⇒ keep raw (tolerate unknown charsets)
   }
@@ -437,18 +445,19 @@ export class TestBody implements Test {
 
     // leaf
     if (!process) return false;
-    // Decoding never throws (see base64Decode): a cut leaf decodes to a prefix
-    // of its content, which matchOrCount then reads under prefix semantics.
-    const decoded = cteDecode(binaryToBytes(b), cteHeader);
+    // Decoding never throws (see base64Decode). A cut leaf decodes to a prefix
+    // of its content, which matchOrCount then reads under prefix semantics, so
+    // every step below drops what the cut left open instead of guessing it.
+    const decoded = cteDecode(binaryToBytes(b), cteHeader, cut);
     if (decoded === null) return false; // unknown transfer-encoding → skip
     let text: string;
     if (mediaType.startsWith("text/")) {
-      text = charsetDecode(decoded, params["charset"] ?? "us-ascii");
+      text = charsetDecode(decoded, params["charset"] ?? "us-ascii", cut);
     } else {
       text = bytesToBinary(decoded); // non-text leaf: raw transfer-decoded octets
     }
     if (this.text && (mediaType === "text/html" || mediaType === "application/xhtml+xml")) {
-      text = htmlToText(text);
+      text = htmlToText(text, cut);
     }
     return this.matchOrCount(d, text, counter, cut, flags);
   }
