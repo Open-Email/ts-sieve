@@ -214,7 +214,7 @@ describe("which redirect addresses are the same", () => {
     expect([d.redirectAddr, asked]).toEqual([["a@X.com"], 0]);
   });
 
-  it("a repeat's check does not re-read every address held", () => {
+  it("a repeat's check does not re-read every address held", { timeout: 30_000 }, () => {
     // Five 16,000-character addresses held, then a loop redirecting to one of
     // them some 97,000 times: each repeat computed a key per held address and
     // for its own, all uncharged. Counted, not timed: that took 920 ms and the

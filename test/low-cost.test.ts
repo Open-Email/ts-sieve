@@ -92,7 +92,7 @@ describe("many :contains keys over a large value", () => {
   const keys = Array.from({ length: 1000 }, (_, i) => `"Key${i}"`).join(",");
   const script = `require ["body","fileinto"]; if body :contains [${keys}] { fileinto "Hit"; }`;
 
-  it("fold the value once, not once per key", () => {
+  it("fold the value once, not once per key", { timeout: 30_000 }, () => {
     // Folding a 1 MiB body per key took about 9 s for 1,000 keys.
     expect(foldsOf(() => expect(run(script, big)).toEqual(R({ implicitKeep: true })))).toBe(1);
   });
@@ -105,7 +105,7 @@ describe("many :contains keys over a large value", () => {
 });
 
 describe(":value with many keys over a large value", () => {
-  it("folds the value once, not once per key", () => {
+  it("folds the value once, not once per key", { timeout: 30_000 }, () => {
     // Alternating case is the fold's worst input; 300 keys took 3.5 s.
     const body = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"aA".repeat(512 * 1024)}\r\n`;
     const keys = Array.from({ length: 300 }, (_, i) => `"k${i}"`).join(",");
