@@ -336,21 +336,62 @@ describe("the splitter's cost", () => {
   });
 });
 
+/** How many times String.prototype[name] ran on `body` while `f` ran:
+ * counted by a wrapper, not a spy, which would keep every call it saw (a
+ * search that read each byte many times ran out of memory under one). */
+function callsOn(name: "charCodeAt" | "startsWith", body: string, f: () => void): number {
+  const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const original = proto[name]!;
+  let n = 0;
+  proto[name] = function (this: string, ...args: unknown[]) {
+    if (this === body) n++;
+    return original.apply(this, args);
+  };
+  try {
+    f();
+  } finally {
+    proto[name] = original;
+  }
+  return n;
+}
+
 describe("the delimiter search's cost", () => {
   // The splitter cannot reach the search with a boundary that holds a line
   // break (no line can hold a delimiter then), but the search is linear on
   // its own terms. Over 1 MB of the first boundary's near-matches indexOf
   // took 30 s; over half a megabyte of the second's, comparing the rest of
-  // the boundary after each hit of its head took 20 s, as a comparison runs
-  // on over the hits after it.
-  const cases = ["\n".repeat(262_144), `${"q\n--".repeat(32_768)}q`].map((boundary) => {
-    const b = `\n--${boundary.slice(0, -1)}#`.repeat(4) + `\n--${boundary}`;
+  // the boundary after each hit of its head took 20 s run alone (3 s once V8
+  // had optimized it: see the count below), as a comparison runs on over the
+  // hits after it.
+  const near = (boundary: string, n: number) => {
+    const b = `\n--${boundary.slice(0, -1)}#`.repeat(n) + `\n--${boundary}`;
     return { b, boundary, at: b.length - boundary.length - 3 };
-  });
+  };
+  const cases = [near("\n".repeat(262_144), 4), near(`${"q\n--".repeat(32_768)}q`, 4)];
 
   it("is linear over near-matches of a long boundary with a line break in it", () => {
     repeatedWithin(BOUND, 1, () => {
       for (const { b, boundary, at } of cases) expect(delimiterSearch("\n", boundary)(b, 0)).toBe(at);
     });
+  });
+
+  it("reads each byte of the body at most once for such a boundary, and compares nothing after a hit", () => {
+    // Once V8 has optimized the comparisons after each hit (as the tests
+    // before this one do, in one file), they ran over the second case above
+    // in 3 s, 1.5 times its bound: counted instead, over a smaller one, they
+    // are 3,853 calls, where Knuth-Morris-Pratt makes none and reads each
+    // byte at most once.
+    const { b, boundary, at } = near(`${"q\n--".repeat(1024)}q`, 4);
+    const search = delimiterSearch("\n", boundary);
+    let found = -1;
+    let compares = -1;
+    const reads = callsOn("charCodeAt", b, () => {
+      compares = callsOn("startsWith", b, () => (found = search(b, 0)));
+    });
+    expect(found).toBe(at);
+    expect(compares).toBe(0);
+    // At least one, so the count sees the search.
+    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeLessThanOrEqual(b.length);
   });
 });
