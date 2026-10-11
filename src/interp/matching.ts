@@ -17,18 +17,39 @@ export type Match = "is" | "contains" | "matches" | "value" | "count" | "regex";
 
 export type AddressPart = "all" | "localpart" | "domain" | "user" | "detail";
 
-/** ASCII-only lowercasing (i;ascii-casemap fold). */
+/** ASCII-only lowercasing (i;ascii-casemap fold). Runs of A–Z are lowered
+ * whole (toLowerCase maps them exactly as the fold does); building the result
+ * a character at a time made folding a large body slow. Linear: `[A-Z]+`
+ * cannot backtrack. */
 export function toLowerASCII(s: string): string {
-  let out = "";
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    out += c >= 65 && c <= 90 ? String.fromCharCode(c + 32) : s[i];
-  }
-  return out;
+  return s.replace(/[A-Z]+/g, (run) => run.toLowerCase());
 }
 
 export interface MatchOptions {
   maxMatchInputLength?: number;
+}
+
+/** The fold a comparator compares under: i;octet compares as is, and
+ * i;ascii-numeric compares numbers, never folded text. */
+export function comparatorFold(comparator: Comparator): (s: string) => string {
+  if (comparator === "i;ascii-casemap") return toLowerASCII;
+  if (comparator === "i;unicode-casemap") return (s) => s.toLowerCase();
+  return (s) => s;
+}
+
+/**
+ * `:is`/`:contains` of a folded key against a folded value. `truncated`: the
+ * value is a prefix of the real one, read as testStringPrefix reads it.
+ */
+export function compareFolded(match: Match, value: string, key: string, truncated: boolean): Tri {
+  switch (match) {
+    case "is":
+      return truncated ? (key.startsWith(value) ? "unknown" : false) : value === key;
+    case "contains":
+      return value.includes(key) ? true : truncated ? "unknown" : false;
+    default:
+      throw new SieveError(`match type '${match}' must not reach compareFolded`);
+  }
 }
 
 /**

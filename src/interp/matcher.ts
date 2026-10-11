@@ -10,6 +10,8 @@ import {
   type Comparator,
   type Match,
   type MatchOptions,
+  comparatorFold,
+  compareFolded,
   testString,
   testStringPrefix,
   toLowerASCII,
@@ -263,6 +265,7 @@ export class MatcherTest {
     // own default when the host sets none. Either cut leaves a prefix.
     const cap = opts.maxMatchInputLength || MAX_INPUT_LENGTH;
     const reOpts = { maxInputLength: cap, budget: d.budget };
+    let foldedSource: string | undefined;
     let unknown = false;
     for (let i = 0; i < this.key.length; i++) {
       d.budget.consume(1);
@@ -328,12 +331,21 @@ export class MatcherTest {
             if (compareString(this.relational, fold(source), fold(k))) return true;
           }
         }
-      } else if (sourceTruncated) {
-        const r = testStringPrefix(this.comparator, this.match, source, expandVars(d, key));
+      } else {
+        // :is/:contains. The value is folded once per comparison, not once per
+        // key, and each key is charged by its size, a step per KiB: 1,000 keys
+        // over a 1 MiB body took seconds, charged a step each.
+        d.budget.consume(source.length >> 10);
+        const k = expandVars(d, key);
+        let r: Tri;
+        if (this.comparator === "i;ascii-numeric") {
+          r = sourceTruncated ? testStringPrefix(this.comparator, this.match, source, k) : testString(this.comparator, this.match, source, k, opts);
+        } else {
+          foldedSource ??= comparatorFold(this.comparator)(source);
+          r = compareFolded(this.match, foldedSource, comparatorFold(this.comparator)(k), sourceTruncated);
+        }
         if (r === true) return true;
         if (r === "unknown") unknown = true;
-      } else if (testString(this.comparator, this.match, source, expandVars(d, key), opts)) {
-        return true;
       }
     }
     return unknown ? "unknown" : false;

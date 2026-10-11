@@ -115,7 +115,9 @@ export interface Message {
    */
   headerGet(key: string): string[];
   messageSize(): number;
-  /** Raw body bytes; null when unavailable (the `body` test then never matches). */
+  /** Raw body bytes; null when unavailable (the `body` test then never matches).
+   * Read once per Message object: the body test caches what it derives from
+   * it, so a host must not change the body behind an object mid-execution. */
   bodyRaw(): Uint8Array | null;
   /**
    * True when `bodyRaw()` is a PREFIX of the real body (the host read a bounded
