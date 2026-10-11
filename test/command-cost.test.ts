@@ -364,7 +364,7 @@ describe("a test is charged per header name, and per value by its size", () => {
   });
 
   it("RFC 2047: a step per encoded word, and CR or LF decoded at its rate", () => {
-    // A word costs a callback and a decoder, some 0.6 us, whatever its size.
+    // A word costs a decoder, some 0.6 us, whatever its size.
     const words = "=?utf-8?q?a?=".repeat(1500);
     const crlf = "a\r\n".repeat(4000);
     const one = (subject: string) => {

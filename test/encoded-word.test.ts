@@ -3,7 +3,7 @@
 // is what the user's client shows), so one malformed word cannot hide the
 // text of the others from a rule.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeHeaderValue } from "../src/interp/header.js";
 import { R, run } from "./harness.js";
 
@@ -49,5 +49,56 @@ describe("a header rule sees every word that decodes", () => {
 
   it("and the control, with no malformed word", () => {
     expect(run(script, eml("=?utf-8?b?dmlhZ3Jh?="))).toEqual(R({ fileinto: ["Junk"] }));
+  });
+});
+
+describe("a word that does not decode costs no more than one that does", () => {
+  // Each failed word was a thrown DOMException from atob, some 3 us apiece and
+  // uncharged at top level: a Subject of "=?=?b?" made 20 rules over 1 MiB take
+  // 14.6 s, against 0.16 s on the decoder that gave up at the first.
+  const failing = "=?=?b?".repeat(1 << 16);
+
+  it("no word is refused by a throw", () => {
+    const real = globalThis.atob;
+    let thrown = 0;
+    const spy = vi.spyOn(globalThis, "atob").mockImplementation((s: string) => {
+      try {
+        return real(s);
+      } catch (e) {
+        thrown++;
+        throw e;
+      }
+    });
+    try {
+      decodeHeaderValue(failing);
+      decodeHeaderValue("=?utf-8?b?dmlhZ3Jh?= =?utf-8?b?!!!?= =?utf-8?b?YQ?= =?utf-8?b?YQ=?= =?utf-8?b?Y?= =?utf-8?b?YQ==YQ==?=");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(thrown).toBe(0);
+  });
+
+  it("20 rules over a 1 MiB Subject of failed words", () => {
+    const subject = "=?=?b?".repeat((1 << 20) / 6);
+    const rules = Array.from({ length: 20 }, (_, i) => `if header :contains "subject" "k${i}" { fileinto "F${i}"; }`).join(" ");
+    const t0 = performance.now();
+    const r = run(`require "fileinto"; ${rules}`, `From: a@x\r\nSubject: ${subject}\r\n\r\nbody\r\n`, {
+      options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 },
+    });
+    // About 0.25 s fixed; the regression took 14.6 s.
+    expect(performance.now() - t0).toBeLessThan(3000);
+    expect(r.fileinto).toEqual([]);
+  });
+});
+
+describe("base64 is read as atob reads it", () => {
+  it("with or without its padding, and white space inside", () => {
+    expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("aaa");
+  });
+
+  it("refusing a stray or misplaced pad, a bad length or a bad character", () => {
+    for (const w of ["=?utf-8?b?YQ=?=", "=?utf-8?b?Y?=", "=?utf-8?b?YQ==YQ==?=", "=?utf-8?b?Y-Q=?=", "=?utf-8?b?YQ===?="]) {
+      expect(decodeHeaderValue(w)).toBe(w);
+    }
   });
 });

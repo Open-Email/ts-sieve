@@ -31,8 +31,14 @@ function qpToBytes(text: string): number[] {
   return bytes;
 }
 
-function base64ToBytes(text: string): number[] {
-  const bin = atob(text.replace(/\s+/g, ""));
+/** The bytes, or null where atob would throw: its forgiving base64 is
+ * checked first, since a thrown exception costs microseconds a word, and a
+ * header can hold a failed word every six characters (#67). */
+function base64ToBytes(text: string): number[] | null {
+  let t = text.replace(/\s+/g, "");
+  if (t.length % 4 === 0) t = t.replace(/={1,2}$/, "");
+  if (t.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(t)) return null;
+  const bin = atob(t);
   const out: number[] = [];
   for (let i = 0; i < bin.length; i++) out.push(bin.charCodeAt(i));
   return out;
@@ -71,13 +77,12 @@ export function decodeHeaderValue(raw: string): string {
   let pos = 0; // raw before pos is in out
   let afterWord = false; // out ends with a decoded word
   for (let m = word.exec(raw); m !== null; m = word.exec(raw)) {
-    let decoded: string;
-    try {
-      decoded = decodeBytes(m[2]!.toUpperCase() === "B" ? base64ToBytes(m[3]!) : qpToBytes(m[3]!), m[1]!);
-    } catch {
+    const bytes = m[2]!.toUpperCase() === "B" ? base64ToBytes(m[3]!) : qpToBytes(m[3]!);
+    if (bytes === null) {
       word.lastIndex = m.index + 2;
       continue;
     }
+    const decoded = decodeBytes(bytes, m[1]!);
     // Spaces and tabs separating two decoded words are dropped (RFC 2047
     // §6.2); any other text between them, a word that did not decode
     // included, is kept.
