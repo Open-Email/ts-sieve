@@ -6,7 +6,7 @@
 // charset-decoded to UTF-8; :text HTML parts are stripped to text. Everything is
 // linear/bounded (no backtracking regex on body content).
 
-import { contentType, hostValueBytes } from "./mediatype.js";
+import { contentType, rootHeaderBytes } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import { MatcherTest } from "./matcher.js";
 import type { Message, RuntimeData, Test, Tri } from "./runtime.js";
@@ -528,8 +528,8 @@ export class TestBody implements Test {
         return this.matcher.tryMatch(d, rawBinary(d.msg, raw), this.matchOpts(d), bodyCut);
       }
 
-      const topCt = hostValueBytes(d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii");
-      const topCte = hostValueBytes(d.msg.headerGet("content-transfer-encoding")[0] ?? "");
+      const topCt = rootHeaderBytes(d.msg, "content-type", "text/plain; charset=us-ascii");
+      const topCte = rootHeaderBytes(d.msg, "content-transfer-encoding");
       const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
       const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, "whole", flags, 0, "");

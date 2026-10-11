@@ -569,6 +569,17 @@ export function hostValueBytes(v: string): string {
   return out;
 }
 
+/** A raw root field, when supplied, owns both its bytes and its absence.
+ * Re-encoding a binary string would corrupt Latin-1 and UTF-8 boundaries. */
+export function rootHeaderBytes(
+  msg: import("./runtime.js").Message,
+  key: "content-type" | "content-transfer-encoding",
+  fallback = "",
+): string {
+  const raw = msg.mimeHeaderGet?.(key);
+  return raw === undefined ? hostValueBytes(msg.headerGet(key)[0] ?? fallback) : raw[0] ?? fallback;
+}
+
 /**
  * A part's Content-Type as core's walker reads it (go-message's
  * parseHeaderWithParams, then the walker's contentType): "" is text/plain; a

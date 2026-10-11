@@ -26,7 +26,7 @@ import {
   type InputEnd,
 } from "./body.js";
 import { decodeHeaderValue, getHeader } from "./header.js";
-import { hostValueBytes } from "./mediatype.js";
+import { rootHeaderBytes } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import type { Message, RuntimeData } from "./runtime.js";
 import type { SpecTag } from "./spec.js";
@@ -84,8 +84,8 @@ const trees = new WeakMap<Message, MimePart>();
 export function mimeTree(d: RuntimeData): MimePart {
   let root = trees.get(d.msg);
   if (root !== undefined) return root;
-  const contentType = hostValueBytes(d.msg.headerGet("content-type")[0] ?? "");
-  const cte = hostValueBytes(d.msg.headerGet("content-transfer-encoding")[0] ?? "");
+  const contentType = rootHeaderBytes(d.msg, "content-type");
+  const cte = rootHeaderBytes(d.msg, "content-transfer-encoding");
   const raw = d.msg.bodyRaw();
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
