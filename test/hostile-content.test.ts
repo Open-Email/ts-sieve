@@ -122,3 +122,23 @@ describe(":matches captures over a large input", () => {
     expect(run('require "body"; if body :raw :matches "*" { keep; }', eml)).toEqual(kept);
   });
 });
+
+describe("linear comment stripping in raw header values", () => {
+  it("unclosed parenthesis in From header does not stall quadratically", () => {
+    const fromVal = " ".repeat(10) + "(".repeat(64_000) + "a@b";
+    const eml = `From: ${fromVal}\r\nTo: b@y\r\n\r\nbody\r\n`;
+    const t0 = performance.now();
+    run('if address :is "from" "a@b" { keep; }', eml);
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it("unclosed parenthesis with spaces in Date header does not stall quadratically", () => {
+    const dateVal = "Tue, 10 Oct 2026 21:30:35 " + " ".repeat(64_000) + "(x +0000";
+    const eml = `From: a@x\r\nDate: ${dateVal}\r\n\r\nbody\r\n`;
+    const t0 = performance.now();
+    run('require ["date","relational"]; if date :value "eq" "date" "year" "2026" { keep; }', eml);
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(100);
+  });
+});

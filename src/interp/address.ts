@@ -31,7 +31,46 @@ export function splitSubaddress(localPart: string): { user: string; detail: stri
 
 /** Remove RFC 2822 comments (text in parentheses) and trim. */
 export function stripRFC2822Comments(addr: string): string {
-  return addr.replace(/\([^)]*\)/g, "").trim();
+  let depth = 0;
+  let out = "";
+  let buf = "";
+  for (let i = 0; i < addr.length; i++) {
+    const c = addr[i]!;
+    if (c === "\\") {
+      if (depth > 0) buf += c;
+      else out += c;
+      if (i + 1 < addr.length) {
+        i++;
+        if (depth > 0) buf += addr[i]!;
+        else out += addr[i]!;
+      }
+      continue;
+    }
+    if (c === "(") {
+      if (depth === 0) buf = "";
+      depth++;
+      buf += c;
+    } else if (c === ")") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0) {
+          buf = "";
+        } else {
+          buf += c;
+        }
+      } else {
+        out += c;
+      }
+    } else if (depth > 0) {
+      buf += c;
+    } else {
+      out += c;
+    }
+  }
+  if (depth > 0) {
+    out += buf;
+  }
+  return out.trim();
 }
 
 /**

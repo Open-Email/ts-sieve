@@ -114,6 +114,22 @@ function expandYear(y: number, digits: number): number {
   return y <= 68 ? 2000 + y : 1900 + y;
 }
 
+function stripTrailingComment(s: string): string {
+  let end = s.length - 1;
+  while (end >= 0 && (s[end] === " " || s[end] === "\t")) end--;
+  if (end < 0 || s[end] !== ")") return s;
+  let depth = 1;
+  let i = end - 1;
+  while (i >= 0 && depth > 0) {
+    if (s[i] === ")") depth++;
+    else if (s[i] === "(") depth--;
+    i--;
+  }
+  if (depth !== 0) return s;
+  while (i >= 0 && (s[i] === " " || s[i] === "\t")) i--;
+  return s.slice(0, i + 1);
+}
+
 /**
  * Parse an RFC 5322 date header into a ZonedTime, or null if unparseable.
  * Parses the common shapes of RFC 5322 date-time, plus fallback
@@ -123,8 +139,8 @@ function parseDateHeader(value: string): ZonedTime | null {
   if (value.includes("\r") && !value.includes("\r\n")) return null;
   let s = value.replace(/[\r\n]/g, "").trim();
   if (s === "") return null;
-  // Strip a trailing CFWS comment: linear ([^()]* has no nesting).
-  s = s.replace(/\s*\([^()]*\)\s*$/, "").trim();
+  // Strip a trailing CFWS comment in a single backwards linear scan.
+  s = stripTrailingComment(s).trim();
 
   // ISO 8601 / RFC 3339: YYYY-MM-DD[T ]HH:MM:SS(Z|±HH:MM)
   const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/);
