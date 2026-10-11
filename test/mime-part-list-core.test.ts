@@ -409,6 +409,7 @@ describe("a field's first line that ends on a 4096-byte piece at the end of the 
 
   it("refuses the part", () => {
     expect(runRaw(anychild, head + pad(4096))).toEqual(R({ implicitKeep: true }));
+    expect(bodyTest('body :content "application/x-msdownload" :count "ge" "1"', head + pad(4096))).toEqual(NO);
     expect(runRaw(anychild, head + pad(8192))).toEqual(R({ implicitKeep: true }));
   });
 
@@ -464,9 +465,13 @@ describe("a multipart in a part that ended at a boundary: its end of input reach
   const nest = (inner: string) => `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n--c\r\n${inner}\r\n--b--\r\n`;
   const eofLine = (n: number) => `Content-Type: application/x-msdownload\r\nX-Pad: ${"p".repeat(n - 7)}`;
   const UNKNOWN_HIT = R({ implicitKeep: true, indeterminate: true });
+  /** The body test's count of exe parts, at least one. */
+  const exeCount = (body: string, rootCt?: string) =>
+    bodyTest('body :content "application/x-msdownload" :count "ge" "1"', body, { rootCt });
 
   it("a field's first line ending on a 4096-byte piece is unknown, not refused", () => {
     expect(runRaw(anychild, nest(eofLine(4096)))).toEqual(UNKNOWN_HIT);
+    expect(exeCount(nest(eofLine(4096)))).toEqual(UNKNOWN);
     expect(runRaw(anychild, nest(eofLine(8192)))).toEqual(UNKNOWN_HIT);
     // Two levels of parts.
     const two = `--a\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${nest(eofLine(4096))}\r\n--a--\r\n`;
@@ -479,10 +484,13 @@ describe("a multipart in a part that ended at a boundary: its end of input reach
     const inner = `--c\r\n${eofLine(4096)}`;
     const rfc822 = `From: x@y\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}`;
     expect(runRaw(anychild, rfc822, { rootCt: "message/rfc822" })).toEqual(R({ implicitKeep: true }));
+    expect(exeCount(rfc822, "message/rfc822")).toEqual(NO);
     const message = `--b\r\nContent-Type: message/rfc822\r\n\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}\r\n--b--\r\n`;
     expect(runRaw(anychild, message)).toEqual(R({ implicitKeep: true }));
+    expect(exeCount(message)).toEqual(NO);
     const ranOut = `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}`;
     expect(runRaw(anychild, ranOut)).toEqual(R({ implicitKeep: true }));
+    expect(exeCount(ranOut)).toEqual(NO);
   });
 
   it("a folded line ending on a 4096-byte piece: its line break counts toward the budget, or not", () => {
@@ -492,6 +500,7 @@ describe("a multipart in a part that ended at a boundary: its end of input reach
       nest(`Content-Type: application/x-msdownload\r\nX-A: ${"a".repeat(n)}\r\n ${"a".repeat(4096 * 170 - 1)}`);
     expect(runRaw(anychild, edge(2379))).toEqual(R({ fileinto: ["Junk"] }));
     expect(runRaw(anychild, edge(2380))).toEqual(UNKNOWN_HIT);
+    expect(exeCount(edge(2380))).toEqual(UNKNOWN);
     expect(runRaw(anychild, edge(2381))).toEqual(R({ implicitKeep: true }));
   });
 });
