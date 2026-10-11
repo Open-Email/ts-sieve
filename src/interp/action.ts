@@ -2,7 +2,6 @@
 // String arguments are expanded through RFC 5229 variables at execution time
 // (expandVars is identity when the script does not require `variables`).
 
-import { SieveError } from "../errors.js";
 import { type Cmd, type RuntimeData, StopSignal } from "./runtime.js";
 import { expandVars, expandVarsList, setVar } from "./variables.js";
 
@@ -87,22 +86,24 @@ export class CmdStop implements Cmd {
 const members = new WeakMap<string[], Set<string>>();
 
 /**
- * Append v to list unless it is there; false when it was. A Set answers, not a
- * scan of the list: in a loop, a message can drive fileinto to 100,000
- * distinct names, and scanning for each took 37 s at core's options. The Set
- * is rebuilt when the list's length shows it changed outside this function (a
- * host, or a clone, may push to it or replace it).
+ * Append v to list: "added", or "held" when it is there, or "full" when it is
+ * not and the list holds `max`. A Set answers, not a scan of the list: in a
+ * loop, a message can drive fileinto to 100,000 distinct names, and scanning
+ * for each took 37 s at core's options. The Set is rebuilt when the list's
+ * length shows it changed outside this function (a host, or a clone, may push
+ * to it or replace it).
  */
-function addOnce(list: string[], v: string): boolean {
+function addOnce(list: string[], v: string, max = Number.POSITIVE_INFINITY): "added" | "held" | "full" {
   let seen = members.get(list);
   if (seen === undefined || seen.size !== list.length) {
     seen = new Set(list);
     members.set(list, seen);
   }
-  if (seen.has(v)) return false;
+  if (seen.has(v)) return "held";
+  if (list.length >= max) return "full";
   seen.add(v);
   list.push(v);
-  return true;
+  return "added";
 }
 
 export class CmdFileInto implements Cmd {
@@ -113,9 +114,17 @@ export class CmdFileInto implements Cmd {
 
   execute(d: RuntimeData): void {
     const mailbox = expandVars(d, this.mailbox);
-    if (!addOnce(d.mailboxes, mailbox)) return;
-    if (this.create) addOnce(d.mailboxesCreate, mailbox);
+    const added = addOnce(d.mailboxes, mailbox, d.script.opts.maxFileintos);
+    if (added === "full") {
+      // Dropped, with nothing else it would have done: inside a loop the
+      // message chooses how many targets there are (see maxFileintos).
+      d.indeterminate = true;
+      return;
+    }
     if (!this.copy) d.implicitKeep = false;
+    // Filed once (RFC 5228 §2.10.3): :create and :flags are the first's.
+    if (added === "held") return;
+    if (this.create) addOnce(d.mailboxesCreate, mailbox);
     if (this.flags !== null) {
       const flags = expandVarsList(d, this.flags);
       chargeFlags(d, flags);
@@ -124,18 +133,43 @@ export class CmdFileInto implements Cmd {
   }
 }
 
+/**
+ * The address a redirect names, to tell a repeat: the addr-spec inside angle
+ * brackets when there are any, its domain lowercased. The local part is the
+ * receiving domain's to interpret, and is not folded.
+ */
+function redirectKey(addr: string): string {
+  let a = addr.trim();
+  const lt = a.indexOf("<");
+  const gt = a.lastIndexOf(">");
+  if (lt !== -1 && gt > lt) a = a.slice(lt + 1, gt).trim();
+  const at = a.lastIndexOf("@");
+  return at === -1 ? a : a.slice(0, at) + a.slice(at).toLowerCase();
+}
+
 export class CmdRedirect implements Cmd {
   addr = "";
   copy = false; // RFC 3894 :copy
 
   execute(d: RuntimeData): void {
     const addr = expandVars(d, this.addr);
+    // An address is redirected to once (as in Pigeonhole), and a repeat is no
+    // new target: a loop redirecting once per matching part is not limited by
+    // how many match. The host's policy is not asked again; it may count.
+    const key = redirectKey(addr);
+    if (d.redirectAddr.some((a) => redirectKey(a) === key)) {
+      if (!this.copy) d.implicitKeep = false;
+      return;
+    }
+    if (d.redirectAddr.length >= d.script.opts.maxRedirects) {
+      // Dropped and disclosed, not thrown: a throw fails the whole script, and
+      // a host's fail-open turns that into every rule skipped.
+      d.indeterminate = true;
+      return;
+    }
     if (!d.policy.redirectAllowed(d, addr)) return;
     d.redirectAddr.push(addr);
     if (!this.copy) d.implicitKeep = false;
-    if (d.redirectAddr.length > d.script.opts.maxRedirects) {
-      throw new SieveError("too many actions");
-    }
   }
 }
 
