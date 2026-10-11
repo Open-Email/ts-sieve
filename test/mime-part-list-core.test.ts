@@ -68,6 +68,7 @@ describe("a part whose header block core's reader refuses ends the list", () => 
     ["a junk line after a good field", "X-Ok: 1\r\nJUNKLINE\r\n"],
     ["a space inside a field name", "X Bad: y\r\n"],
     ["a control byte in a field name", `X-${String.fromCharCode(1)}: y\r\n`],
+    ["a CR-only line where the blank line would be", "\r\r\n"],
     ["a field over the 1 MiB part-header budget", `X-Big: ${"a".repeat(700_000)}\r\n`],
   ];
   for (const [name, bad] of shapes) {
@@ -145,6 +146,14 @@ describe("a line after a part that is not a delimiter line ends the list", () =>
     expect(seesExe(body)).toEqual(SEEN);
     const junk = `--b\r\nContent-Type: text/plain\r\n\r\n--b junk\r\n${exe}--b--\r\n`;
     expect(seesExe(junk)).toEqual(UNSEEN);
+    // The list ends at that line, though a delimiter line follows it.
+    const thenDelimiter = `--b\r\nContent-Type: text/plain\r\n\r\n--b junk\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(thenDelimiter)).toEqual(UNSEEN);
+  });
+
+  it("a last part with no close delimiter: a tail that could begin one is not its content", () => {
+    expect(bodyTest('body :content "text/plain" :is "hello"', `--b\r\n${text}`)).toEqual(YES);
+    expect(bodyTest('body :content "text/plain" :is "hello"', `--b\r\n${text}--`)).toEqual(YES);
   });
 });
 
@@ -258,6 +267,10 @@ describe("a multipart with no parts has one synthesized text/plain child", () =>
     expect(bodyTest(`body :content "text/plain" :matches "${"p".repeat(904)}*"`, body)).toEqual(YES);
     expect(bodyTest(`body :content "text/plain" :matches "${"p".repeat(905)}*"`, body)).toEqual(NO);
     expect(bodyTest('body :content "text/plain" :contains "MZ"', body)).toEqual(YES);
+    // The multipart's own text keeps what the walker read of that line, as
+    // when the cut falls inside it.
+    expect(bodyTest('body :content "multipart" :contains "pppp"', body)).toEqual(YES);
+    expect(bodyTest('body :content "multipart" :is ""', body)).toEqual(NO);
   });
 
   it("a preamble line that just fits the buffer is skipped", () => {
@@ -303,10 +316,11 @@ describe("an embedded message's header block is read as core reads it", () => {
 describe("the part cap", () => {
   // The walkers stop at 1024 parts, and so does the splitter: a message of
   // many tiny parts costs no more than its first 1025, per body test.
-  const many = `--b\r\n${text}${"--b\r\n\r\n".repeat(1100)}--b--\r\nzz\r\n`;
+  const many = `pre\r\n--b\r\n${text}${"--b\r\n\r\n".repeat(1100)}--b--\r\nzz\r\n`;
 
   it("past it the list, and the epilogue after it, are unseen", () => {
     expect(bodyTest('body :content "multipart" :contains "zz"', many)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "multipart" :is ""', many)).toEqual(UNKNOWN);
     expect(bodyTest('body :content "text/plain" :contains "hello"', many)).toEqual(YES);
   });
 });
@@ -337,10 +351,22 @@ describe("over a cut body, what the cut decides", () => {
   it("a part header block that reaches the cut is unknown, though complete it would be a part", () => {
     const body = `--b\r\n${text}--b\r\nContent-Type: application/x-msdownload`;
     expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    // A junk line may follow the last whole line, or a folded one.
+    expect(runRaw(anychild, `${body}\r\n`, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    // A cut right after the delimiter line: no header line seen yet.
+    expect(bodyTest('body :content "text/plain" :count "ge" "2"', `--b\r\n${text}--b\r\n`, cut)).toEqual(UNKNOWN);
   });
 
   it("a preamble that reaches the cut: no part yet, no synthesized child", () => {
     expect(bodyTest('body :content "text/plain" :is ""', "preamble text\r\n", cut)).toEqual(UNKNOWN);
+    expect(runRaw(anychild, "preamble text", cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    // A last line that may be a delimiter is not the multipart's own text.
+    expect(bodyTest('body :content "multipart" :contains "--b"', "preamble\r\n--b", cut)).toEqual(UNKNOWN);
+  });
+
+  it("a tail that may begin a delimiter is not a cut part's content", () => {
+    expect(bodyTest('body :content "text/plain" :contains "--"', `--b\r\n${text}--`, cut)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "text/plain" :contains "hello"', `--b\r\n${text}--`, cut)).toEqual(YES);
   });
 
   it("no boundary: the synthesized child is a prefix of the body", () => {
@@ -353,6 +379,7 @@ describe("over a cut body, what the cut decides", () => {
     const body = `${"p".repeat(5000)}\r\n--b\r\n${exe}--b\r\nContent-Type: te`;
     expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true }));
     expect(bodyTest('body :content "text/plain" :contains "MZ"', body, cut)).toEqual(YES);
+    expect(bodyTest('body :content "text/plain" :contains "absent"', body, cut)).toEqual(UNKNOWN);
   });
 
   it("a child whose text depends on core's buffering stays unknown", () => {
