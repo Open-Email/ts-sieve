@@ -61,9 +61,12 @@ the caps below is "unknown"), and a test that runs out of its share of
 `maxExecSteps` answers "unknown" while the script runs on (`budgetExhausted`).
 A `:matches`/`:regex` key holding a variable reference compiles when the test
 runs; if the expanded text does not compile, or is past the pattern-length
-cap, the comparison is "unknown" rather than an error. One path from message
-content to a throw remains and is tracked as an issue: an `envelope` test
-whose envelope-part comes from a variable (#36).
+cap, the comparison is "unknown" rather than an error. An `envelope`
+envelope-part built from a variable that names no part the test reads has no
+value, like a missing header. No other value from the message is known to
+reach a throw; the runtime errors left (too many redirects, conflicting
+reject actions, a `maxExecSteps` below the commands a run dispatches) are the
+script's own, reached by the branches a message picks.
 
 ### What the host implements
 
@@ -132,7 +135,7 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxTokens` | 5000 | lexer token cap |
 | `maxBlockNesting` / `maxTestNesting` | 15 / 15 | parser nesting caps |
 | `maxRedirects` | 5 | `redirect` actions per execution |
-| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 32 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe) |
+| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 63 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe); a name past the length limit fails at load |
 | `maxMatchInputLength` | 0 (engine default, 256 KiB) | truncate values before `:matches`/`:regex`; a comparison over a cut value is three-valued |
 | `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
@@ -209,7 +212,10 @@ on them and this one follows the RFC strictly:
   past either cap is "unknown" (`indeterminate`), as for a body the host's read
   window cut. A part that window cut is decoded and reduced to text only as far
   as the cut proves: a character, quoted-printable escape, HTML construct or
-  character reference left open at the cut is dropped, never guessed.
+  character reference left open at the cut is dropped, never guessed. Each
+  part is decoded (and reduced from HTML) once per message and shared by every
+  body test; a quoted-printable "=" that starts neither an escape (two hex
+  digits) nor a soft line break is text.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of

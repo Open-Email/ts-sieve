@@ -3,7 +3,6 @@
 // including the RFC 5231 `:count` accumulation and RFC 5260 `:index`/`:last`
 // field selection on header/address.
 
-import { SieveError } from "../errors.js";
 import { canonicalFlags } from "./action.js";
 import {
   parseAddressList,
@@ -230,7 +229,10 @@ export class EnvelopeTest implements Test {
           value = d.envelope.authUsername();
           break;
         default:
-          throw new SieveError(`envelope: unsupported envelope-part: ${field}`);
+          // Known only now (a literal one fails at load): the part may come
+          // from the message, and a throw would skip every rule. It has no
+          // value, like a header the message does not have.
+          continue;
       }
 
       if (value !== "" && (name === "from" || name === "to")) {

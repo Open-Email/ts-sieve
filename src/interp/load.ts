@@ -407,7 +407,8 @@ function loadFlagCmd(
   if (second !== null) {
     if (first.length !== 1) throw at(pcmd, "imap4flags: variable name must be a single string");
     if (!s.requiresExtension("variables")) throw at(pcmd, "missing require 'variables'");
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(first[0]!)) throw at(pcmd, `imap4flags: invalid variable name: ${first[0]}`);
+    const why = badVariableName(s, first[0]!);
+    if (why !== null) throw at(pcmd, `imap4flags: ${why}`);
     cmd.variableName = first[0]!;
     cmd.flags = second;
   } else {
@@ -478,6 +479,9 @@ function checkIndexTags(s: Script, pos: Position, what: string, index: number, l
   }
 }
 
+/** The envelope-parts the envelope test reads (RFC 5228 §5.4, plus "auth"). */
+const ENVELOPE_PARTS = new Set(["from", "to", "auth"]);
+
 function loadEnvelopeTest(s: Script, ptest: PTest): Test {
   if (!s.requiresExtension("envelope")) throw new SieveError("missing require 'envelope'");
   const matcher = new MatcherTest();
@@ -501,6 +505,10 @@ function loadEnvelopeTest(s: Script, ptest: PTest): Test {
   loadSpec(s, spec, ptest, ptest.args, ptest.tests, null);
   matcher.setKey(s, key);
   if (useSubaddress && !s.requiresExtension("subaddress")) throw at(ptest, "missing require 'subaddress'");
+  for (const f of field) {
+    const literal = !s.requiresExtension("variables") || !f.includes("${");
+    if (literal && !ENVELOPE_PARTS.has(f.toLowerCase())) throw at(ptest, `envelope: unsupported envelope-part: ${f}`);
+  }
   return new EnvelopeTest(matcher, addressPart, field);
 }
 
@@ -558,7 +566,8 @@ function loadHasFlagTest(s: Script, ptest: PTest): Test {
     key = second;
     if (!s.requiresExtension("variables")) throw at(ptest, "hasflag: missing require 'variables'");
     for (const v of variables) {
-      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(v)) throw at(ptest, `hasflag: invalid variable name: ${v}`);
+      // Only read, so only the pattern: a name too long to be set has no value.
+      if (!VARIABLE_NAME.test(v)) throw at(ptest, `hasflag: invalid variable name: ${v}`);
     }
   }
   // RFC 5232 §5: the flag set matches if any of its flags matches any flag NAME
@@ -846,8 +855,24 @@ function loadSet(s: Script, pcmd: PCmd): Cmd {
   // Same-precedence-tier modifiers conflict (e.g. :lower + :upper).
   const tiers = cmd.modifiers.map((m) => SET_MODIFIERS[m]!.precedence);
   if (new Set(tiers).size !== tiers.length) throw at(pcmd, "set: conflicting modifiers");
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(cmd.name)) throw at(pcmd, `set: invalid variable name: ${cmd.name}`);
+  const why = badVariableName(s, cmd.name);
+  if (why !== null) throw at(pcmd, `set: ${why}`);
   return cmd;
+}
+
+const VARIABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Why a variable a command sets cannot be one, or null. The length is checked
+ * here, not only when the command runs: there it threw, whenever a branch the
+ * message picked reached the command, and a thrown execute() skips every rule.
+ */
+function badVariableName(s: Script, name: string): string | null {
+  if (!VARIABLE_NAME.test(name)) return `invalid variable name: ${name}`;
+  if (name.length > s.opts.maxVariableNameLen) {
+    return `variable name too long: ${name} (${name.length} > ${s.opts.maxVariableNameLen})`;
+  }
+  return null;
 }
 
 function loadStringTest(s: Script, ptest: PTest): Test {

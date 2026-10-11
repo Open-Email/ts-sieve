@@ -53,7 +53,7 @@ export function defaultOptions(): Required<Options> {
     maxTestNesting: 15,
     maxRedirects: 5,
     maxVariableCount: 128,
-    maxVariableNameLen: 32,
+    maxVariableNameLen: 63, // Pigeonhole's limit; RFC 5229 asks for at least 32
     maxVariableLen: 4000,
     maxMatchInputLength: 0,
     maxExecSteps: 0,
