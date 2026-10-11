@@ -72,7 +72,15 @@ describe("nesting", () => {
     expect(run(fromKey, `From: ${deep}\r\nSubject: a\r\n\r\nbody\r\n`, CORE)).toEqual(
       R({ fileinto: ["Other"], indeterminate: true }),
     );
-    expect(() => compile(`require "regex"; if header :regex "subject" "a${"*".repeat(400)}" { keep; }`)).not.toThrow();
+    expect(() => compile(`require "regex"; if header :regex "subject" "a${"*".repeat(499)}" { keep; }`)).not.toThrow();
+    expect(() => compile(`require "regex"; if header :regex "subject" "a${"*".repeat(500)}" { keep; }`)).toThrow(/nest/);
+  });
+
+  it("a long capture is built whole, across the chunks it is spread in", () => {
+    const value = `${"a".repeat(4095)}XY${"b".repeat(5903)}`;
+    const script = `require ["regex","variables","fileinto"];
+      if header :regex "subject" "^(.*)$" { if string :is "\${1}" "${value}" { fileinto "Whole"; } }`;
+    expect(run(script, `Subject: ${value}\r\n\r\nbody\r\n`)).toEqual(R({ fileinto: ["Whole"] }));
   });
 
   it("a literal brace is not a quantifier, at any depth", () => {

@@ -134,8 +134,8 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
 compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, ≤ 250 nested
-groups and ≤ 500 levels of syntax tree (quantifiers stacked on groups deepen
-it too), input ≤ 256 KiB
+groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
+deepen it too; a `{n,}` counts twice), input ≤ 256 KiB
 (byte-truncated), and it charges every VM step to the execution budget.
 
 ## Robustness properties
