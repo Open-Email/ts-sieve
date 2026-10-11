@@ -137,24 +137,59 @@ class TextOut {
   }
 }
 
-export function htmlToText(s: string): string {
+/**
+ * `cut`: s is a prefix of the real input (the host's read window cut it), and
+ * only the text nothing past the cut can change is returned, so it is a prefix
+ * of what the whole input reduces to. Whatever was open at the cut is dropped:
+ * a construct read to the end of the input (an unclosed tag, comment or
+ * raw-text element), a final "<", a "<" bounded mode found no ">" for, and a
+ * character reference the cut may have split.
+ */
+export function htmlToText(s: string, cut = false): string {
   const w = new TextOut();
   const ctx: Ctx = { bounded: false, gt: -2, escape: -2, rawStart: -2, amp: -2 };
   const n = s.length;
   let i = 0;
+  let stable = 0; // w.out up to here is final, whatever follows the input
+  let open = false; // a reading depended on where the input ends
   while (i < n) {
     const lt = s.indexOf("<", i);
-    const end = lt === -1 ? n : lt;
-    if (end > i) w.text(s, i, end, true);
-    if (lt === -1) break;
+    if (lt === -1) {
+      const amp = cut ? openReference(s, i) : -1;
+      if (amp === -1) {
+        w.text(s, i, n, true);
+      } else {
+        w.text(s, i, amp, true);
+        if (!open) stable = w.out.length;
+        open = true;
+        w.text(s, amp, n, true);
+      }
+      break;
+    }
+    if (lt > i) w.text(s, i, lt, true);
+    if (!open) stable = w.out.length;
     if (lt + 1 < n && opensTag(s.charCodeAt(lt + 1))) {
       i = ctx.bounded ? boundedMarkup(s, lt + 1, w, ctx) : markup(s, lt + 1, w, ctx);
+      if (i === n || (ctx.bounded && ctx.gt === -1)) open = true;
     } else {
       w.char("<");
       i = lt + 1;
+      if (i === n) open = true;
     }
+    if (!open) stable = w.out.length;
   }
-  return w.out; // pending white space is the trailing white space, and goes
+  if (!open) stable = w.out.length;
+  // Pending white space is the trailing white space, and goes.
+  return cut ? w.out.slice(0, stable) : w.out;
+}
+
+/** The "&" of a character reference that runs to the end of s[from, …) and is
+ * short enough that a further character could change how it decodes, or -1. */
+function openReference(s: string, from: number): number {
+  const amp = s.lastIndexOf("&");
+  if (amp < from || s.length - amp > ENTITY_MAX) return -1;
+  for (let k = amp + 1; k < s.length; k++) if (!isEntityChar(s.charCodeAt(k))) return -1;
+  return amp;
 }
 
 type Ctx = {
