@@ -181,9 +181,7 @@ export class MatcherTest {
     if (this.match === "matches") {
       // Precompile patterns with no variable refs (throws at load on oversize);
       // ${...} keys compile per-run.
-      this.compiledKeys = this.key.map((k) =>
-        k.includes("${") ? null : compileRegex(patternToRegex(k, this.caseFold)),
-      );
+      this.compiledKeys = this.key.map((k) => (k.includes("${") ? null : this.compileKey(k)));
       this.soundKeys = this.key.map((k) => (k.includes("${") ? null : globEndsWithStar(k)));
     } else if (this.match === "regex") {
       // Same for :regex, so malformed/oversized patterns fail at load (script
@@ -198,10 +196,40 @@ export class MatcherTest {
       // textual `(?i)` prefix would shift parse positions and legalize
       // quantifier-first refusals, and lowercasing the text would corrupt
       // escapes (`\W` → `\w` inverts the class).
-      this.compiledKeys = this.key.map((k) =>
-        k.includes("${") ? null : compileRegex(k, { caseInsensitive: this.caseFold }),
-      );
+      this.compiledKeys = this.key.map((k) => (k.includes("${") ? null : this.compileKey(k)));
       this.soundKeys = this.key.map((k) => (k.includes("${") ? null : regexSoundOnPrefix(k)));
+    }
+  }
+
+  /** Compile a `:matches` glob or a `:regex` pattern; throws SieveError when it
+   * does not compile or is past the pattern-length cap. */
+  private compileKey(pattern: string): CompiledRegex {
+    return this.match === "matches"
+      ? compileRegex(patternToRegex(pattern, this.caseFold))
+      : compileRegex(pattern, { caseInsensitive: this.caseFold });
+  }
+
+  /**
+   * Key `i` for this run, with its pattern text: the program compiled at load,
+   * or, for a key holding a variable reference, the expanded text compiled now.
+   * null when that does not compile. The text can come from the message, and a
+   * throw here would end execute(), which a host's fail-open turns into "skip
+   * every rule"; the caller reads null as "unknown" instead. The length cap
+   * still applies to an expanded key. The step budget charges one step per VM
+   * thread visit, but a character class is one instruction however many
+   * ranges it scans, and the parser recurses once per nesting level, so the
+   * pattern's length is what bounds the work per step and the stack depth.
+   */
+  private runtimeKey(d: RuntimeData, i: number): { re: CompiledRegex | null; pattern: string } {
+    const key = this.key[i]!;
+    const re = this.compiledKeys[i];
+    if (re) return { re, pattern: key };
+    const pattern = expandVars(d, key);
+    try {
+      return { re: this.compileKey(pattern), pattern };
+    } catch (e) {
+      if (e instanceof SieveError) return { re: null, pattern };
+      throw e;
     }
   }
 
@@ -239,11 +267,15 @@ export class MatcherTest {
       d.budget.consume(1);
       const key = this.key[i]!;
       if (this.match === "matches") {
-        const re = this.compiledKeys[i] ?? compileRegex(patternToRegex(expandVars(d, key), this.caseFold));
+        const { re, pattern } = this.runtimeKey(d, i);
+        if (re === null) {
+          unknown = true;
+          continue;
+        }
         const truncated = sourceTruncated || (cap > 0 && byteLen(source) > cap);
         const caps = re.findSubmatch(source, reOpts);
         if (caps !== null) {
-          if (!truncated || (this.soundKeys[i] ?? globEndsWithStar(expandVars(d, key)))) {
+          if (!truncated || (this.soundKeys[i] ?? globEndsWithStar(pattern))) {
             d.matchVariables = caps;
             return true;
           }
@@ -263,14 +295,17 @@ export class MatcherTest {
         // before — a non-ASCII UPPERCASE literal in the pattern never matches,
         // and captures fold to lowercase under this comparator only.
         const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase() : source;
-        const re =
-          this.compiledKeys[i] ?? compileRegex(expandVars(d, key), { caseInsensitive: this.caseFold });
+        const { re, pattern } = this.runtimeKey(d, i);
+        if (re === null) {
+          unknown = true;
+          continue;
+        }
         const truncated = sourceTruncated || (cap > 0 && byteLen(value) > cap);
         const caps = re.findSubmatch(value, reOpts);
         if (caps !== null) {
           // Search semantics: a hit inside the prefix is a hit in the whole,
           // unless the pattern can anchor to the end.
-          if (!truncated || (this.soundKeys[i] ?? regexSoundOnPrefix(expandVars(d, key)))) {
+          if (!truncated || (this.soundKeys[i] ?? regexSoundOnPrefix(pattern))) {
             d.matchVariables = caps;
             return true;
           }
