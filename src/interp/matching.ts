@@ -58,7 +58,7 @@ export interface MatchOptions {
  * i;ascii-numeric compares numbers, never folded text. */
 export function comparatorFold(comparator: Comparator): (s: string) => string {
   if (comparator === "i;ascii-casemap") return toLowerASCII;
-  if (comparator === "i;unicode-casemap") return (s) => s.toLowerCase();
+  if (comparator === "i;unicode-casemap") return toUnicodeCasemapFold;
   return (s) => s;
 }
 
