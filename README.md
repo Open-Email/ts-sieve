@@ -52,17 +52,21 @@ d.redirectAddr;  // []
 `load()` throws a `SieveError` (with `line`/`col` when known) on any lex, parse,
 or load failure — including a `require` for an extension you did not enable —
 so a user uploading a script learns exactly what won't run *before* mail
-arrives. `execute()` throws `SieveError` on runtime errors (budget exhaustion,
-too many redirects, …); treat that as "script
-failed, fall back to implicit keep". Because a throw skips every rule, the
-`body` test does not throw on malformed MIME: broken transfer encodings decode
-leniently, and structure past the caps below is "unknown". Other paths from
-message content to a throw remain and are tracked as issues (step-budget
-exhaustion by large parts under `:matches`/`:regex` or by many rules over many
-parts, a `:regex` key nested deep enough to overflow the matcher's stack). A
-`:matches`/`:regex` key holding a variable reference compiles when
-the test runs; if the expanded text does not compile, or is past the
-pattern-length cap, the comparison is "unknown" rather than an error.
+arrives. `execute()` throws `SieveError` on runtime errors (too many
+redirects, a `maxExecSteps` smaller than the script's own commands, …); treat
+that as "script failed, fall back to implicit keep". Because a throw skips every
+rule, message content must not cause one: the `body` test does not throw on
+malformed MIME (broken transfer encodings decode leniently, and structure past
+the caps below is "unknown"), and a test that runs out of its share of
+`maxExecSteps` answers "unknown" while the script runs on (`budgetExhausted`).
+A `:matches`/`:regex` key holding a variable reference compiles when the test
+runs; if the expanded text does not compile, or is past the pattern-length
+cap, the comparison is "unknown" rather than an error. An `envelope`
+envelope-part built from a variable that names no part the test reads has no
+value, like a missing header. No other value from the message is known to
+reach a throw; the runtime errors left (too many redirects, conflicting
+reject actions, a `maxExecSteps` below the commands a run dispatches) are the
+script's own, reached by the branches a message picks.
 
 ### What the host implements
 
@@ -83,6 +87,8 @@ pattern-length cap, the comparison is "unknown" rather than an error.
 | `redirectAddr` | `redirect` targets that passed your policy (capped by `maxRedirects`). |
 | `flags` | The final IMAP flag set (RFC 5232), canonicalised: lowercased, deduped, sorted. |
 | `headerEdits` | The RFC 5293 `addheader`/`deleteheader` ledger. Tests inside the script already see the edits; apply the ledger yourself if the *stored* message should change. An added value holds no CR, LF or NUL, but is otherwise as the script built it: fold and encode it when you serialise it (it may pass RFC 5322's 998-octet line limit, carry non-ASCII text, or Unicode separators such as U+2028). |
+| `indeterminate` | An "unknown" decided a branch: a comparison over a cut input, structure past the MIME caps, a key that did not compile, or a test out of its budget share. The actions are a best-effort reading: refuse the irreversible ones (discard, redirect without keep, reject) and let the rest stand. |
+| `budgetExhausted` | A test ran out of its share of `maxExecSteps` and answered "unknown". The script completed; this says why it guessed. |
 | `vacationResponses` | RFC 5230 vacation **intents**, keyed by envelope-from. The host owns the actual send, the `:days`/`:handle` dedup database, and the RFC 5230 §4.5 loop-prevention checks (`Auto-Submitted`, list headers, "am I in To/Cc?"). |
 | `rejected` / `rejectReason` / `rejectExtended` | RFC 5429: a `reject` (or, with `rejectExtended`, an `ereject`) ran, with its reason after variable expansion; the implicit keep is cancelled. The host refuses the message — RFC 5429 asks for a protocol-level 5xx where possible, else a DSN (ereject) or failure MDN (reject), never to a null or forged sender; a host that can only drop it departs from the RFC (§2.1: no ereject without protocol refusal) and leaves the sender uninformed. `rejectReason` is **untrusted text**: variables can carry decoded CR/LF and non-ASCII from the message, so a host writing it into an SMTP reply must apply §2.5's multi-line and §2.1.1's ASCII rules. Header edits (`headerEdits`) must not reach a generated MDN/DSN (§2.4). Treat a reject like a discard when `indeterminate` is set. |
 
@@ -128,14 +134,18 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxTokens` | 5000 | lexer token cap |
 | `maxBlockNesting` / `maxTestNesting` | 15 / 15 | parser nesting caps |
 | `maxRedirects` | 5 | `redirect` actions per execution |
-| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 32 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe) |
-| `maxMatchInputLength` | 0 (off) | truncate values before `:matches`/`:regex` |
-| `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker** |
+| `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 63 / 4000 | RFC 5229 limits (value truncation is UTF-8-safe); a name past the length limit fails at load |
+| `maxMatchInputLength` | 0 (engine default, 256 KiB) | truncate values before `:matches`/`:regex`; a comparison over a cut value is three-valued |
+| `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256 KiB
-(byte-truncated), and it charges every VM step to the execution budget.
+compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, ≤ 250 nested
+groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
+deepen it too; a `{n,}` counts twice), input ≤ 256 KiB unless
+`maxMatchInputLength` sets another cut (byte-truncated at a character
+boundary, and evaluated as a cut), and it charges every VM step to the
+execution budget.
 
 ## Robustness properties
 
@@ -199,7 +209,12 @@ on them and this one follows the RFC strictly:
   boundaries, last-value headers). It descends at most 100 levels (Dovecot's
   limit) and visits at most 1024 parts; a no-match that depends on structure
   past either cap is "unknown" (`indeterminate`), as for a body the host's read
-  window cut.
+  window cut. A part that window cut is decoded and reduced to text only as far
+  as the cut proves: a character, quoted-printable escape, HTML construct or
+  character reference left open at the cut is dropped, never guessed. Each
+  part is decoded (and reduced from HTML) once per message and shared by every
+  body test; a quoted-printable "=" that starts neither an escape (two hex
+  digits) nor a soft line break is text.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of

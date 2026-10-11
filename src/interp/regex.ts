@@ -11,13 +11,21 @@
 import { SieveError } from "../errors.js";
 
 const MAX_PATTERN_LENGTH = 1000;
-const MAX_INPUT_LENGTH = 256 * 1024;
+/** The match-input cut when the host sets no maxMatchInputLength. */
+export const MAX_INPUT_LENGTH = 256 * 1024;
 // {n,m} repetition is compiled by expansion, so a small count in the pattern can
 // multiply into a huge program ("a{999999999}" is 12 chars). Cap the counts (like
 // RE2's 1000) and the total compiled program size so compile work stays bounded
 // even for nested repeats.
 const MAX_REPEAT_COUNT = 1000;
 const MAX_PROGRAM_SIZE = 10_000;
+// The parser recurses once per group and the compiler once per level of the
+// tree (a group, an alternation, a quantifier on anything), so both are capped
+// well inside the call stack: an overflow is a RangeError, which no caller
+// expects. Quantifiers stacked on groups deepen the tree without the parser
+// seeing it, hence the second cap: "(((a**…)**…)**…)**…" is ~1000 levels deep.
+const MAX_NESTING = 250;
+const MAX_COMPILE_DEPTH = 500;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -46,6 +54,7 @@ type Node =
 class Parser {
   private pos = 0;
   private capCount = 0;
+  private depth = 0;
   constructor(private readonly src: string, private flags: Flags) {}
 
   parse(): { ast: Node; ncaps: number } {
@@ -163,6 +172,13 @@ class Parser {
   }
 
   private parseGroup(): Node {
+    if (++this.depth > MAX_NESTING) throw new SieveError("regex: nested too deeply");
+    const node = this.parseGroupBody();
+    this.depth--;
+    return node;
+  }
+
+  private parseGroupBody(): Node {
     this.pos++; // (
     if (this.peek() === "?") {
       this.pos++;
@@ -354,19 +370,19 @@ function negate(ranges: [number, number][]): [number, number][] {
   return out;
 }
 
+/** Sort ranges and merge the overlapping or adjacent ones, into new tuples
+ * (WORD_RANGES and the like are shared and must not change), so a class is
+ * matched by binary search. A reversed range ("z-a") stays empty. */
 function normalizeRanges(ranges: [number, number][]): [number, number][] {
   if (ranges.length === 0) return [];
   const sorted = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   const out: [number, number][] = [];
   let curLo = sorted[0]![0];
   let curHi = sorted[0]![1];
-
   for (let i = 1; i < sorted.length; i++) {
     const [nextLo, nextHi] = sorted[i]!;
     if (nextLo <= curHi + 1) {
-      if (nextHi > curHi) {
-        curHi = nextHi;
-      }
+      if (nextHi > curHi) curHi = nextHi;
     } else {
       out.push([curLo, curHi]);
       curLo = nextLo;
@@ -393,108 +409,115 @@ type Inst =
 
 class Compiler {
   prog: Inst[] = [];
+  private depth = 0;
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
     return this.prog.length - 1;
   }
   compile(node: Node): void {
-    switch (node.t) {
-      case "empty":
-        return;
-      case "lit":
-        this.emit({ op: "char", cp: node.cp, fold: node.fold });
-        return;
-      case "any":
-        this.emit({ op: "any", dotall: node.dotall });
-        return;
-      case "class":
-        this.emit({ op: "class", ranges: normalizeRanges(node.ranges), negated: node.negated, fold: node.fold });
-        return;
-      case "assert":
-        this.emit({ op: "assert", kind: node.kind });
-        return;
-      case "concat":
-        for (const p of node.parts) this.compile(p);
-        return;
-      case "group":
-        if (node.cap !== null) this.emit({ op: "save", slot: 2 * node.cap + 2 });
-        this.compile(node.node);
-        if (node.cap !== null) this.emit({ op: "save", slot: 2 * node.cap + 3 });
-        return;
-      case "alt": {
-        const jmps: number[] = [];
-        for (let i = 0; i < node.branches.length; i++) {
-          if (i < node.branches.length - 1) {
-            const split = this.emit({ op: "split", x: 0, y: 0 });
-            (this.prog[split] as { x: number }).x = this.prog.length;
-            this.compile(node.branches[i]!);
-            jmps.push(this.emit({ op: "jmp", x: 0 }));
-            (this.prog[split] as { y: number }).y = this.prog.length;
-          } else {
-            this.compile(node.branches[i]!);
+    if (++this.depth > MAX_COMPILE_DEPTH) throw new SieveError("regex: nested too deeply");
+    try {
+      switch (node.t) {
+        case "empty":
+          return;
+        case "lit":
+          this.emit({ op: "char", cp: node.cp, fold: node.fold });
+          return;
+        case "any":
+          this.emit({ op: "any", dotall: node.dotall });
+          return;
+        case "class":
+          // Escapes (\w, \s, …) build classes outside parseClass; normalize all.
+          this.emit({ op: "class", ranges: normalizeRanges(node.ranges), negated: node.negated, fold: node.fold });
+          return;
+        case "assert":
+          this.emit({ op: "assert", kind: node.kind });
+          return;
+        case "concat":
+          for (const p of node.parts) this.compile(p);
+          return;
+        case "group":
+          if (node.cap !== null) this.emit({ op: "save", slot: 2 * node.cap + 2 });
+          this.compile(node.node);
+          if (node.cap !== null) this.emit({ op: "save", slot: 2 * node.cap + 3 });
+          return;
+        case "alt": {
+          const jmps: number[] = [];
+          for (let i = 0; i < node.branches.length; i++) {
+            if (i < node.branches.length - 1) {
+              const split = this.emit({ op: "split", x: 0, y: 0 });
+              (this.prog[split] as { x: number }).x = this.prog.length;
+              this.compile(node.branches[i]!);
+              jmps.push(this.emit({ op: "jmp", x: 0 }));
+              (this.prog[split] as { y: number }).y = this.prog.length;
+            } else {
+              this.compile(node.branches[i]!);
+            }
           }
+          for (const j of jmps) (this.prog[j] as { x: number }).x = this.prog.length;
+          return;
         }
-        for (const j of jmps) (this.prog[j] as { x: number }).x = this.prog.length;
-        return;
-      }
-      case "star": {
-        const split = this.emit({ op: "split", x: 0, y: 0 });
-        const bodyStart = this.prog.length;
-        this.compile(node.node);
-        this.emit({ op: "jmp", x: split });
-        const after = this.prog.length;
-        const s = this.prog[split] as { x: number; y: number };
-        if (node.lazy) {
-          s.x = after;
-          s.y = bodyStart;
-        } else {
-          s.x = bodyStart;
-          s.y = after;
+        case "star": {
+          const split = this.emit({ op: "split", x: 0, y: 0 });
+          const bodyStart = this.prog.length;
+          this.compile(node.node);
+          this.emit({ op: "jmp", x: split });
+          const after = this.prog.length;
+          const s = this.prog[split] as { x: number; y: number };
+          if (node.lazy) {
+            s.x = after;
+            s.y = bodyStart;
+          } else {
+            s.x = bodyStart;
+            s.y = after;
+          }
+          return;
         }
-        return;
-      }
-      case "plus": {
-        const bodyStart = this.prog.length;
-        this.compile(node.node);
-        const split = this.emit({ op: "split", x: 0, y: 0 });
-        const after = this.prog.length;
-        const s = this.prog[split] as { x: number; y: number };
-        if (node.lazy) {
-          s.x = after;
-          s.y = bodyStart;
-        } else {
-          s.x = bodyStart;
-          s.y = after;
+        case "plus": {
+          const bodyStart = this.prog.length;
+          this.compile(node.node);
+          const split = this.emit({ op: "split", x: 0, y: 0 });
+          const after = this.prog.length;
+          const s = this.prog[split] as { x: number; y: number };
+          if (node.lazy) {
+            s.x = after;
+            s.y = bodyStart;
+          } else {
+            s.x = bodyStart;
+            s.y = after;
+          }
+          return;
         }
-        return;
-      }
-      case "quest": {
-        const split = this.emit({ op: "split", x: 0, y: 0 });
-        const bodyStart = this.prog.length;
-        this.compile(node.node);
-        const after = this.prog.length;
-        const s = this.prog[split] as { x: number; y: number };
-        if (node.lazy) {
-          s.x = after;
-          s.y = bodyStart;
-        } else {
-          s.x = bodyStart;
-          s.y = after;
+        case "quest": {
+          const split = this.emit({ op: "split", x: 0, y: 0 });
+          const bodyStart = this.prog.length;
+          this.compile(node.node);
+          const after = this.prog.length;
+          const s = this.prog[split] as { x: number; y: number };
+          if (node.lazy) {
+            s.x = after;
+            s.y = bodyStart;
+          } else {
+            s.x = bodyStart;
+            s.y = after;
+          }
+          return;
         }
-        return;
-      }
-      case "repeat": {
-        const min = node.min;
-        const max = node.max;
-        for (let i = 0; i < min; i++) this.compile(node.node);
-        if (max === Infinity) {
-          this.compile({ t: "star", node: node.node, lazy: node.lazy });
-        } else {
-          for (let i = min; i < max; i++) this.compile({ t: "quest", node: node.node, lazy: node.lazy });
+        case "repeat": {
+          const min = node.min;
+          const max = node.max;
+          for (let i = 0; i < min; i++) this.compile(node.node);
+          if (max === Infinity) {
+            this.compile({ t: "star", node: node.node, lazy: node.lazy });
+          } else {
+            for (let i = min; i < max; i++) this.compile({ t: "quest", node: node.node, lazy: node.lazy });
+          }
+          return;
         }
-        return;
       }
+    } finally {
+      this.depth--;
     }
   }
 }
@@ -510,19 +533,17 @@ function isWord(cp: number): boolean {
   return (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || cp === 95;
 }
 
+/** Whether cp lies in sorted, merged ranges: O(log n), so a class of many
+ * ranges costs about what the one budget step charged for it allows. */
 function binarySearchRanges(ranges: [number, number][], cp: number): boolean {
   let lo = 0;
   let hi = ranges.length - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const r = ranges[mid]!;
-    if (cp < r[0]) {
-      hi = mid - 1;
-    } else if (cp > r[1]) {
-      lo = mid + 1;
-    } else {
-      return true;
-    }
+    if (cp < r[0]) hi = mid - 1;
+    else if (cp > r[1]) lo = mid + 1;
+    else return true;
   }
   return false;
 }
@@ -577,30 +598,44 @@ class Program implements CompiledRegex {
     };
 
     type Thread = { pc: number; caps: number[] };
-    const addThread = (list: Thread[], visited: Set<number>, pc: number, sp: number, caps: number[]): void => {
-      if (visited.has(pc)) return;
-      visited.add(pc);
-      budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
-      const inst = this.prog[pc]!;
-      switch (inst.op) {
-        case "jmp":
-          addThread(list, visited, inst.x, sp, caps);
-          return;
-        case "split":
-          addThread(list, visited, inst.x, sp, caps);
-          addThread(list, visited, inst.y, sp, caps);
-          return;
-        case "save": {
-          const c = caps.slice();
-          c[inst.slot] = sp;
-          addThread(list, visited, pc + 1, sp, c);
-          return;
+    // Follow the epsilon instructions (jmp, split, save, assert) from pc and
+    // add the threads they reach to `list`, in priority order. A depth-first
+    // walk without recursion: it recursed once per instruction, and the
+    // program-size cap allows epsilon chains longer than the call stack
+    // ("(?:^{1000}){9}"). Single-successor instructions are followed in place;
+    // a split's second branch waits on the stack under everything its first
+    // reaches, which is the order the recursion visited them in.
+    const pendingPc: number[] = [];
+    const pendingCaps: number[][] = [];
+    const addThread = (list: Thread[], visited: Set<number>, pc0: number, sp: number, caps0: number[]): void => {
+      pendingPc.push(pc0);
+      pendingCaps.push(caps0);
+      while (pendingPc.length > 0) {
+        let pc = pendingPc.pop()!;
+        let caps = pendingCaps.pop()!;
+        for (;;) {
+          if (visited.has(pc)) break;
+          visited.add(pc);
+          budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
+          const inst = this.prog[pc]!;
+          if (inst.op === "jmp") {
+            pc = inst.x;
+          } else if (inst.op === "split") {
+            pendingPc.push(inst.y);
+            pendingCaps.push(caps);
+            pc = inst.x;
+          } else if (inst.op === "save") {
+            caps = caps.slice();
+            caps[inst.slot] = sp;
+            pc++;
+          } else if (inst.op === "assert") {
+            if (!checkAssert(inst.kind, sp)) break;
+            pc++;
+          } else {
+            list.push({ pc, caps });
+            break;
+          }
         }
-        case "assert":
-          if (checkAssert(inst.kind, sp)) addThread(list, visited, pc + 1, sp, caps);
-          return;
-        default:
-          list.push({ pc, caps });
       }
     };
 
@@ -661,13 +696,14 @@ class Program implements CompiledRegex {
   }
 }
 
-/** A capture as a string. Spread in chunks: one spread of the whole capture
- * overflows the call stack once it passes ~100k code points, which the input
- * can be — it is cut at MAX_INPUT_LENGTH (256 KiB) unless the host sets
- * maxMatchInputLength, which replaces that default whatever its size. */
+/** A capture as a string. Spread in chunks of 4096: a spread passes its
+ * elements on the call stack, so one of the whole capture overflows it past
+ * ~100k code points (the input is cut at MAX_INPUT_LENGTH, 256 KiB, unless
+ * the host sets another maxMatchInputLength), and chunks of 0x8000 still took
+ * ~200 KB of it. */
 function fromCodePoints(cps: number[], start: number, end: number): string {
   let s = "";
-  for (let i = start; i < end; i += 0x8000) s += String.fromCodePoint(...cps.slice(i, Math.min(end, i + 0x8000)));
+  for (let i = start; i < end; i += 0x1000) s += String.fromCodePoint(...cps.slice(i, Math.min(end, i + 0x1000)));
   return s;
 }
 
@@ -677,9 +713,12 @@ const encoder = new TextEncoder();
 export function byteLen(s: string): number {
   return encoder.encode(s).length;
 }
+/** The longest prefix of s within maxBytes. A character the byte cut splits is
+ * dropped, not decoded as U+FFFD: the cut input is matched as a prefix of the
+ * real one, and a U+FFFD there is content the real input does not have. */
 function truncateToBytes(s: string, maxBytes: number): string {
   const bytes = encoder.encode(s);
-  return new TextDecoder().decode(bytes.subarray(0, maxBytes));
+  return new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true });
 }
 
 /** Compile a regex pattern, enforcing the compile-time pattern-length cap. */
