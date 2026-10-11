@@ -3,7 +3,7 @@
 // One vitest `it` per `.svtest` (and `.svtest.in` — see listSvtests): in-scope
 // files run through runDovecotFile and must produce zero sub-test failures;
 // files requiring an extension this interpreter doesn't implement (enotify,
-// include, mime, …) or the result-verification DSL that is out of scope here
+// include, extracttext, …) or the result-verification DSL that is out of scope here
 // (test_result_execute, test_message, …) are it.skip'd with a note.
 //
 // This covers every in-scope extension corpus — a gold-standard stress test
@@ -129,7 +129,7 @@ const candidates = listSvtests();
 
 // Set CORPUS_RUN_ALL=1 to force EVERY .svtest to run (no skips, no per-subtest
 // skips). Expect ~100 failures: those files require extensions this interpreter
-// does not implement (enotify, mime, include, …) or the Pigeonhole-only
+// does not implement (enotify, include, extracttext, …) or the Pigeonhole-only
 // result/test_error DSL, so they throw at load or fail their assertions. Use it
 // to audit the skip classification, not as a green gate.
 const RUN_ALL = process.env.CORPUS_RUN_ALL === "1";

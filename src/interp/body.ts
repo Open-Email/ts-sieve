@@ -12,14 +12,14 @@ import type { Message, RuntimeData, Test, Tri } from "./runtime.js";
 
 // -------- byte/binary-string helpers --------
 
-function bytesToBinary(u8: Uint8Array): string {
+export function bytesToBinary(u8: Uint8Array): string {
   let s = "";
   for (let i = 0; i < u8.length; i += 0x8000) {
     s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
   }
   return s;
 }
-function binaryToBytes(s: string): Uint8Array {
+export function binaryToBytes(s: string): Uint8Array {
   const u8 = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i) & 0xff;
   return u8;
@@ -154,7 +154,7 @@ function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string
 
 // -------- media type + header parsing --------
 
-function parseMediaType(ct: string): { mediaType: string; params: Record<string, string> } {
+export function parseMediaType(ct: string): { mediaType: string; params: Record<string, string> } {
   const semi = ct.indexOf(";");
   const mediaType = (semi === -1 ? ct : ct.slice(0, semi)).trim().toLowerCase();
   const params: Record<string, string> = {};
@@ -172,7 +172,7 @@ function parseMediaType(ct: string): { mediaType: string; params: Record<string,
 }
 
 /** Parse a MIME header block (binary string) into a case-insensitive last-value map. */
-function parseMimeHeader(block: string): Map<string, string> {
+export function parseMimeHeader(block: string): Map<string, string> {
   const h = new Map<string, string>();
   const lines = block.split(/\r?\n/);
   let cur = "";
@@ -199,7 +199,7 @@ function parseMimeHeader(block: string): Map<string, string> {
  * `header` excludes the final line break, `headerRaw` keeps it; `sep` says
  * whether a blank line was found at all (without one, everything is header).
  */
-function splitHeaderBody(b: string): { header: string; headerRaw: string; body: string; sep: boolean } {
+export function splitHeaderBody(b: string): { header: string; headerRaw: string; body: string; sep: boolean } {
   let pos = 0;
   for (;;) {
     const nl = b.indexOf("\n", pos);
@@ -227,7 +227,7 @@ function splitHeaderBody(b: string): { header: string; headerRaw: string; body: 
  * body test charges every part, so 10000 tiny parts under a handful of body
  * rules exhaust a host's step budget, and its later tests go unknown.
  */
-const MAX_MIME_DEPTH = 100;
+export const MAX_MIME_DEPTH = 100;
 
 /**
  * Each leaf's text, per Message object: decoded, and reduced from HTML for
@@ -256,7 +256,7 @@ function rawBinary(msg: Message, raw: Uint8Array): string {
   if (s === undefined) rawBinaries.set(msg, (s = bytesToBinary(raw)));
   return s;
 }
-const MAX_MIME_PARTS = 1024;
+export const MAX_MIME_PARTS = 1024;
 
 export class TestBody implements Test {
   readonly matcher = new MatcherTest();
@@ -533,7 +533,7 @@ export class TestBody implements Test {
  * no delimiter line (the rest of the line is unseen), and the last fragment
  * loses any tail that could still turn out to be a delimiter.
  */
-function splitBoundary(b: string, boundary: string, cut: boolean): string[] {
+export function splitBoundary(b: string, boundary: string, cut: boolean): string[] {
   const dash = `\n--${boundary}`;
   const parts: string[] = [];
   let pos = 0;
@@ -568,7 +568,7 @@ function delimiterEnds(b: string, end: number, cut: boolean): boolean {
 }
 
 /** Drop a delimiter line's transport padding (LWSP) and line break. */
-function skipDelimiterLineEnd(p: string): string {
+export function skipDelimiterLineEnd(p: string): string {
   let i = 0;
   while (i < p.length && (p.charCodeAt(i) === 32 || p.charCodeAt(i) === 9)) i++;
   if (p.charCodeAt(i) === 13 && p.charCodeAt(i + 1) === 10) return p.slice(i + 2);
