@@ -30,11 +30,13 @@ describe("the delimiter search", () => {
     const misses: string[] = [];
     let found = 0;
     let foundLf = 0;
-    for (let t = 0; t < 6000 && misses.length < 5; t++) {
+    for (let t = 0; t < 12_000 && misses.length < 5; t++) {
       // Pieces that make near-matches and overlaps of the delimiter: CR, LF,
-      // dashes, space, repeats.
+      // dashes, space, repeats. Every other boundary is only LF, "-" and "q",
+      // whose delimiters overlap themselves the most.
       let boundary = "";
-      for (let i = rnd(7); i > 0; i--) boundary += pick(["q", "q", "a", "-", "--", " ", "\r", "\n", "\r\n", "q\n--", "q\r\n--", "=_"]);
+      if (t % 2) for (let i = 1 + rnd(8); i > 0; i--) boundary += pick(["\n", "-", "q"]);
+      else for (let i = rnd(7); i > 0; i--) boundary += pick(["q", "q", "a", "-", "--", " ", "\r", "\n", "\r\n", "q\n--", "q\r\n--", "=_"]);
       const nl = rnd(2) ? "\r\n" : "\n";
       const prefix = () => boundary.slice(0, rnd(boundary.length + 1));
       const fragments = [
@@ -74,6 +76,27 @@ describe("the delimiter search", () => {
     // boundary.
     expect(found).toBeGreaterThan(50_000);
     expect(foundLf).toBeGreaterThan(30_000);
+  });
+
+  it("finds a delimiter after each partial one, for every short boundary of LF, dashes and q", () => {
+    // Random bodies almost never hold the shape on which a wrong fallback in
+    // the search's table misses a delimiter (the shortest has a 7-byte
+    // boundary, "\n\n--\n-\n"), so every boundary up to 7 bytes is searched
+    // for after each prefix of its delimiter.
+    const misses: string[] = [];
+    let boundaries = [""];
+    for (let len = 1; len <= 7; len++) {
+      boundaries = boundaries.flatMap((s) => [`${s}\n`, `${s}-`, `${s}q`]);
+      for (const boundary of boundaries) {
+        const delimiter = `\n--${boundary}`;
+        for (let i = 0; i < delimiter.length; i++) {
+          const b = delimiter.slice(0, i) + delimiter;
+          const got = indexOfDelimiter(b, "\n", boundary, 0);
+          if (got !== b.indexOf(delimiter)) misses.push(`${JSON.stringify({ b, boundary })}: ${got}`);
+        }
+      }
+    }
+    expect(misses).toEqual([]);
   });
 });
 
