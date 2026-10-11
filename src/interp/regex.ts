@@ -579,17 +579,29 @@ interface StepBudget {
 export interface CompiledRegex {
   /** Compile calls it took (see MAX_COMPILE_WORK). */
   readonly compileWork: number;
-  findSubmatch(input: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null;
+  /** Whether the pattern holds an assertion decided by what follows the
+   * matched text (`$`, `\z`, `\b`, `\B`): at the end of a cut input nothing
+   * follows, though the whole input goes on. */
+  readonly endSensitive: boolean;
+  /** `info.atEnd`, when given, is set to whether the match ends at the end of
+   * the input matched (after maxInputLength's cut). */
+  findSubmatch(input: string, opts?: { maxInputLength?: number; budget?: StepBudget; info?: { atEnd: boolean } }): string[] | null;
 }
 
 class Program implements CompiledRegex {
+  readonly endSensitive: boolean;
+
   constructor(
     private readonly prog: Inst[],
     private readonly ncaps: number,
     readonly compileWork: number,
-  ) {}
+  ) {
+    this.endSensitive = prog.some(
+      (i) => i.op === "assert" && (i.kind === "eot" || i.kind === "eol" || i.kind === "wordb" || i.kind === "nwordb"),
+    );
+  }
 
-  findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget }): string[] | null {
+  findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget; info?: { atEnd: boolean } }): string[] | null {
     const maxInput = opts?.maxInputLength ?? MAX_INPUT_LENGTH;
     const budget = opts?.budget;
     // Byte-truncate the input before matching.
@@ -706,6 +718,7 @@ class Program implements CompiledRegex {
     }
 
     if (matched === null) return null;
+    if (opts?.info) opts.info.atEnd = matched[1] === input.length;
     const out: string[] = [];
     for (let i = 0; i < nslots; i += 2) {
       const a = matched[i]!;

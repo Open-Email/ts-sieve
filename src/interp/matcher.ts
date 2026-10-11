@@ -55,17 +55,6 @@ function globEndsWithStar(pattern: string): boolean {
   return !escaped && lastWasStar;
 }
 
-/**
- * Whether a `:regex` FOUND match over a prefix proves a match over the real
- * value. Search semantics make any hit inside the prefix a hit in the whole —
- * unless the pattern can anchor to the end, so any `$` (even escaped: the
- * over-approximation only ever demotes a definite answer to "unknown", never
- * the reverse) forfeits the proof.
- */
-function regexSoundOnPrefix(pattern: string): boolean {
-  return !pattern.includes("$");
-}
-
 /** How many UTF-16 units of values and their folds foldOnce keeps. */
 const FOLD_CACHE_MAX = 4 * 1024 * 1024;
 
@@ -102,9 +91,10 @@ export class MatcherTest {
   private caseFold = false;
   /** Precompiled no-variable `:matches`/`:regex` patterns (null = compile per-execution). */
   private compiledKeys: (CompiledRegex | null)[] = [];
-  /** Per key: does a MATCH over a truncated input prove a match over the real
-   * value? (`:matches`: trailing unescaped `*`; `:regex`: no `$`.) null =
-   * variable-bearing key, decide per-run from the expanded pattern. */
+  /** Per `:matches` key: does a MATCH over a truncated input prove a match
+   * over the real value? (A trailing unescaped `*`.) null = variable-bearing
+   * key, decide per-run from the expanded pattern. A `:regex` match decides it
+   * at run time: see CompiledRegex.endSensitive. */
   private soundKeys: (boolean | null)[] = [];
 
   /** Register the comparator/match-type/relational tags onto a test's spec. */
@@ -228,7 +218,6 @@ export class MatcherTest {
       // quantifier-first refusals, and lowercasing the text would corrupt
       // escapes (`\W` → `\w` inverts the class).
       this.compiledKeys = this.key.map((k) => (k.includes("${") ? null : this.compileKey(k)));
-      this.soundKeys = this.key.map((k) => (k.includes("${") ? null : regexSoundOnPrefix(k)));
     }
   }
 
@@ -350,17 +339,20 @@ export class MatcherTest {
         // and captures fold to lowercase (and ς to σ) under this comparator
         // only.
         const value = this.comparator === "i;unicode-casemap" ? toUnicodeCasemapFold(source) : source;
-        const { re, pattern } = this.runtimeKey(d, i);
+        const { re } = this.runtimeKey(d, i);
         if (re === null) {
           unknown = true;
           continue;
         }
         const truncated = sourceTruncated || byteLen(value) > cap;
-        const caps = re.findSubmatch(value, reOpts);
+        const info = { atEnd: false };
+        const caps = re.findSubmatch(value, { ...reOpts, info });
         if (caps !== null) {
           // Search semantics: a hit inside the prefix is a hit in the whole,
-          // unless the pattern can anchor to the end.
-          if (!truncated || (this.soundKeys[i] ?? regexSoundOnPrefix(pattern))) {
+          // unless an assertion decided it at the cut ($, \z, \b, \B look at
+          // what follows, and nothing does there though the whole goes on).
+          // Before the cut they see the same characters in both inputs.
+          if (!truncated || !(re.endSensitive && info.atEnd)) {
             if (d.captureDoubt || unknown) markStaleCaptures(caps);
             else if (truncated) markCutCaptures(caps);
             d.matchVariables = caps;
