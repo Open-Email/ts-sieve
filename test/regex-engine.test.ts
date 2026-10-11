@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compileRegex, patternToRegex } from "../src/interp/regex.js";
+import { R, run } from "./harness.js";
 
 function m(pattern: string, input: string): string[] | null {
   return compileRegex(pattern).findSubmatch(input);
@@ -45,5 +46,25 @@ describe("regex engine", () => {
   it("input byte-truncation drops trailing match", () => {
     expect(compileRegex("b$").findSubmatch("aaaaaaaa" + "b", { maxInputLength: 8 })).toBeNull();
     expect(compileRegex("b$").findSubmatch("aaaaaaa" + "b", { maxInputLength: 8 })).not.toBeNull();
+  });
+
+  it("character-class with hundreds of duplicate ranges matches linearly fast", () => {
+    const pattern = `[^${"\\W".repeat(400)}]{900}`;
+    const subject = "a".repeat(16 * 1024);
+    const t0 = performance.now();
+    const res = compileRegex(pattern).findSubmatch(subject);
+    const elapsed = performance.now() - t0;
+    expect(res).not.toBeNull();
+    expect(elapsed).toBeLessThan(100);
+  });
+
+  it("character-class over 16 KiB header runs within script budget", () => {
+    const pattern = `[^${"\\W".repeat(400)}]{900}`;
+    const subject = "a".repeat(16 * 1024);
+    const script = `require ["regex","fileinto"];
+      if header :regex "subject" "${pattern}" { fileinto "Match"; }
+      fileinto "Other";`;
+    const res = run(script, `Subject: ${subject}\r\n\r\nbody\r\n`);
+    expect(res).toEqual(R({ fileinto: ["Match", "Other"] }));
   });
 });
