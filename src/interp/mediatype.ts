@@ -8,8 +8,6 @@
 // port of Go's mime.ParseMediaType, with go-message's fallback (contentType).
 // Values are binary strings: a byte per character, as the walker reads them.
 
-import { decodeHeaderValue } from "./header.js";
-
 const RUNE_ERROR = 0xfffd;
 
 /** Go's utf8.DecodeRuneInString over a binary string. */
@@ -319,14 +317,255 @@ function parseMediaType(v: string): MediaTypeResult {
 }
 
 
-/** A param value's RFC 2047 encoded words decoded (go-message's
- * decodeHeader), as a binary string; the raw value when nothing decodes. */
-function decodeParam(v: string): string {
-  if (!v.includes("=?")) return v;
-  const decoded = decodeHeaderValue(v);
-  if (decoded === v) return v;
+// -------- RFC 2047 in parameter values: core's encodedword.ts --------
+//
+// go-message decodes a parameter's encoded words with Go's WordDecoder over
+// bytes, knowing only utf-8, iso-8859-1 and us-ascii: any other charset keeps
+// the whole RAW value, a malformed word passes through as written, and
+// adjacent words join their bytes. The header test's decoder (TextDecoder,
+// word by word) gives other bytes for most such values, and a boundary that
+// decodes differently is a part one of them does not see.
+
+type ErrKind = null | "invalid" | "charset";
+
+/** Go utf8.EncodeRune → byte string (used where Go WriteRune()s into a builder). */
+function encodeRune(r: number): string {
+  if (r < 0 || (r >= 0xd800 && r <= 0xdfff) || r > 0x10ffff) r = RUNE_ERROR;
+  if (r < 0x80) return String.fromCharCode(r);
+  if (r < 0x800) return String.fromCharCode(0xc0 | (r >> 6), 0x80 | (r & 0x3f));
+  if (r < 0x10000) {
+    return String.fromCharCode(0xe0 | (r >> 12), 0x80 | ((r >> 6) & 0x3f), 0x80 | (r & 0x3f));
+  }
+  return String.fromCharCode(
+    0xf0 | (r >> 18),
+    0x80 | ((r >> 12) & 0x3f),
+    0x80 | ((r >> 6) & 0x3f),
+    0x80 | (r & 0x3f),
+  );
+}
+
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const b64Index = new Map<number, number>();
+for (let i = 0; i < B64_ALPHABET.length; i++) b64Index.set(B64_ALPHABET.charCodeAt(i), i);
+
+/** Go base64.StdEncoding.DecodeString: strict, but \r and \n are skipped. */
+function base64Decode(s: string): string | null {
+  let cleaned = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === "\r" || c === "\n") continue;
+    // Fail FAST on a character no quantum can hold. Every such input is
+    // refused by the quantum loop below anyway (the result is identical), but
+    // only after this loop has copied the whole text — and the header decoder
+    // hands this function a text that runs to the NEXT `?=`, however far away,
+    // once per candidate word, which made a run of `=?x?B?` candidates O(n²).
+    if (c !== "=" && !b64Index.has(c.charCodeAt(0))) return null;
+    cleaned += c;
+  }
+  if (cleaned.length % 4 !== 0) return null;
   let out = "";
-  for (const b of new TextEncoder().encode(decoded)) out += String.fromCharCode(b);
+  for (let i = 0; i < cleaned.length; i += 4) {
+    const quad = cleaned.slice(i, i + 4);
+    const last = i + 4 >= cleaned.length;
+    let pads = 0;
+    if (quad[3] === "=") {
+      pads = quad[2] === "=" ? 2 : 1;
+      if (!last) return null; // padding only in the final quantum
+    }
+    const vals: number[] = [];
+    for (let j = 0; j < 4 - pads; j++) {
+      const v = b64Index.get(quad.charCodeAt(j));
+      if (v === undefined) return null;
+      vals.push(v);
+    }
+    if (pads === 2) {
+      out += String.fromCharCode((vals[0]! << 2) | (vals[1]! >> 4));
+    } else if (pads === 1) {
+      out += String.fromCharCode((vals[0]! << 2) | (vals[1]! >> 4), ((vals[1]! & 0xf) << 4) | (vals[2]! >> 2));
+    } else {
+      out += String.fromCharCode(
+        (vals[0]! << 2) | (vals[1]! >> 4),
+        ((vals[1]! & 0xf) << 4) | (vals[2]! >> 2),
+        ((vals[2]! & 0x3) << 6) | vals[3]!,
+      );
+    }
+  }
+  return out;
+}
+
+function fromHex(b: number): number | null {
+  if (b >= 0x30 && b <= 0x39) return b - 0x30;
+  if (b >= 0x41 && b <= 0x46) return b - 0x41 + 10;
+  if (b >= 0x61 && b <= 0x66) return b - 0x61 + 10; // accept badly encoded bytes
+  return null;
+}
+
+/** Go qDecode. */
+function qDecode(s: string): string | null {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x5f /* _ */) {
+      out += " ";
+    } else if (c === 0x3d /* = */) {
+      if (i + 2 >= s.length) return null;
+      const hb = fromHex(s.charCodeAt(i + 1));
+      const lb = fromHex(s.charCodeAt(i + 2));
+      if (hb === null || lb === null) return null;
+      out += String.fromCharCode((hb << 4) | lb);
+      i += 2;
+    } else if ((c <= 0x7e && c >= 0x20) || c === 0x0a || c === 0x0d || c === 0x09) {
+      out += s[i];
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
+function decodeContent(encoding: string, text: string): string | null {
+  switch (encoding) {
+    case "B":
+    case "b":
+      return base64Decode(text);
+    case "Q":
+    case "q":
+      return qDecode(text);
+    default:
+      return null;
+  }
+}
+
+/**
+ * WordDecoder.convert with a nil user CharsetReader: the native trio decodes,
+ * everything else is a charset error.
+ */
+function convert(charset: string, content: string): { out: string; charsetErr: boolean } {
+  const cs = charset.toLowerCase();
+  if (cs === "utf-8") return { out: content, charsetErr: false };
+  if (cs === "iso-8859-1") {
+    let out = "";
+    for (let i = 0; i < content.length; i++) out += encodeRune(content.charCodeAt(i));
+    return { out, charsetErr: false };
+  }
+  if (cs === "us-ascii") {
+    let out = "";
+    for (let i = 0; i < content.length; i++) {
+      const c = content.charCodeAt(i);
+      out += c >= 0x80 ? encodeRune(RUNE_ERROR) : content[i];
+    }
+    return { out, charsetErr: false };
+  }
+  return { out: "", charsetErr: true };
+}
+
+function hasNonWhitespace(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    switch (s[i]) {
+      case " ":
+      case "\t":
+      case "\n":
+      case "\r":
+        break;
+      default:
+        return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Go WordDecoder.DecodeHeader: decodes every encoded-word in the value.
+ * Returns err=true if and only if a charset conversion failed (the only
+ * DecodeHeader error path) — at which point the caller keeps the raw value.
+ */
+function decodeHeaderRFC2047(input: string): { value: string; err: boolean } {
+  const first = input.indexOf("=?");
+  if (first === -1) return { value: input, err: false };
+
+  // Go walks a shrinking `header` slice; this walks ABSOLUTE offsets into the
+  // one input (`pos` is where Go's `header` begins), which is the same
+  // algorithm with one difference that matters: the position of the closing
+  // `?=` is CACHED. A candidate that fails to decode advances only two
+  // characters, and without the cache every such candidate re-scanned to the
+  // same far-away `?=` — a header of n bytes made O(n²) work, on the
+  // synchronous delivery path (Subject, every part's parameters, every
+  // embedded message's headers), from bytes any sender chooses. The cache is
+  // exact: `closeAt` is the first `?=` at or after some earlier `cur`, so while
+  // it is still ≥ the current `cur` no earlier `?=` can exist in between.
+  let buf = input.slice(0, first);
+  let pos = first;
+  let closeAt = -1;
+
+  let betweenWords = false;
+  for (;;) {
+    const start = input.indexOf("=?", pos);
+    if (start === -1) break;
+    let cur = start + 2;
+
+    const i = input.indexOf("?", cur);
+    if (i === -1) break;
+    const charset = input.slice(cur, i);
+    cur = i + 1;
+
+    if (input.length < cur + 4 /* "Q??=" */) break;
+    const encoding = input[cur]!;
+    cur++;
+
+    if (input[cur] !== "?") break;
+    cur++;
+
+    if (closeAt < cur) closeAt = input.indexOf("?=", cur);
+    const j = closeAt;
+    if (j === -1) break;
+    const text = input.slice(cur, j);
+    const end = j + 2;
+
+    const content = decodeContent(encoding, text);
+    if (content === null) {
+      betweenWords = false;
+      buf += input.slice(pos, start + 2);
+      pos = start + 2;
+      continue;
+    }
+
+    // Whitespace separating two encoded-words is deleted.
+    if (start > pos && (!betweenWords || hasNonWhitespace(input.slice(pos, start)))) {
+      buf += input.slice(pos, start);
+    }
+
+    const conv = convert(charset, content);
+    if (conv.charsetErr) return { value: "", err: true };
+    buf += conv.out;
+
+    pos = end;
+    betweenWords = true;
+  }
+
+  if (pos < input.length) buf += input.slice(pos);
+  return { value: buf, err: false };
+}
+
+/**
+ * go-message decodeHeader: DecodeHeader, but on (charset) error the RAW input
+ * is returned. Used for Subject, Content-Type/Disposition param values, etc.
+ */
+function decodeHeaderShim(s: string): { value: string } {
+  const res = decodeHeaderRFC2047(s);
+  if (res.err) return { value: s };
+  return { value: res.value };
+}
+
+/**
+ * A header value a host gave as text (Message.headerGet), as the bytes the
+ * walker reads: its UTF-8. A part's header is read from the raw body and is
+ * already bytes; the root's comes from the host, decoded, and a boundary
+ * matched against the raw body has to be its bytes again.
+ */
+export function hostValueBytes(v: string): string {
+  if (!/[^\x00-\x7f]/.test(v)) return v;
+  let out = "";
+  for (const b of new TextEncoder().encode(v)) out += String.fromCharCode(b);
   return out;
 }
 
@@ -348,7 +587,7 @@ export function contentType(value: string): { mediaType: string; primary: string
     params = null;
   }
   const decoded: Record<string, string> = {};
-  if (params) for (const k of Object.keys(params)) decoded[k] = decodeParam(params[k]!);
+  if (params) for (const k of Object.keys(params)) decoded[k] = decodeHeaderShim(params[k]!).value;
   const slash = mediaType.indexOf("/");
   return { mediaType, primary: slash < 0 ? mediaType : mediaType.slice(0, slash), params: decoded };
 }

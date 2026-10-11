@@ -9,7 +9,8 @@
 // attachment rule. The engine now reads a part's Content-Type as core does.
 
 import { describe, expect, it } from "vitest";
-import { run } from "./harness.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { ALL_EXTENSIONS, run } from "./harness.js";
 
 const B = String.fromCharCode(92);
 const exe = "Content-Type: application/x-msdownload\r\nContent-Disposition: attachment; filename=\"evil.exe\"\r\n\r\nMZ\r\n";
@@ -71,5 +72,60 @@ describe("a nested message/global is descended, as message/rfc822 is", () => {
     const inner = `From: c@x\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\n${exe}--b--\r\n`;
     const m = `From: a@x\r\nContent-Type: multipart/mixed; boundary=outer\r\n\r\n--outer\r\nContent-Type: message/global\r\n\r\n${inner}--outer--\r\n`;
     expect(run(anychild, m).fileinto).toEqual(["Junk"]);
+  });
+});
+
+/** Run over a message whose body is exactly these bytes (a binary string:
+ * a byte per character), the root a multipart with boundary "outer". */
+function runRaw(script: string, body: string, rootCt = "multipart/mixed; boundary=outer") {
+  const s = load(script, { enabledExtensions: ALL_EXTENSIONS });
+  const headers = new Map([["content-type", [rootCt]], ["from", ["a@x"]]]);
+  const bytes = Uint8Array.from(body, (c) => c.charCodeAt(0));
+  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(bytes.length, headers, bytes));
+  s.execute(d);
+  return d.mailboxes;
+}
+/** The nested multipart with this Content-Type parameter value, its parts
+ * delimited by `delim` (the boundary core decodes from it), as bytes. */
+const nested = (param: string, delim: string) =>
+  `--outer\r\nContent-Type: multipart/mixed; boundary="${param}"\r\n\r\n` +
+  `--${delim}\r\nContent-Type: text/plain\r\n\r\nhello\r\n--${delim}\r\n${exe}--${delim}--\r\n--outer--\r\n`;
+
+describe("an encoded boundary is decoded as core decodes it", () => {
+  const cases: [string, string, string][] = [
+    // core keeps the whole raw value for a charset it does not know
+    ["an unknown charset", "=?windows-1252?Q?abc?=", "=?windows-1252?Q?abc?="],
+    ["a bogus charset", "=?bogus?Q?abc?=", "=?bogus?Q?abc?="],
+    ["an RFC 2231 language suffix", "=?utf-8*en?Q?abc?=", "=?utf-8*en?Q?abc?="],
+    ["utf-16", "=?utf-16?B?AGEAYg==?=", "=?utf-16?B?AGEAYg==?="],
+    // and passes a malformed word through as written
+    ["bad base64", "=?utf-8?B?YWJ?=", "=?utf-8?B?YWJ?="],
+    ["bad hex in Q", "=?utf-8?Q?a=G1?=", "=?utf-8?Q?a=G1?="],
+    // and keeps the bytes a word decodes to, invalid UTF-8 included
+    ["an invalid UTF-8 byte", "=?utf-8?Q?a=FFb?=", "a\xffb"],
+    ["a Latin-1 byte labelled UTF-8", "=?UTF-8?q?=e9?=", "\xe9"],
+    ["a character split across two words", "=?utf-8?Q?=C3?= =?utf-8?Q?=A9?=", "\xc3\xa9"],
+    ["raw 8-bit before a word", "\xc3\xa9=?utf-8?Q?x?=", "\xc3\xa9x"],
+  ];
+  for (const [name, param, delim] of cases) {
+    it(name, () => {
+      expect(runRaw(anychild, nested(param, delim))).toEqual(["Junk"]);
+    });
+  }
+});
+
+describe("header values as core reads them", () => {
+  it("a root boundary given as text is matched as its UTF-8 bytes", () => {
+    const m = `From: a@x\r\nContent-Type: multipart/mixed; boundary="é"\r\n\r\n--é\r\nContent-Type: text/plain\r\n\r\nhi\r\n--é\r\n${exe}--é--\r\n`;
+    expect(run(anychild, m).fileinto).toEqual(["Junk"]);
+    const body = 'require ["fileinto","body"]; if body :content "application/x-msdownload" :contains "MZ" { fileinto "Junk"; }';
+    expect(run(body, m).fileinto).toEqual(["Junk"]);
+  });
+
+  it("a folded value keeps a vertical tab, as core trims only space and tab", () => {
+    const body =
+      `--outer\r\nContent-Type: multipart/mixed; boundary="a\r\n \x0bb"\r\n\r\n` +
+      `--a \x0bb\r\nContent-Type: text/plain\r\n\r\nhello\r\n--a \x0bb\r\n${exe}--a \x0bb--\r\n--outer--\r\n`;
+    expect(runRaw(anychild, body)).toEqual(["Junk"]);
   });
 });

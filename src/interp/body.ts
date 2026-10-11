@@ -6,7 +6,7 @@
 // charset-decoded to UTF-8; :text HTML parts are stripped to text. Everything is
 // linear/bounded (no backtracking regex on body content).
 
-import { contentType } from "./mediatype.js";
+import { contentType, hostValueBytes } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import { MatcherTest } from "./matcher.js";
 import type { Message, RuntimeData, Test, Tri } from "./runtime.js";
@@ -178,23 +178,38 @@ export function isMessage(mediaType: string): boolean {
 export function parseMimeHeader(block: string): Map<string, string> {
   const h = new Map<string, string>();
   const lines = block.split(/\r?\n/);
-  let cur = "";
-  const flush = (line: string) => {
-    const idx = line.indexOf(":");
+  // A field's lines: its first, then its continuations. The value is each
+  // line trimmed of space and tab only, the empty ones dropped, joined by a
+  // space, as the walker's trimAroundNewlines does: JS trim() also took a
+  // vertical tab or a form feed, which changed a folded boundary.
+  let cur: string[] = [];
+  const flush = () => {
+    const idx = cur[0]!.indexOf(":");
     if (idx === -1) return;
-    const k = line.slice(0, idx).trim().toLowerCase();
-    if (!h.has(k)) h.set(k, line.slice(idx + 1).trim());
+    const k = trimSpHt(cur[0]!.slice(0, idx)).toLowerCase();
+    if (h.has(k)) return;
+    const pieces = [cur[0]!.slice(idx + 1), ...cur.slice(1)].map(trimSpHt).filter((p) => p !== "");
+    h.set(k, pieces.join(" "));
   };
   for (const line of lines) {
-    if (/^[ \t]/.test(line) && cur) {
-      cur += ` ${line.trim()}`;
+    if (/^[ \t]/.test(line) && cur.length > 0) {
+      cur.push(line);
     } else {
-      if (cur) flush(cur);
-      cur = line;
+      if (cur.length > 0) flush();
+      cur = [line];
     }
   }
-  if (cur) flush(cur);
+  if (cur.length > 0) flush();
   return h;
+}
+
+/** Space and tab trimmed from both ends, and nothing else. */
+function trimSpHt(s: string): string {
+  let i = 0;
+  let n = s.length;
+  while (i < n && (s[i] === " " || s[i] === "\t")) i++;
+  while (n > i && (s[n - 1] === " " || s[n - 1] === "\t")) n--;
+  return s.slice(i, n);
 }
 
 /**
@@ -299,8 +314,8 @@ export class TestBody implements Test {
         return this.matcher.tryMatch(d, rawBinary(d.msg, raw), this.matchOpts(d), bodyCut);
       }
 
-      const topCt = d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii";
-      const topCte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
+      const topCt = hostValueBytes(d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii");
+      const topCte = hostValueBytes(d.msg.headerGet("content-transfer-encoding")[0] ?? "");
       const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
       const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, flags, 0, "");
