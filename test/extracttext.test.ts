@@ -121,7 +121,7 @@ describe("decoding", () => {
     expect(runBytes(ex, "application/xhtml+xml", ascii("<p>a <b>b</b></p>")).fileinto).toEqual(["[a b]"]);
   });
 
-  it("a part's transfer encoding is the one the body test reads (the last of two)", () => {
+  it("a part's transfer encoding is the first of two, as core's MIME walker (and the body test) reads it", () => {
     const eml = [
       "From: a@x",
       "To: b@y",
@@ -136,7 +136,7 @@ describe("decoding", () => {
       "--b--",
       "",
     ].join("\r\n");
-    expect(run(ex, eml).fileinto).toEqual(["[]", "[aGVsbG8=]"]);
+    expect(run(ex, eml).fileinto).toEqual(["[]", "[hello]"]);
   });
 });
 
