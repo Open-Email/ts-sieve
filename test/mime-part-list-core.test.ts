@@ -455,6 +455,47 @@ describe("a boundary whose line break and dashes fill the walker's 4096-byte buf
   });
 });
 
+describe("a multipart in a part that ended at a boundary: its end of input reaches core through the part", () => {
+  // Core reads such a multipart through the outer part's reader, which hands
+  // over its last bytes with the end of input or after them, as its own
+  // 4096-byte window falls, which the size of the message's header moves.
+  // Where Go's ReadLine sees a last piece of a full 4096 bytes, that decides
+  // whether it reads one more, empty, piece, so what turns on it is unknown.
+  const nest = (inner: string) => `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n--c\r\n${inner}\r\n--b--\r\n`;
+  const eofLine = (n: number) => `Content-Type: application/x-msdownload\r\nX-Pad: ${"p".repeat(n - 7)}`;
+  const UNKNOWN_HIT = R({ implicitKeep: true, indeterminate: true });
+
+  it("a field's first line ending on a 4096-byte piece is unknown, not refused", () => {
+    expect(runRaw(anychild, nest(eofLine(4096)))).toEqual(UNKNOWN_HIT);
+    expect(runRaw(anychild, nest(eofLine(8192)))).toEqual(UNKNOWN_HIT);
+    // Two levels of parts.
+    const two = `--a\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${nest(eofLine(4096))}\r\n--a--\r\n`;
+    expect(runRaw(anychild, two, { rootCt: "multipart/mixed; boundary=a" })).toEqual(UNKNOWN_HIT);
+    // Another length is kept, as anywhere.
+    expect(runRaw(anychild, nest(eofLine(4095)))).toEqual(R({ fileinto: ["Junk"] }));
+  });
+
+  it("where core reads it from a copy of the bytes, or a part that ran out, it is refused", () => {
+    const inner = `--c\r\n${eofLine(4096)}`;
+    const rfc822 = `From: x@y\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}`;
+    expect(runRaw(anychild, rfc822, { rootCt: "message/rfc822" })).toEqual(R({ implicitKeep: true }));
+    const message = `--b\r\nContent-Type: message/rfc822\r\n\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}\r\n--b--\r\n`;
+    expect(runRaw(anychild, message)).toEqual(R({ implicitKeep: true }));
+    const ranOut = `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n${inner}`;
+    expect(runRaw(anychild, ranOut)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("a folded line ending on a 4096-byte piece: its line break counts toward the budget, or not", () => {
+    // The budget edge from "the budget, to the byte": core keeps 2380 at the
+    // top level; through a part the slack may be a byte more.
+    const edge = (n: number) =>
+      nest(`Content-Type: application/x-msdownload\r\nX-A: ${"a".repeat(n)}\r\n ${"a".repeat(4096 * 170 - 1)}`);
+    expect(runRaw(anychild, edge(2379))).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, edge(2380))).toEqual(UNKNOWN_HIT);
+    expect(runRaw(anychild, edge(2381))).toEqual(R({ implicitKeep: true }));
+  });
+});
+
 describe("the part cap", () => {
   // The walkers stop at 1024 parts, and so does the splitter: a message of
   // many tiny parts costs no more than its first 1025, per body test.

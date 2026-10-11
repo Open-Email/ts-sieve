@@ -228,10 +228,15 @@ on them and this one follows the RFC strictly:
   whose header block core's reader refuses (a folded first line, a line with
   no colon, a field name byte outside printable ASCII, over 1 MiB as core's
   port charges it, which is never less than Go charges, a field whose first
-  line ends at the end of the input on a 4096-byte boundary, or the end of a
-  part that ran out with no boundary), or at a line between parts over 4096
-  bytes. A multipart with no part has core's synthesized `text/plain` child,
-  of what core's reader had not read: the whole body without a boundary,
+  line ends the body or an embedded message on a 4096-byte boundary, or the
+  end of a part that ran out with no boundary), or at a line between parts
+  over 4096 bytes. In a part that ended at a boundary, core reads a
+  multipart through that part, and whether a header line ending it on a
+  4096-byte boundary is refused, or still counts its line break toward the
+  budget, depends on core's buffering, which the size of the message's header
+  moves: what turns on it is unknown. A multipart with no part has core's
+  synthesized `text/plain` child, of what core's reader had not read: the
+  whole body without a boundary,
   empty once the preamble runs out, the body past the first 4096 bytes of a
   preamble line longer than that, and the body past the 4096-byte piece of a
   first part's header line on which its budget ran out. Its text is unknown

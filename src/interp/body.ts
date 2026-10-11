@@ -247,25 +247,36 @@ export const PART_HEADER_MAX = 1 << 20;
 const LINE_MAX = 4096;
 
 /**
+ * How core's walker meets the end of the input a header block or a multipart
+ * is read from:
+ * - "whole": a whole body, or an embedded message, read from a copy of its
+ *   bytes, whose end comes after its last bytes;
+ * - "part": a part that ended at a boundary, read through that part, which
+ *   hands over its last bytes with its end or before it, as its own window
+ *   into the input falls, which the size of the message's header moves;
+ * - "ranOut": a part that ran out with no boundary, whose end Go reads as an
+ *   unexpected end of input.
+ */
+export type InputEnd = "whole" | "part" | "ranOut";
+
+/**
  * The header block at `pos`, read as core's walker reads it (src/lib/mimewalk
  * textproto.ts, a port of go-message's textproto.ReadHeader). It ends at the
- * first blank line, or at the end of a bounded input without an error. It
- * refuses a block whose first line starts with a space or tab, a field with no
- * colon on its first line (one on a continuation line puts the line break in
- * the name), a field name with a byte outside printable ASCII, a field whose
- * first line ends at the end of the input on a LINE_MAX boundary (see
- * readLine), and a block over `max`, charged as core's port charges it: each
- * line's pieces, 2 more at its end, and each field's buffer slack (see
- * appendSlack).
- *
- * `bounded`: the input is a whole body, or a part's that ended at a
- * boundary. A part that ran out with no boundary ends in what Go reads as an
- * unexpected end of input, and a header block that meets it is refused.
+ * first blank line, or at the end of the input without an error, unless that
+ * input "ranOut". It refuses a block whose first line starts with a space or
+ * tab, a field with no colon on its first line (one on a continuation line
+ * puts the line break in the name), a field name with a byte outside
+ * printable ASCII, a field whose first line ends a "whole" input on a
+ * LINE_MAX boundary (see readLine), and a block over `max`, charged as core's
+ * port charges it: each line's pieces, 2 more at its end, and each field's
+ * buffer slack (see appendSlack). Where a line ends a "part" input on a
+ * LINE_MAX boundary, Go's ReadLine may or may not read the empty piece after
+ * it: what turns on that is left open.
  *
  * `cut`: `b` is a prefix of the real content. A line the cut splits, and
  * whether a continuation line follows the last one seen, are past it.
  */
-export function readHeaderBlock(b: string, pos: number, max: number, cut: boolean, bounded = true): HeaderBlock {
+export function readHeaderBlock(b: string, pos: number, max: number, cut: boolean, inputEnd: InputEnd = "whole"): HeaderBlock {
   const fields = (end: number) => b.slice(pos, withoutLineBreak(b, pos, end));
   const done = (blank: number, end: number, err: boolean): HeaderBlock => ({
     fields: fields(blank),
@@ -300,17 +311,18 @@ export function readHeaderBlock(b: string, pos: number, max: number, cut: boolea
       // The end of the input ends the block, charged as an empty line.
       if (cut) return open(false);
       budget.n -= 2;
-      return done(p, p, budget.n < 0 || !bounded);
+      return done(p, p, budget.n < 0 || inputEnd === "ranOut");
     }
     const first = readLine(b, p, budget, cut);
     if (first === null) return open(false);
     if (first.over) return refused(p, first.rest, first.rest, first.exact);
     if (first.empty) return done(p, first.next, false);
-    if (first.eof) return refused(p, b.length);
+    if (first.eof && inputEnd !== "part") return refused(p, b.length);
     // A field: this line, then each line that starts with a space or tab.
     const bad = !fieldNameOk(b, p, first.contentEnd);
     let size = first.contentEnd - p + 2;
     let next = first.next;
+    let eof = first.eof;
     // A line that ran to the end of the input has none after it.
     while (first.next > first.contentEnd) {
       if (next >= b.length) {
@@ -325,8 +337,20 @@ export function readHeaderBlock(b: string, pos: number, max: number, cut: boolea
       // input ends the field, without its line break.
       size += cont.contentEnd - next + (cont.eof ? 0 : 2);
       next = cont.next;
+      eof ||= cont.eof;
     }
     budget.n -= appendSlack(size);
+    if (eof && inputEnd === "part") {
+      // The field ends the input on a LINE_MAX boundary, and the reader may
+      // have had the end of input with that piece: then the line is whole, a
+      // folded one keeps its line break, and the empty piece is not read.
+      // Read the field to the end both ways; where they differ, unknown.
+      const whole = budget.n + appendSlack(size) - appendSlack(first.eof ? size : size + 2) - 2;
+      const plain = first.eof || bad || budget.n - 2 < 0;
+      const other = bad || whole < 0;
+      if (plain !== other) return open(false);
+      return plain ? refused(p, next) : done(next, next, false);
+    }
     if (bad || budget.n < 0) return refused(p, next);
     p = next;
   }
@@ -508,7 +532,7 @@ export class TestBody implements Test {
       const topCte = hostValueBytes(d.msg.headerGet("content-transfer-encoding")[0] ?? "");
       const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
-      const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, true, flags, 0, "");
+      const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, "whole", flags, 0, "");
       if (matched) return true;
       if (this.matcher.isCount()) {
         const res = this.matcher.countMatches(d, counter.count);
@@ -567,7 +591,7 @@ export class TestBody implements Test {
   /** `cut` = this part's content string may be a PREFIX of the real content
    * (the read-window cut fell inside it). Splitting on a FOUND boundary proves
    * everything before that boundary complete, so only the fragment that ran to
-   * the end of a cut string inherits the flag. `bounded`: see readHeaderBlock.
+   * the end of a cut string inherits the flag. `inputEnd`: see InputEnd.
    * Returns definite matches only; unknowns accumulate in `flags`. */
   private walk(
     d: RuntimeData,
@@ -576,7 +600,7 @@ export class TestBody implements Test {
     b: string,
     counter: { count: number; parts: number },
     cut: boolean,
-    bounded: boolean,
+    inputEnd: InputEnd,
     flags: { unknown: boolean },
     depth: number,
     path: string,
@@ -594,7 +618,7 @@ export class TestBody implements Test {
 
     if (primary === "multipart") {
       // A multipart with no boundary has the one synthesized child, as in core.
-      const mp = splitMultipart(b, params["boundary"] ?? "", cut, bounded);
+      const mp = splitMultipart(b, params["boundary"] ?? "", cut, inputEnd);
       // A list that may go on past the cut can hide whole sibling parts —
       // even whole part TYPES a :content filter wanted — so any no-match at
       // this level is unknown. (With the list's end in view the structure is
@@ -616,7 +640,7 @@ export class TestBody implements Test {
           return false;
         }
         const part = mp.parts[i]!;
-        if (this.walk(d, part.contentType, part.cte, part.body, counter, part.cut, part.bounded, flags, depth + 1, `${path}.${i}`)) {
+        if (this.walk(d, part.contentType, part.cte, part.body, counter, part.cut, part.ends, flags, depth + 1, `${path}.${i}`)) {
           return true;
         }
       }
@@ -648,7 +672,7 @@ export class TestBody implements Test {
         b.slice(h.end),
         counter,
         cut,
-        true, // core reads an embedded message from a copy of its bytes
+        "whole", // core reads an embedded message from a copy of its bytes
         flags,
         depth + 1,
         `${path}.m`,
@@ -706,8 +730,9 @@ export interface SplitPart {
   /** The body is a prefix of the real one: the read-window cut fell in it, or
    * (a synthesized child) what core puts in it is not known here. */
   cut: boolean;
-  /** The body ended at a boundary (see readHeaderBlock's `bounded`). */
-  bounded: boolean;
+  /** How the body's end reaches the walker: "part", or "ranOut" with no
+   * boundary (see InputEnd). */
+  ends: InputEnd;
 }
 
 export interface Multipart {
@@ -761,12 +786,12 @@ const SYNTHESIZED = "text/plain; charset=utf-8";
  *
  * It stops after MAX_MIME_PARTS + 1 parts, open, as the walkers stop there.
  *
- * `bounded`: see readHeaderBlock. `cut`: `b` is a prefix of the real content.
+ * `inputEnd`: see InputEnd. `cut`: `b` is a prefix of the real content.
  * A decision that rests on bytes past it stays open: whether a line is a
  * delimiter line, whether a part's header block completes, whether the list
  * goes on.
  */
-export function splitMultipart(b: string, boundary: string, cut: boolean, bounded = true): Multipart {
+export function splitMultipart(b: string, boundary: string, cut: boolean, inputEnd: InputEnd = "whole"): Multipart {
   if (boundary === "") {
     return { prologue: b, prologueCut: cut, parts: [synthesized(b, cut)], epilogue: "", epilogueCut: cut, open: false };
   }
@@ -878,7 +903,7 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, bounde
       }
       if (lineIs(pos, lineEnd, dash, nl)) {
         if (first === -1) first = pos;
-        const h = readHeaderBlock(b, lineEnd, PART_HEADER_MAX, cut, bounded);
+        const h = readHeaderBlock(b, lineEnd, PART_HEADER_MAX, cut, inputEnd);
         if (h.err) return finish(0, pos, h.rest, h.restExact);
         if (h.open) return open();
         const body = bodyEnd(h.end);
@@ -889,7 +914,7 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, bounde
           cte: fields.get("content-transfer-encoding") ?? "",
           body: b.slice(h.end, body.end),
           cut: body.cut,
-          bounded: !body.eof,
+          ends: body.eof ? "ranOut" : "part",
         });
         // Past the walkers' cap the list is not read on (both stop there).
         if (body.cut || parts.length > MAX_MIME_PARTS) return open();
@@ -924,5 +949,5 @@ function lineCouldBe(b: string, start: number, prefix: string, crlf: boolean): b
 }
 
 function synthesized(body: string, cut: boolean): SplitPart {
-  return { fields: "", contentType: SYNTHESIZED, cte: "", body, cut, bounded: true };
+  return { fields: "", contentType: SYNTHESIZED, cte: "", body, cut, ends: "part" };
 }
