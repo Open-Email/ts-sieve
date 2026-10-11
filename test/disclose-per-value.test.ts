@@ -322,4 +322,12 @@ describe("re-review of #60", () => {
     const r = run(script, msg(`From: a@x\r\nX-Raw: ${"x".repeat(3999)}=?utf-8?b?PT91dGYtOD9xP1o/PQ==?=`), CORE);
     expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
   });
+
+  it("a prefix the cut ended after '?=' and white space is in doubt: the whole collapses it", () => {
+    // X-Raw decodes to "<3,997 x>?= =?utf-8?q?Z?=", cut after the space.
+    // Whole, the space between "?=" and "=?" is dropped: "<3,997 x>?=Z".
+    const script = 'require ["variables","editheader"]; if header :matches "x-raw" "*" { set "s" "${1}"; } addheader "X-S" "${s}"; if header :contains "x-s" "?= " { discard; }';
+    const r = run(script, msg(`From: a@x\r\nX-Raw: ${"x".repeat(3997)}=?utf-8?b?Pz0gPT91dGYtOD9xP1o/PQ==?=`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
 });
