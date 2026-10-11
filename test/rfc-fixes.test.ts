@@ -331,12 +331,13 @@ describe("lexer/loader robustness", () => {
     expect(() => load(`if size :over 9999999999999999G { keep; }`, { enabledExtensions: [] })).toThrow(/number/i);
   });
 
-  it("addheader refuses CR/LF header-value injection", () => {
-    expect(() =>
+  it("addheader folds a CR/LF header-value injection onto one line", () => {
+    // It once threw; see addheader-value.test.ts for why it folds instead.
+    expect(
       run(
-        'require ["editheader", "variables"]; set "v" "x"; addheader "X-A" "a\r\nX-Evil: b"; keep;',
+        'require ["editheader", "variables", "fileinto"]; addheader "X-A" "a\r\nX-Evil: b"; if header :is "x-a" "a X-Evil: b" { fileinto "One"; } if exists "x-evil" { fileinto "Two"; }',
       ),
-    ).toThrow(/invalid header value/);
+    ).toEqual(R({ fileinto: ["One"] }));
   });
 });
 
