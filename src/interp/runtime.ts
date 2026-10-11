@@ -34,7 +34,9 @@ class Budget {
     if (this.remaining < this.floor) {
       if (this.shares > 0) {
         // Not below the floor: what is under it belongs to command dispatch
-        // and the tests after this one.
+        // and the tests after this one. (A share never opens with its floor
+        // above `remaining`, as withShare keeps at most half of what is free,
+        // so this only ever lowers the count.)
         this.remaining = this.floor;
         throw SHARE_EXHAUSTED;
       }
