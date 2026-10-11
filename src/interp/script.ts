@@ -5,7 +5,7 @@
 import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import { parse } from "../parser/parse.js";
-import { loadBlock } from "./load.js";
+import { checkExtensionDependencies, loadBlock } from "./load.js";
 import { checkRejectConflicts } from "./reject.js";
 import { type Cmd, type RuntimeData, StopSignal, type TestEnv } from "./runtime.js";
 
@@ -22,7 +22,8 @@ export interface Options {
   maxVariableNameLen?: number;
   maxVariableLen?: number;
   /** Cut a `:matches`/`:regex` input to this many UTF-8 bytes (0 = the engine's
-   * default, 256 KiB). A comparison over a cut input is three-valued. */
+   * default, 256 KiB). A comparison over a cut input is three-valued. Also the
+   * octets extracttext decodes from a part. */
   maxMatchInputLength?: number;
   /**
    * Cooperative CPU budget: total interpreter "steps" (command dispatch, match
@@ -119,5 +120,6 @@ export function load(source: string, opts: Options = {}): Script {
     maxTestNesting: script.opts.maxTestNesting,
   });
   script.cmds = loadBlock(script, cmds);
+  checkExtensionDependencies(script);
   return script;
 }

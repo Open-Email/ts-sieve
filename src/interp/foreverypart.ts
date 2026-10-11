@@ -14,8 +14,10 @@
 // list discloses the iterations it may have missed the same way. One that
 // breaks before the end missed nothing.
 
-import { currentPart, mimeTree, subtree } from "./mime.js";
+import { currentPart, mimeTree, partText, subtree } from "./mime.js";
+import { byteLen, MAX_INPUT_LENGTH } from "./regex.js";
 import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
+import { applySetModifiers, setVar } from "./variables.js";
 
 /** Thrown by break; the loop it names (or the closest one) catches it. */
 export class BreakSignal {
@@ -56,6 +58,60 @@ export class CmdForEveryPart implements Cmd {
     });
     if (r === "unknown" || (!broke && top.openBelow)) d.indeterminate = true;
   }
+}
+
+/**
+ * RFC 5703 §7: store the current part's text in a variable. At most as many
+ * octets are decoded as the engine matches (maxMatchInputLength, or its
+ * default). A variable carries no "this is a prefix" mark, so a value the cut
+ * or that limit left incomplete would be read as fact by every later test: it
+ * is disclosed as indeterminate, unless :first asked for no more characters
+ * than were read (a cut part's text is a prefix of the real one). The same
+ * holds for a value the variable's own size limit (maxVariableLen) cuts.
+ * Each call is charged by the text's size: the modifiers and the variable
+ * store are linear in it, and loops repeat the call.
+ */
+export class CmdExtractText implements Cmd {
+  name = "";
+  /** :first, in characters; -1 keeps everything. */
+  first = -1;
+  modifiers: string[] = [];
+
+  execute(d: RuntimeData): void {
+    const part = currentPart(d);
+    let value = "";
+    let exact = true;
+    if (part !== null) {
+      const { text, complete } = partText(d, part, d.script.opts.maxMatchInputLength || MAX_INPUT_LENGTH);
+      d.budget.consume(text.length >> 10);
+      value = text;
+      exact = complete;
+      if (this.first >= 0) {
+        const head = firstChars(text, this.first);
+        if (head !== null) {
+          value = head;
+          exact = true;
+        }
+      }
+    }
+    let cut = false;
+    value = applySetModifiers(d, this.modifiers, value, () => (cut = true));
+    if (byteLen(value) > d.script.opts.maxVariableLen) cut = true; // setVar keeps a prefix
+    if (!exact || cut) d.indeterminate = true;
+    setVar(d, this.name, value);
+  }
+}
+
+/** The first n characters (code points, as RFC 5703 counts) of s, or null
+ * when s has fewer. Walks only as far as it takes. */
+function firstChars(s: string, n: number): string | null {
+  let i = 0;
+  for (let k = 0; k < n; k++) {
+    if (i >= s.length) return null;
+    const c = s.charCodeAt(i);
+    i += c >= 0xd800 && c <= 0xdbff && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00 ? 2 : 1;
+  }
+  return s.slice(0, i);
 }
 
 export class CmdBreak implements Cmd {

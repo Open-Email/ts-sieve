@@ -121,7 +121,7 @@ function base64Decode(bytes: Uint8Array): Uint8Array {
 
 /** Returns transfer-decoded bytes, or null on an unknown encoding (skip part).
  * `cut`: the bytes are a prefix of the part, and decode to a prefix of it. */
-function cteDecode(bytes: Uint8Array, cte: string, cut: boolean): Uint8Array | null {
+export function cteDecode(bytes: Uint8Array, cte: string, cut: boolean): Uint8Array | null {
   const e = cte.toLowerCase().trim();
   if (e === "" || e === "7bit" || e === "8bit" || e === "binary") return bytes;
   if (e === "base64") return base64Decode(bytes);
@@ -134,10 +134,17 @@ function cteDecode(bytes: Uint8Array, cte: string, cut: boolean): Uint8Array | n
 /** `cut`: the bytes are a prefix of the part, so a character the cut split is
  * dropped (a streaming decode holds it back) rather than decoded as U+FFFD,
  * which would be content the part does not have. */
-function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string {
+export function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string {
   const cs = charset.toLowerCase().trim();
   if (cs === "" || cs === "utf-8" || cs === "utf8" || cs === "us-ascii" || cs === "ascii") {
     return new TextDecoder("utf-8").decode(bytes, { stream: cut });
+  }
+  if (cs === "utf-16" || cs === "utf16") {
+    // RFC 2781 §4.3: a byte-order mark decides; without one, big-endian.
+    // (TextDecoder's "utf-16" label means little-endian.)
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes.subarray(2), { stream: cut });
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes.subarray(2), { stream: cut });
+    return new TextDecoder("utf-16be").decode(bytes, { stream: cut });
   }
   if (cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") {
     // True Latin-1 (byte → code point). TextDecoder maps this label to cp1252.
@@ -251,7 +258,7 @@ function leafCache(msg: Message): Map<string, string | null> {
  * much as the rest of a body test, and every body test started with it. */
 const rawBinaries = new WeakMap<Message, string>();
 
-function rawBinary(msg: Message, raw: Uint8Array): string {
+export function rawBinary(msg: Message, raw: Uint8Array): string {
   let s = rawBinaries.get(msg);
   if (s === undefined) rawBinaries.set(msg, (s = bytesToBinary(raw)));
   return s;

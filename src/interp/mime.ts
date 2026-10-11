@@ -10,16 +10,19 @@
 
 import {
   binaryToBytes,
-  bytesToBinary,
+  charsetDecode,
+  cteDecode,
   MAX_MIME_DEPTH,
   MAX_MIME_PARTS,
   parseMediaType,
   parseMimeHeader,
+  rawBinary,
   skipDelimiterLineEnd,
   splitBoundary,
   splitHeaderBody,
 } from "./body.js";
 import { decodeHeaderValue, getHeader } from "./header.js";
+import { htmlToText } from "./htmltext.js";
 import type { Message, RuntimeData } from "./runtime.js";
 import type { SpecTag } from "./spec.js";
 
@@ -35,10 +38,36 @@ export interface MimePart {
   openBelow: boolean;
   /** subtree(), computed once. */
   all: MimePart[] | null;
+  /** The part's body, still transfer-encoded, as a binary string. */
+  body: string;
+  /** The body is a prefix: the read-window cut fell in it, or (the root
+   * only) the host did not read it at all. */
+  cut: boolean;
+  /** A multipart or a nested message: its content is its parts. */
+  container: boolean;
+  /** extracttext's reading of it, for one decode limit. */
+  text: { limit: number; text: string; complete: boolean } | null;
+  /** The Content-Type and Content-Transfer-Encoding its content is read by:
+   * the fields the body test reads (the message's own first ones at the top,
+   * the last of each in a part), not header edits. */
+  contentType: string;
+  cte: string;
 }
 
-function newPart(headers: Map<string, string[]> | null): MimePart {
-  return { headers, children: [], open: false, openBelow: false, all: null };
+function newPart(headers: Map<string, string[]> | null, body: string, cut: boolean, contentType = "", cte = ""): MimePart {
+  return {
+    headers,
+    children: [],
+    open: false,
+    openBelow: false,
+    all: null,
+    body,
+    cut,
+    container: false,
+    text: null,
+    contentType,
+    cte,
+  };
 }
 
 const trees = new WeakMap<Message, MimePart>();
@@ -50,15 +79,18 @@ const trees = new WeakMap<Message, MimePart>();
 export function mimeTree(d: RuntimeData): MimePart {
   let root = trees.get(d.msg);
   if (root !== undefined) return root;
-  root = newPart(null);
   const contentType = d.msg.headerGet("content-type")[0] ?? "";
+  const cte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
   const raw = d.msg.bodyRaw();
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
-    build(root, contentType, bytesToBinary(raw), cut, 0, { parts: 0 });
-  } else if (holdsParts(contentType)) {
-    // A body the host did not read: whatever parts it holds were not seen.
-    root.open = root.openBelow = true;
+    root = newPart(null, rawBinary(d.msg, raw), cut, contentType, cte);
+    build(root, contentType, root.body, cut, 0, { parts: 0 });
+  } else {
+    // A body the host did not read: whatever it holds was not seen.
+    root = newPart(null, "", true, contentType, cte);
+    root.container = holdsParts(contentType);
+    if (root.container) root.open = root.openBelow = true;
   }
   trees.set(d.msg, root);
   return root;
@@ -73,6 +105,7 @@ function holdsParts(contentType: string): boolean {
 
 function build(p: MimePart, contentType: string, b: string, cut: boolean, depth: number, counter: { parts: number }): void {
   const { mediaType, params } = parseMediaType(contentType || "text/plain");
+  p.container = holdsParts(contentType);
   if (mediaType.startsWith("multipart/")) {
     const boundary = params["boundary"];
     if (!boundary) return;
@@ -100,9 +133,10 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
         const partCut = lastCut && i === nested.length - 1;
         const { header, body, sep } = splitHeaderBody(nested[i]!);
         if (partCut && !sep) continue; // its header block is cut: not yet a part
-        const child = newPart(parseHeaderFields(header));
+        const fields = parseMimeHeader(header);
+        const child = newPart(parseHeaderFields(header), body, partCut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
         p.children.push(child);
-        build(child, parseMimeHeader(header).get("content-type") ?? "", body, partCut, depth + 1, counter);
+        build(child, child.contentType, body, partCut, depth + 1, counter);
       }
     }
   } else if (mediaType === "message/rfc822") {
@@ -112,9 +146,10 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
     } else if (depth >= MAX_MIME_DEPTH || ++counter.parts > MAX_MIME_PARTS) {
       p.open = true;
     } else {
-      const child = newPart(parseHeaderFields(header));
+      const fields = parseMimeHeader(header);
+      const child = newPart(parseHeaderFields(header), body, cut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
       p.children.push(child);
-      build(child, parseMimeHeader(header).get("content-type") ?? "", body, cut, depth + 1, counter);
+      build(child, child.contentType, body, cut, depth + 1, counter);
     }
   }
   p.openBelow = p.open || p.children.some((c) => c.openBelow);
@@ -147,6 +182,57 @@ function parseHeaderFields(block: string): Map<string, string[]> {
   }
   flush();
   return fields;
+}
+
+/**
+ * A part's text as extracttext stores it (RFC 5703 §7): the transfer encoding
+ * removed, text transcoded to UTF-8, HTML reduced to its text, at most `limit`
+ * octets of decoded content. A part holding parts, or a text part in a charset
+ * this runtime cannot decode, yields "" (§7: "an empty string will result"); a
+ * non-text leaf is decoded as UTF-8, as Pigeonhole and go-sieve do.
+ * `complete`: nothing was left out, neither by the read-window cut (the text
+ * of a cut part is a prefix of the real one, see body.ts) nor by the limit.
+ * Decoded once per part, charged by size.
+ */
+export function partText(d: RuntimeData, p: MimePart, limit: number): { text: string; complete: boolean } {
+  if (p.text !== null && p.text.limit === limit) return p.text;
+  let text = "";
+  let complete = true;
+  if (!p.container) {
+    d.budget.consume(1 + (p.body.length >> 10));
+    const { mediaType, params } = parseMediaType(p.contentType || "text/plain; charset=us-ascii");
+    const charset = params["charset"] ?? "us-ascii";
+    let bytes = cteDecode(binaryToBytes(p.body), p.cte, p.cut);
+    // An encoding or charset that cannot be decoded gives "" however much of
+    // the part was read: nothing is missing from that answer.
+    if (bytes !== null && (!mediaType.startsWith("text/") || charsetKnown(charset))) {
+      complete = !p.cut;
+      if (bytes.length > limit) {
+        bytes = bytes.subarray(0, limit);
+        complete = false;
+      }
+      const prefix = !complete;
+      text = mediaType.startsWith("text/")
+        ? charsetDecode(bytes, charset, prefix)
+        : new TextDecoder().decode(bytes, { stream: prefix });
+      if (mediaType === "text/html" || mediaType === "application/xhtml+xml") text = htmlToText(text, prefix);
+    }
+  }
+  p.text = { limit, text, complete };
+  return p.text;
+}
+
+function charsetKnown(charset: string): boolean {
+  const cs = charset.toLowerCase().trim();
+  // The labels charsetDecode handles itself, then whatever TextDecoder knows.
+  if (cs === "" || cs === "us-ascii" || cs === "ascii" || cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") return true;
+  if (cs === "utf-16" || cs === "utf16" || cs === "utf8") return true;
+  try {
+    new TextDecoder(cs);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The part a running foreverypart has reached, or null outside every loop. */
