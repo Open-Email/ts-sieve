@@ -51,6 +51,19 @@ describe("a :regex key that does not compile", () => {
       R({ fileinto: ["Other"], indeterminate: true }),
     );
   });
+
+  it("deep epsilon recursion does not overflow call stack", () => {
+    // Before the fix, addThread recursion threw RangeError: Maximum call stack size exceeded
+    expect(run(fromKey('header :regex "subject" "${1}"'), msg({ From: "(?:^{1000}){9}y", Subject: "x" }))).toEqual(
+      R({ fileinto: ["Other"] }),
+    );
+    expect(run(fromKey('header :regex "subject" "${1}"'), msg({ From: "(?:^{1000}){9}", Subject: "x" }))).toEqual(
+      R({ fileinto: ["X", "Other"] }),
+    );
+    expect(run(fromKey('header :regex "subject" "${1}"'), msg({ From: "(?:(){1000}){4}y", Subject: "x" }))).toEqual(
+      R({ fileinto: ["Other"] }),
+    );
+  });
 });
 
 describe("a key longer than the pattern cap once expanded", () => {

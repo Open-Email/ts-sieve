@@ -538,30 +538,35 @@ class Program implements CompiledRegex {
     };
 
     type Thread = { pc: number; caps: number[] };
-    const addThread = (list: Thread[], visited: Set<number>, pc: number, sp: number, caps: number[]): void => {
-      if (visited.has(pc)) return;
-      visited.add(pc);
-      budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
-      const inst = this.prog[pc]!;
-      switch (inst.op) {
-        case "jmp":
-          addThread(list, visited, inst.x, sp, caps);
-          return;
-        case "split":
-          addThread(list, visited, inst.x, sp, caps);
-          addThread(list, visited, inst.y, sp, caps);
-          return;
-        case "save": {
-          const c = caps.slice();
-          c[inst.slot] = sp;
-          addThread(list, visited, pc + 1, sp, c);
-          return;
+    const workStack: Thread[] = [];
+    const addThread = (list: Thread[], visited: Set<number>, startPc: number, sp: number, startCaps: number[]): void => {
+      workStack.push({ pc: startPc, caps: startCaps });
+      while (workStack.length > 0) {
+        const { pc, caps } = workStack.pop()!;
+        if (visited.has(pc)) continue;
+        visited.add(pc);
+        budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
+        const inst = this.prog[pc]!;
+        switch (inst.op) {
+          case "jmp":
+            workStack.push({ pc: inst.x, caps });
+            break;
+          case "split":
+            workStack.push({ pc: inst.y, caps });
+            workStack.push({ pc: inst.x, caps });
+            break;
+          case "save": {
+            const c = caps.slice();
+            c[inst.slot] = sp;
+            workStack.push({ pc: pc + 1, caps: c });
+            break;
+          }
+          case "assert":
+            if (checkAssert(inst.kind, sp)) workStack.push({ pc: pc + 1, caps });
+            break;
+          default:
+            list.push({ pc, caps });
         }
-        case "assert":
-          if (checkAssert(inst.kind, sp)) addThread(list, visited, pc + 1, sp, caps);
-          return;
-        default:
-          list.push({ pc, caps });
       }
     };
 
