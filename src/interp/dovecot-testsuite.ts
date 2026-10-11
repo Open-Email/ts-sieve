@@ -15,6 +15,7 @@ import type { Position } from "../parser/command.js";
 import { parse } from "../parser/parse.js";
 import { parseEnvelopeAddress } from "./address.js";
 import { loadBlock } from "./load.js";
+import { checkRejectConflicts } from "./reject.js";
 import {
   type Cmd,
   EnvelopeStatic,
@@ -130,11 +131,15 @@ export class CmdDovecotTest implements Cmd {
           if (d.testFailMessage !== "") {
             const { line, col } = d.testFailAt;
             t.errorf(`test_fail at ${line}:${col} called: ${d.testFailMessage}`);
+            return;
           }
+          checkRejectConflicts(d);
           return;
         }
         throw e; // any other error ⇒ recorded as a fatal sub-test failure by run()
       }
+      // RFC 5429 §2.4, as Script.execute checks it for an ordinary script.
+      checkRejectConflicts(d);
     });
     // `test` never aborts the enclosing script (caught internally).
   }

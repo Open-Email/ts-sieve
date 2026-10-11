@@ -32,6 +32,7 @@ import { CmdAddHeader, CmdDeleteHeader } from "./editheader.js";
 import { decodeEncodedChars } from "./encoded.js";
 import { MailboxExistsTest } from "./mailbox.js";
 import { MatcherTest } from "./matcher.js";
+import { CmdReject } from "./reject.js";
 import { CmdVacation } from "./vacation.js";
 import { CmdSet, SET_MODIFIERS, TestString, unusableVarRef } from "./variables.js";
 import type { AddressPart } from "./matching.js";
@@ -78,6 +79,8 @@ const supportedRequires = new Set([
   "encoded-character",
   "body",
   "vacation",
+  "reject",
+  "ereject",
 ]);
 
 function at(pos: Position, message: string): SieveError {
@@ -345,6 +348,22 @@ function loadKeep(s: Script, pcmd: PCmd): Cmd {
     pcmd.block,
   );
   if (!s.requiresExtension("imap4flags") && cmd.flags !== null) throw at(pcmd, "missing require 'imap4flags'");
+  return cmd;
+}
+
+/** RFC 5429 `reject <reason: string>` / `ereject <reason: string>`. */
+function loadReject(s: Script, pcmd: PCmd, extended: boolean): Cmd {
+  const ext = extended ? "ereject" : "reject";
+  if (!s.requiresExtension(ext)) throw at(pcmd, `missing require '${ext}'`);
+  const cmd = new CmdReject(extended);
+  loadSpec(
+    s,
+    { pos: [{ minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.reason = v[0]!) }] },
+    pcmd,
+    pcmd.args,
+    pcmd.tests,
+    pcmd.block,
+  );
   return cmd;
 }
 
@@ -965,6 +984,8 @@ const commands: Record<string, (s: Script, cmd: PCmd) => Cmd | null> = {
   deleteheader: loadDeleteHeader,
   set: loadSet,
   vacation: loadVacation,
+  reject: (s, pcmd) => loadReject(s, pcmd, false),
+  ereject: (s, pcmd) => loadReject(s, pcmd, true),
   // vnd.dovecot.testsuite
   test: loadDovecotTest,
   test_set: loadDovecotTestSet,

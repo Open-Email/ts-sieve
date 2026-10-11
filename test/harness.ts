@@ -27,6 +27,8 @@ export const ALL_EXTENSIONS = [
   "mailbox",
   "subaddress",
   "body",
+  "reject",
+  "ereject",
 ];
 
 export interface Result {

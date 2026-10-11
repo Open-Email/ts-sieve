@@ -46,6 +46,9 @@ export class CmdVacation implements Cmd {
   reason = "";
 
   execute(d: RuntimeData): void {
+    // RFC 5429 §2.4: vacation conflicts with reject whether or not it records
+    // a response (a null sender or one of :addresses records none).
+    d.vacationRan = true;
     // "" = unset; the host applies the RFC 5230 §5.4 default it can compute.
     const subject = expandVars(d, this.subject);
     const from = expandVars(d, this.from);

@@ -128,7 +128,8 @@ export class RuntimeData {
    * depended on bytes outside the evaluated window and the branch was not
    * taken. The accumulated actions are then a best-effort reading, not a proven
    * one: the host should refuse this execution's IRREVERSIBLE outcomes
-   * (discard, redirect-without-keep) and let the recoverable ones stand.
+   * (discard, redirect-without-keep, reject) and let the recoverable ones
+   * stand.
    * Unknowns a definite value absorbed inside allof/anyof never set this.
    */
   indeterminate = false;
@@ -139,6 +140,14 @@ export class RuntimeData {
   flags: string[] = [];
   keep = false;
   implicitKeep = true;
+
+  /** RFC 5429: a reject (or, with rejectExtended, an ereject) ran, with this
+   * reason after variable expansion. Refusing the message is the host's call. */
+  rejected = false;
+  rejectReason = "";
+  rejectExtended = false;
+  /** A vacation action ran, whether or not it recorded a response. */
+  vacationRan = false;
 
   flagAliases: Map<string, string> = new Map();
 
@@ -212,6 +221,10 @@ export class RuntimeData {
     c.flags = [...this.flags];
     c.keep = this.keep;
     c.implicitKeep = this.implicitKeep;
+    c.rejected = this.rejected;
+    c.rejectReason = this.rejectReason;
+    c.rejectExtended = this.rejectExtended;
+    c.vacationRan = this.vacationRan;
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
