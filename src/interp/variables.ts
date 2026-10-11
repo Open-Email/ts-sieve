@@ -66,15 +66,18 @@ function nextClose(s: string, from: number, close: number): number {
  * Substitute ${name}/${N}. Identity when `variables` is not required.
  *
  * Under a share of the budget (a test, or any command in a foreverypart loop;
- * see withShare) the expansion is charged by its size, a step per 128
- * characters, as it grows: whatever reads it is linear in it, and a few
- * references to a variable filled from the message expand to megabytes, every
- * iteration of a loop. A top-level command is not charged: it runs once, and
- * running out outside a share would fail the script.
+ * see withShare) the expansion is charged for the template it scans, a step
+ * per 64 characters (a reference costs 15-100 ns however little it yields),
+ * and for what it produces, a step per 128 characters as it grows: whatever
+ * reads it is linear in it, and a few references to a variable filled from
+ * the message expand to megabytes, every iteration of a loop. A top-level
+ * command is not charged: it runs once, and running out outside a share would
+ * fail the script.
  */
 export function expandVars(d: RuntimeData, s: string): string {
   if (!d.script.requiresExtension("variables") || !s.includes("${")) return s;
   const charge = d.budget.shares > 0;
+  if (charge) d.budget.consume(1 + (s.length >> 6));
   let charged = 0;
   let out = "";
   let i = 0;
@@ -150,13 +153,15 @@ function overLimit(s: string, maxLen: number): Uint8Array | null {
  * Store a user variable, truncating the value to maxVariableLen bytes (backing
  * off a split UTF-8 sequence). A cut value is a prefix with no mark saying so,
  * and a rule testing it would stand on a guess: the cut is disclosed as
- * indeterminate.
+ * indeterminate. Under a share it is charged for what it stores, a step per
+ * 128 characters (a literal has no expansion to pay for it).
  */
 export function setVar(d: RuntimeData, name: string, value: string): void {
   const maxLen = d.script.opts.maxVariableLen;
   if (name.length > d.script.opts.maxVariableNameLen) {
     throw new SieveError(`variable name too long: ${name}`);
   }
+  if (d.budget.shares > 0) d.budget.consume(Math.min(value.length, maxLen) >> 7);
   let v = value;
   const bytes = overLimit(v, maxLen);
   if (bytes !== null) {
@@ -219,7 +224,12 @@ export class CmdSet implements Cmd {
   modifiers: string[] = []; // in load order; applied high-precedence first
 
   execute(d: RuntimeData): void {
+    // A literal (no reference) is cut the same way on every message: that is
+    // the script's own value, not a guess, and disclosing it would refuse
+    // every discard of a script holding a long template.
+    const before = d.indeterminate;
     setVar(d, this.name, applySetModifiers(d, this.modifiers, expandVars(d, this.value)));
+    if (!this.value.includes("${")) d.indeterminate = before;
   }
 }
 
@@ -265,6 +275,7 @@ export class TestString implements Test {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     if (this.matcher.isCount()) {
       let n = 0;
+      d.budget.consume(this.source.length); // a step a source, as matching costs one a key
       for (const src of this.source) if (expandVars(d, src) !== "") n++;
       return this.matcher.countMatches(d, n);
     }

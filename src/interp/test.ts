@@ -124,6 +124,26 @@ function testAddress(
   return matcher.tryMatch(d, valueToCompare, matchOpts(d));
 }
 
+/**
+ * Charge parsing a field's values as addresses: a step for the field name,
+ * and per value one more and a step per 64 characters (parsing costs some
+ * 12 ns a character). A test names any number of fields, which a loop repeats:
+ * charged nothing per name, 1,000 names over an 8 KB From cost 18 ms a step.
+ * Tests run under a share of the budget (withShare), so running out is
+ * "unknown".
+ */
+function chargeRead(d: RuntimeData, values: readonly string[]): void {
+  let n = 1;
+  for (const v of values) n += 1 + (v.length >> 6);
+  d.budget.consume(n);
+}
+
+/** What decodeHeaderValue costs: a scan of the value (a step per 2 KiB), and
+ * for RFC 2047 encoded words their decoding (a step per 64 characters). */
+function decodeCost(v: string): number {
+  return (v.length >> 11) + (v.includes("=?") ? v.length >> 6 : 0);
+}
+
 export class AddressTest implements Test {
   index = 0; // RFC 5260 :index (0 = all fields)
   last = false;
@@ -147,7 +167,7 @@ export class AddressTest implements Test {
           const values = partHeader(d, part, expandVars(d, hdr));
           // Parsing each value as addresses costs its size: inside loops the
           // parts visited multiply with the iterations.
-          for (const v of values) d.budget.consume(1 + (v.length >> 6));
+          chargeRead(d, values);
           if (this.matchValues(d, values, state)) return true;
         }
       }
@@ -156,8 +176,13 @@ export class AddressTest implements Test {
     }
     for (let hdr of this.header) {
       hdr = expandVars(d, hdr).toLowerCase();
-      if (!allowedAddrHeaders.has(hdr)) continue;
-      if (this.matchValues(d, selectIndexed(getHeader(d, hdr), this.index, this.last), state)) return true;
+      if (!allowedAddrHeaders.has(hdr)) {
+        d.budget.consume(1);
+        continue;
+      }
+      const all = getHeader(d, hdr);
+      chargeRead(d, all);
+      if (this.matchValues(d, selectIndexed(all, this.index, this.last), state)) return true;
     }
     if (this.matcher.isCount()) return this.matcher.countMatches(d, state.entryCount);
     return state.unknown ? "unknown" : false;
@@ -220,6 +245,7 @@ export class EnvelopeTest implements Test {
     let entryCount = 0;
     let unknown = false;
     for (const field of this.field) {
+      d.budget.consume(1);
       const name = expandVars(d, field).toLowerCase();
       let value: string;
       switch (name) {
@@ -274,6 +300,7 @@ export class ExistsTest implements Test {
       let unknown = false;
       for (const field of this.fields) {
         const name = expandVars(d, field);
+        d.budget.consume(1 + parts.length);
         if (parts.some((p) => partHeader(d, p, name).length > 0)) continue;
         if (!open) return false;
         unknown = true;
@@ -281,7 +308,9 @@ export class ExistsTest implements Test {
       return unknown ? "unknown" : true;
     }
     for (const field of this.fields) {
-      if (getHeader(d, expandVars(d, field)).length === 0) return false;
+      const values = getHeader(d, expandVars(d, field));
+      d.budget.consume(1 + values.length); // the name, and the values found
+      if (values.length === 0) return false;
     }
     return true;
   }
@@ -316,12 +345,15 @@ export class HeaderTest implements Test {
     let entryCount = 0;
     let unknown = false;
     for (const hdr of this.header) {
-      const values = selectIndexed(getHeader(d, expandVars(d, hdr)), this.index, this.last);
+      const all = getHeader(d, expandVars(d, hdr));
+      d.budget.consume(1 + all.length); // the name, and the values found
+      const values = selectIndexed(all, this.index, this.last);
       for (const value of values) {
         if (this.matcher.isCount()) {
           entryCount++;
           continue;
         }
+        d.budget.consume(decodeCost(value));
         const r = this.matcher.tryMatch(d, decodeHeaderValue(value), matchOpts(d));
         if (r === true) return true;
         if (r === "unknown") unknown = true;
@@ -341,6 +373,7 @@ export class HeaderTest implements Test {
     for (const part of parts) {
       for (const hdr of this.header) {
         const name = expandVars(d, hdr);
+        d.budget.consume(1); // the name; mime.values charges each value
         const values = mime.values(d, name, partHeader(d, part, name), params);
         if (this.matcher.isCount()) {
           entryCount += values.length;

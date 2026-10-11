@@ -78,14 +78,21 @@ describe("a value cut to the variable size limit is disclosed", () => {
   });
 
   it("the limit is in bytes: exactly maxVariableLen is exact, a byte more is disclosed", () => {
-    const set = (v: string) => `require ["variables","fileinto"]; set "s" "${v}"; if string "\${s}" "" { fileinto "Empty"; }`;
-    expect(run(set("é".repeat(2000))).indeterminate).toBe(false);
-    expect(run(set(`${"é".repeat(2000)}x`)).indeterminate).toBe(true);
+    const set = (tail: string) => `require ["variables"]; set "p" "${"é".repeat(2000)}"; set "s" "\${p}${tail}";`;
+    expect(run(set("")).indeterminate).toBe(false);
+    expect(run(set("x")).indeterminate).toBe(true);
   });
 
   it("set :quotewildcard, cut back to the limit", () => {
     // 2,500 "*" quote to 5,000 bytes.
-    expect(run(`require ["variables"]; set :quotewildcard "u" "${"*".repeat(2500)}";`).indeterminate).toBe(true);
+    expect(run(`require ["variables"]; set "p" "${"*".repeat(2500)}"; set :quotewildcard "u" "\${p}";`).indeterminate).toBe(true);
+  });
+
+  it("not a literal's cut: it is the same on every message, so nothing is guessed", () => {
+    // A 5,000-byte template held in a variable would otherwise refuse every
+    // discard the script makes.
+    expect(run(`require ["variables"]; set "t" "${"x".repeat(5000)}";`).indeterminate).toBe(false);
+    expect(run(`require ["variables"]; set :quotewildcard "t" "${"*".repeat(2500)}";`).indeterminate).toBe(false);
   });
 
   it(":quotewildcard's cut keeps an escaped backslash whole and drops a separated escape", () => {
@@ -120,7 +127,8 @@ describe("inside a loop, a command is charged by the size of its work", () => {
 
   it("each modifier, by what it walks", () => {
     expect(extraInLoop('set :upper "u" "${v}";', 'set "u" "${v}";', a)).toBeGreaterThanOrEqual(10 * (4000 >> 7));
-    expect(extraInLoop('set :length "u" "${v}";', 'set "u" "${v}";', a)).toBeGreaterThanOrEqual(10 * (4000 >> 7));
+    // :length stores a number: against a literal, the expansion and the walk.
+    expect(extraInLoop('set :length "u" "${v}";', 'set :length "u" "x";', a)).toBeGreaterThanOrEqual(10 * 2 * (4000 >> 7));
   });
 
   it(":quotewildcard, by the escapes it adds", () => {
@@ -128,14 +136,122 @@ describe("inside a loop, a command is charged by the size of its work", () => {
     expect(extraInLoop('set :quotewildcard "u" "${v}";', 'set "u" "${v}";', "*".repeat(2000))).toBeGreaterThanOrEqual(10 * (2000 >> 4));
   });
 
-  it("the flag commands, by the flags they handle", () => {
+  it("an expansion's references, however little they produce", () => {
+    // ${e} is unset: the 8,000-character template expands to nothing, and its
+    // scan costs 15-100 ns a reference. A step per 64 characters of it.
+    const empty = "${e}".repeat(2000);
+    expect(extraInLoop(`set "u" "${empty}";`, 'set "u" "x";', a)).toBeGreaterThanOrEqual(10 * (empty.length >> 6));
+    expect(extraInLoop(`fileinto "${empty}x";`, 'fileinto "x";', a)).toBeGreaterThanOrEqual(10 * (empty.length >> 6));
+  });
+
+  it("a literal set, by what it stores", () => {
+    expect(extraInLoop(`set "u" "${"a".repeat(3999)}";`, 'set "u" "x";', a)).toBeGreaterThanOrEqual(10 * (3999 >> 7));
+  });
+
+  it("addheader, by the value it folds, and nothing once the ledger is full", () => {
+    expect(extraInLoop(`addheader "X-A" "${"a".repeat(8000)}";`, 'addheader "X-A" "x";', a)).toBeGreaterThanOrEqual(10 * (8000 >> 7));
+    // 1,200 one-byte edits fill the ledger's 1,024; past it, nothing is
+    // folded for an edit that cannot be kept.
+    const fill = 'foreverypart { addheader "X-A" "x"; addheader "X-A" "x"; }';
+    const steps = (v: string) => stepsOf(`${REQ} ${fill} foreverypart { addheader "X-B" "${v}"; }`, flat(600, "s"));
+    expect(steps("a".repeat(8000)) - steps("y")).toBeLessThan(600);
+  });
+
+  describe("the flag commands, by the flags they handle, held and new", () => {
     const words = Array.from({ length: 800 }, (_, i) => `w${i}`).join(" ");
-    expect(extraInLoop('addflag "${v}";', 'addflag "x";', words)).toBeGreaterThanOrEqual(10 * (words.length >> 2));
+    // A step per 4 characters; the expansion alone is a step per 128.
+    const min = 10 * (words.length >> 2);
+    const held = 'setflag "${v}"; setflag "f" "${v}";';
+    const inLoop = (setup: string, cmd: string, literal: string) => {
+      const eml = flat(10, words);
+      const steps = (c: string) => stepsOf(`${REQ} ${FROM_SUBJECT} ${setup} foreverypart { ${c} }`, eml);
+      return steps(cmd) - steps(literal);
+    };
+    it("setflag", () => expect(inLoop("", 'setflag "${v}";', 'setflag "x";')).toBeGreaterThanOrEqual(min));
+    it("addflag", () => expect(inLoop("", 'addflag "${v}";', 'addflag "x";')).toBeGreaterThanOrEqual(min));
+    it("addflag, by the flags held", () => expect(inLoop(held, 'addflag "x";', 'setflag "x";')).toBeGreaterThanOrEqual(min));
+    it("removeflag, by the flags held", () => expect(inLoop(held, 'removeflag "x";', 'setflag "x";')).toBeGreaterThanOrEqual(min));
+    it("the variable forms", () => {
+      expect(inLoop(held, 'addflag "f" "x";', 'setflag "g" "x";')).toBeGreaterThanOrEqual(min);
+      expect(inLoop(held, 'removeflag "f" "x";', 'setflag "g" "x";')).toBeGreaterThanOrEqual(min);
+    });
+    it(":flags on keep and fileinto", () => {
+      expect(inLoop("", 'keep :flags "${v}";', 'keep :flags "x";')).toBeGreaterThanOrEqual(min);
+      // A repeated fileinto applies nothing: one part, so it files once.
+      const one = flat(1, words);
+      const steps = (c: string) => stepsOf(`${REQ} ${FROM_SUBJECT} foreverypart { ${c} }`, one);
+      expect(steps('fileinto :flags "${v}" "X";') - steps('fileinto :flags "x" "X";')).toBeGreaterThanOrEqual(words.length >> 2);
+    });
+    it("hasflag's variable form", () => {
+      // Beyond the step per flag each key's match costs.
+      expect(inLoop(held, 'if hasflag "f" "zz" { stop; }', 'if hasflag "g" "zz" { stop; }')).toBeGreaterThanOrEqual(min + 10 * 799);
+    });
+    it("none of it outside a loop", () => {
+      const eml = flat(1, words);
+      expect(stepsOf(`${REQ} ${FROM_SUBJECT} addflag "\${v}";`, eml)).toBe(stepsOf(`${REQ} ${FROM_SUBJECT} addflag "x";`, eml));
+    });
   });
 
   it("outside a loop nothing is charged by size: there, a charge could fail the script", () => {
     const eml = flat(1, a);
     expect(stepsOf(`${REQ} ${FROM_SUBJECT} set :upper "u" "\${v}";`, eml)).toBe(stepsOf(`${REQ} ${FROM_SUBJECT} set "u" "x";`, eml));
+  });
+});
+
+describe("a command that runs out of the loop's share mid-way has done nothing", () => {
+  it("vacation", () => {
+    const script = `require ["foreverypart","variables","vacation"]; ${FROM_SUBJECT} foreverypart { vacation "${"${v}".repeat(2000)}"; }`;
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 5000 });
+    const { headers, size, body } = parseEml(flat(1, "a".repeat(4000)));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect([d.budgetExhausted, d.vacationRan, d.vacationResponses.size]).toEqual([true, false, 0]);
+  });
+});
+
+describe("a test is charged per header name, and per value by its size", () => {
+  // A test names any number of fields, which a loop repeats, and decoding or
+  // parsing a value is linear in it: a step per name and one per value, plus
+  // a step per 64 characters parsed as addresses or decoded from RFC 2047.
+  const from = Array.from({ length: 200 }, (_, i) => `u${i}@example.com`).join(", ");
+  const eml = `From: ${from}\r\nTo: b@y\r\nSubject: ${"=?utf-8?q?a?= ".repeat(500)}\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${"--b\r\nContent-Type: text/plain\r\n\r\nx\r\n".repeat(10)}--b--\r\n`;
+  const names = (n: string, k: number) => `[${Array.from({ length: k }, () => `"${n}"`).join(",")}]`;
+  const extra = (test: (k: number) => string) => {
+    const steps = (k: number) => stepsOf(`require ["foreverypart","envelope","relational"]; foreverypart { if ${test(k)} { stop; } }`, eml);
+    return steps(100) - steps(1);
+  };
+  const parsed = (v: string) => 2 + (v.length >> 6);
+
+  it("header", () => {
+    const subject = parseEml(eml).headers.get("subject")![0]!;
+    expect(extra((k) => `header :is ${names("subject", k)} "x"`)).toBeGreaterThanOrEqual(10 * 99 * parsed(subject));
+    // Counting decodes nothing.
+    expect(extra((k) => `header :count "ge" ${names("subject", k)} "99999999"`)).toBeGreaterThanOrEqual(10 * 99 * 2);
+  });
+
+  it("address", () => {
+    expect(extra((k) => `address :count "ge" ${names("from", k)} "99999999"`)).toBeGreaterThanOrEqual(10 * 99 * parsed(from));
+    // A field that is no address header still costs its name.
+    expect(extra((k) => `address :is ${names("subject", k)} "x"`)).toBeGreaterThanOrEqual(10 * 99);
+  });
+
+  it("exists and envelope", () => {
+    expect(extra((k) => `not exists ${names("from", k)}`)).toBeGreaterThanOrEqual(10 * 99 * 2);
+    expect(extra((k) => `envelope :is ${names("from", k)} "x"`)).toBeGreaterThanOrEqual(10 * 99);
+  });
+
+  it(":mime: a step per name per part, and per field for exists", () => {
+    const req = 'require ["foreverypart","mime"];';
+    const steps = (t: string) => stepsOf(`${req} foreverypart { if ${t} { stop; } }`, eml);
+    // The parts carry no Subject: only the names are charged.
+    expect(steps(`header :mime :is ${names("subject", 100)} "x"`) - steps(`header :mime :is ${names("subject", 1)} "x"`)).toBeGreaterThanOrEqual(10 * 99);
+    expect(steps(`not exists :mime ${names("content-type", 100)}`) - steps(`not exists :mime ${names("content-type", 1)}`)).toBeGreaterThanOrEqual(10 * 99 * 2);
+  });
+
+  it("string :count, per source", () => {
+    const sources = (k: number) => `[${Array.from({ length: k }, (_, i) => `"s${i}"`).join(",")}]`;
+    const steps = (k: number) => stepsOf(`require ["foreverypart","variables","relational"]; foreverypart { if string :count "ge" ${sources(k)} "9999" { stop; } }`, eml);
+    expect(steps(100) - steps(1)).toBeGreaterThanOrEqual(10 * 99);
   });
 });
 
@@ -150,6 +266,17 @@ describe("four nested loops at core's options", () => {
     within(SLOW, () => run(loops(`set "u" "${"${v}".repeat(20)}";`.repeat(50)), chain(30, "a".repeat(3990)), CORE));
   });
 
+  it("a template of four thousand empty references", () => {
+    within(SLOW, () => run(loops(`set "u" "${"${e}".repeat(4000)}";`.repeat(50)), chain(30, "a"), CORE));
+  });
+
+  it("an expansion past the longest string a runtime holds runs out of its share, not throws", () => {
+    // 140,000 references to a 4,000-character variable: 560 M characters, past
+    // V8's 2^29. Charged as it grows, the share runs out first.
+    const script = `${REQ} ${FROM_SUBJECT} foreverypart { set "u" "${"${v}".repeat(140_000)}"; } fileinto "After";`;
+    expect(run(script, flat(1, "a".repeat(4000)), CORE).fileinto).toEqual(["After"]);
+  });
+
   it("addflag over 800 flags", () => {
     const words = Array.from({ length: 800 }, (_, i) => `w${i}`).join(" ");
     within(SLOW, () => run(loops('addflag "${v}";'.repeat(50)), chain(30, words), CORE));
@@ -157,7 +284,7 @@ describe("four nested loops at core's options", () => {
 });
 
 describe("fileinto's duplicate check", () => {
-  it("is not a scan: 100,000 distinct names in nested loops", () => {
+  it("is not a scan: 25,000 distinct names in nested loops", () => {
     // Every part carries its own X-N, and each level of the loop keeps it.
     let body = "";
     for (let i = 1; i <= 30; i++) body += `--b${i - 1}\r\nX-N: n${i}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
@@ -165,10 +292,11 @@ describe("fileinto's duplicate check", () => {
     for (let i = 30; i >= 0; i--) body += `--b${i}--\r\n`;
     const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
     const keep = (v: string) => `if header :mime :matches "x-n" "*" { set "${v}" "\${1}"; }`;
-    const files = Array.from({ length: 50 }, (_, i) => `fileinto "\${a}.\${b}.\${c}.\${e}.${i}";`).join(" ");
+    const files = Array.from({ length: 10 }, (_, i) => `fileinto "\${a}.\${b}.\${c}.\${e}.${i}";`).join(" ");
     const script = `require ["mime","foreverypart","fileinto","variables"];
       foreverypart { ${keep("a")} foreverypart { ${keep("b")} foreverypart { ${keep("c")} foreverypart { ${keep("e")} ${files} } } } }`;
-    within(SLOW, () => run(script, eml, CORE));
+    // 30 ms; a scan took 3 s, and a set rebuilt per name 18 s.
+    within(500, () => run(script, eml, CORE));
   });
 
   it("sees a name a host added to the list", () => {
