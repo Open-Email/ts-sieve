@@ -42,8 +42,8 @@ export function markCutCaptures(caps: string[], kind: "matches" | "regex"): void
  * Captures an "unknown" may have changed. Evaluation goes on past an unknown
  * member of anyof/allof, or an unknown key or value: over the whole input it
  * could have set its own captures, or ended the test before a later member set
- * these. Any read of them discloses, an out-of-range one too (the group count
- * may differ).
+ * these. Each of them is in doubt (see captureMark), an out-of-range one too
+ * (the group count may differ): a test over one answers unknown.
  */
 const staleCaptures = new WeakSet<string[]>();
 
@@ -279,9 +279,11 @@ export class RuntimeData {
    * (discard, redirect-without-keep, reject) and let the recoverable ones
    * stand.
    * Unknowns a definite value absorbed inside allof/anyof never set this.
-   * Also set when a variable's value was cut to its size limit, when a
-   * fileinto or redirect past its limit was dropped, and when a reject stood
-   * beside a delivering action (see rejectConflict).
+   * A value the engine could not hold whole is marked, not the run (see
+   * Mark): this is set only where a command cannot weigh the mark and drops
+   * what it would have done (a redirect to one, or a header name built from
+   * one). Also set when a fileinto or redirect past its limit was dropped, and
+   * when a reject stood beside a delivering action (see rejectConflict).
    */
   indeterminate = false;
 

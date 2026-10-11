@@ -228,7 +228,7 @@ export class CmdDiscard implements Cmd {
 
 /** The flags a command names, expanded, and whether any came from a marked
  * value (see Mark): a canonical list rebuilt from one may differ anywhere, so
- * a flag variable stored from it is in doubt. */
+ * a flag variable or the internal set built from it is in doubt. */
 function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: boolean; literal: boolean } {
   let doubt = false;
   const literal = list.every((f) => !f.includes("${"));
