@@ -5,7 +5,6 @@
 // deleteheader's own value lookup) replays the ledger over the raw header values
 // via applyHeaderEditsToValues. The message itself is never rewritten.
 
-import { SieveError } from "../errors.js";
 import { decodeHeaderValue } from "./header.js";
 import { MatcherTest } from "./matcher.js";
 import type { Cmd, RuntimeData } from "./runtime.js";
@@ -29,6 +28,40 @@ function isValidHeaderName(name: string): boolean {
     if (c < 33 || c > 126 || c === 58 /* ':' */) return false;
   }
   return true;
+}
+
+/**
+ * Put an addheader value on one line. A raw CR, LF or NUL would let the value
+ * inject header fields when a host serialises the edits, and refusing it with a
+ * throw is worse: the value can come from the message (a captured encoded word
+ * may decode to CRLF), and a thrown execute() skips every rule. RFC 5293 §4
+ * lets an implementation fold instead, as Pigeonhole does. A run of line breaks
+ * at either end of the value or before white space is a fold and is removed, as
+ * unfolding removes it; any other becomes the space a fold would have inserted.
+ * NUL is dropped (a literal one is refused at load, see loadAddHeader). One
+ * pass, no regular expression: the value is message data.
+ */
+function foldHeaderValue(value: string): string {
+  const n = value.length;
+  let out = "";
+  let from = 0;
+  for (let i = 0; i < n; ) {
+    if (!isBreakOrNul(value.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    out += value.slice(from, i);
+    let breaks = false;
+    for (; i < n && isBreakOrNul(value.charCodeAt(i)); i++) breaks ||= value.charCodeAt(i) !== 0;
+    const next = value.charCodeAt(i); // NaN past the end
+    if (breaks && out.length > 0 && i < n && next !== 0x20 && next !== 0x09) out += " ";
+    from = i;
+  }
+  return from === 0 ? value : out + value.slice(from);
+}
+
+function isBreakOrNul(c: number): boolean {
+  return c === 0x0d || c === 0x0a || c === 0;
 }
 
 function isProtectedHeader(name: string): boolean {
@@ -81,11 +114,8 @@ export class CmdAddHeader implements Cmd {
 
   execute(d: RuntimeData): void {
     const fieldName = expandVars(d, this.fieldName);
-    const value = expandVars(d, this.value);
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
-    // A value with raw CR/LF/NUL (e.g. smuggled in via a variable) would let a
-    // script inject extra header fields when the host serialises the edits.
-    if (/[\r\n\0]/.test(value)) throw new SieveError("addheader: invalid header value");
+    const value = foldHeaderValue(expandVars(d, this.value));
     d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0 });
   }
 }

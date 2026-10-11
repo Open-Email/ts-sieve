@@ -615,6 +615,10 @@ function loadAddHeader(s: Script, pcmd: PCmd): Cmd {
     pcmd.tests,
     pcmd.block,
   );
+  // A NUL written in the script is an error its author can fix, so it is
+  // refused here (Pigeonhole's errors/field-value.sieve). One expanded from a
+  // variable is known only at run time, and foldHeaderValue drops it.
+  if (cmd.value.includes("\0")) throw at(pcmd, "addheader: the value contains a NUL character");
   return cmd;
 }
 

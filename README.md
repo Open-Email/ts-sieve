@@ -59,10 +59,10 @@ failed, fall back to implicit keep". Because a throw skips every rule, the
 leniently, and structure past the caps below is "unknown". Other paths from
 message content to a throw remain and are tracked as issues (step-budget
 exhaustion by large parts under `:matches`/`:regex` or by many rules over many
-parts, `addheader` of a captured value with a line break). A `:matches`/`:regex`
-key holding a variable reference compiles when the test runs; if the expanded
-text does not compile, or is past the pattern-length cap, the comparison is
-"unknown" rather than an error.
+parts, a `:regex` key nested deep enough to overflow the matcher's stack). A
+`:matches`/`:regex` key holding a variable reference compiles when
+the test runs; if the expanded text does not compile, or is past the
+pattern-length cap, the comparison is "unknown" rather than an error.
 
 ### What the host implements
 
@@ -82,7 +82,7 @@ text does not compile, or is past the pattern-length cap, the comparison is
 | `mailboxes` / `mailboxesCreate` | `fileinto` targets (deduped); the subset flagged `:create` (RFC 5490) should be auto-created. |
 | `redirectAddr` | `redirect` targets that passed your policy (capped by `maxRedirects`). |
 | `flags` | The final IMAP flag set (RFC 5232), canonicalised: lowercased, deduped, sorted. |
-| `headerEdits` | The RFC 5293 `addheader`/`deleteheader` ledger. Tests inside the script already see the edits; apply the ledger yourself if the *stored* message should change. |
+| `headerEdits` | The RFC 5293 `addheader`/`deleteheader` ledger. Tests inside the script already see the edits; apply the ledger yourself if the *stored* message should change. An added value holds no CR, LF or NUL, but is otherwise as the script built it: fold and encode it when you serialise it (it may pass RFC 5322's 998-octet line limit, carry non-ASCII text, or Unicode separators such as U+2028). |
 | `vacationResponses` | RFC 5230 vacation **intents**, keyed by envelope-from. The host owns the actual send, the `:days`/`:handle` dedup database, and the RFC 5230 §4.5 loop-prevention checks (`Auto-Submitted`, list headers, "am I in To/Cc?"). |
 | `rejected` / `rejectReason` / `rejectExtended` | RFC 5429: a `reject` (or, with `rejectExtended`, an `ereject`) ran, with its reason after variable expansion; the implicit keep is cancelled. The host refuses the message — RFC 5429 asks for a protocol-level 5xx where possible, else a DSN (ereject) or failure MDN (reject), never to a null or forged sender; a host that can only drop it departs from the RFC (§2.1: no ereject without protocol refusal) and leaves the sender uninformed. `rejectReason` is **untrusted text**: variables can carry decoded CR/LF and non-ASCII from the message, so a host writing it into an SMTP reply must apply §2.5's multi-line and §2.1.1's ASCII rules. Header edits (`headerEdits`) must not reach a generated MDN/DSN (§2.4). Treat a reject like a discard when `indeterminate` is set. |
 
@@ -148,9 +148,11 @@ compiled program ≤ 10 000 instructions, `{n,m}` counts ≤ 1000, input ≤ 256
   script upload, not when a message arrives. A pattern built from variables
   can only be compiled at delivery, and one that does not compile answers
   "unknown" instead of throwing.
-- **Header-injection guard.** `addheader` rejects values containing CR/LF/NUL,
-  so a variable smuggled out of a hostile message can't append extra header
-  fields when the host serialises `headerEdits`.
+- **Header-injection guard.** `addheader` puts its value on one line before it
+  reaches `headerEdits` (a fold is removed, any other line break becomes a
+  space, a NUL is dropped), so a variable smuggled out of a hostile message
+  can't append extra header fields when the host serialises the ledger, nor
+  make `execute()` throw. A NUL written in the script fails at `load()`.
 - **Prototype-safety.** Attacker-keyed collections (variables, vacation
   responses, header maps) are `Map`s, never plain objects.
 - **Deterministic.** No `Intl`, no locale, no system timezone: `date` defaults
