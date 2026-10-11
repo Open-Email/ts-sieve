@@ -278,6 +278,15 @@ describe("the #69 review's oracle findings", () => {
     expect(sentUnflagged).toEqual([]);
   });
 
+  it("a vacation an :addresses entry in doubt kept from recording leaves the earlier one on a guess", () => {
+    // The cut capture equals the sender, so B records nothing and A stands;
+    // read whole, the capture is longer, and B replaces A.
+    const BS = String.fromCharCode(92);
+    const script = `require ["variables","vacation","regex"]; vacation "A"; if header :regex "x-l" "^(.*@test${BS}${BS}.com)" { vacation :addresses ["\${1}"] "B"; }`;
+    const r = execO(script, `From: a@x\r\nTo: b@y\r\nX-L: from@test.com ${"b".repeat(17_000)} more@test.com\r\nSubject: s\r\n\r\nbody\r\n`);
+    expect(r.d.vacationOnGuess).toBe(true);
+  });
+
   it("a vacation built from a value the engine could not hold whole is on a guess", () => {
     const sub = execO('require ["variables","vacation"]; if header :matches "subject" "*" { vacation :subject "Re: ${1}" "away"; }', longSubject);
     expect(sub.d.vacationOnGuess).toBe(true);

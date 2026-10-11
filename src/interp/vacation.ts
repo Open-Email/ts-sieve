@@ -63,7 +63,19 @@ export class CmdVacation implements Cmd {
     const from = x(this.from);
     const reason = x(this.reason);
     const handle = x(this.handle);
-    const addresses = d.script.requiresExtension("variables") ? this.addresses.map(x) : this.addresses;
+    // Whether each :addresses entry is marked: one in doubt that equals the
+    // sender records nothing here, though whole it may not equal it.
+    const addressMarks: boolean[] = [];
+    const addresses = d.script.requiresExtension("variables")
+      ? this.addresses.map((a) => {
+          const before = marked;
+          marked = false;
+          const v = x(a);
+          addressMarks.push(marked);
+          marked ||= before;
+          return v;
+        })
+      : this.addresses;
     // In a loop, a step per address it compares: a literal list costs no
     // expansion, and it may hold thousands.
     if (d.budget.shares > 0) d.budget.consume(1 + addresses.length);
@@ -79,9 +91,13 @@ export class CmdVacation implements Cmd {
     const sender = d.envelope.envelopeFrom();
     if (sender === "") return;
 
-    // Don't autorespond to our own addresses (raw string equality).
-    for (const addr of addresses) {
-      if (addr === sender) return;
+    // Don't autorespond to our own addresses (raw string equality). An entry
+    // in doubt that matched may not match whole: then this vacation may
+    // replace the one recorded, which is a guess.
+    for (let i = 0; i < addresses.length; i++) {
+      if (addresses[i] !== sender) continue;
+      if (addressMarks[i] && d.vacationResponses.size > 0) d.vacationOnGuess = true;
+      return;
     }
 
     // Record intent (last-write-wins). The host applies the actual send + dedup.
