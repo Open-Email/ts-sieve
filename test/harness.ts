@@ -31,6 +31,7 @@ export const ALL_EXTENSIONS = [
   "ereject",
   "mime",
   "foreverypart",
+  "extracttext",
 ];
 
 export interface Result {

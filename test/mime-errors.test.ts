@@ -37,15 +37,21 @@ function cases(file: string): Case[] {
     out.push({ label: `${file} case ${out.length + 1} (${cur.label})`, ok: cur.ok, src });
     cur = null;
   };
-  for (const line of lines) {
-    const m = /^(\s*)# (No error\s*|(\d+):.*)$/.exec(line);
+  const MARKER = /^(\s*)# (No error\s*|Not an error\s*|(\d+):.*)$/;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const m = MARKER.exec(line);
     if (m) {
       flush();
-      cur = { label: m[2]!.trim(), ok: m[2]!.startsWith("No error"), body: [], wrapper: m[1] ? wrapper : "" };
+      cur = { label: m[2]!.trim(), ok: !/^\d/.test(m[2]!), body: [], wrapper: m[1] ? wrapper : "" };
       continue;
     }
-    if (/^\S.*{\s*$/.test(line) && !cur) {
-      wrapper = line; // a top-level block opened before any case: its cases nest in it
+    // A top-level block whose next line is an indented case marker wraps the
+    // cases inside it, whether or not a case came before it.
+    const next = lines.slice(i + 1).find((l) => l.trim() !== "") ?? "";
+    if (/^\S.*{\s*$/.test(line) && /^\s+# /.test(next) && MARKER.test(next)) {
+      flush();
+      wrapper = line;
       continue;
     }
     if (cur) cur.body.push(line);
@@ -62,6 +68,7 @@ describe("Pigeonhole mime/errors fixtures, case by case", () => {
     "exists-mime-tag.sieve",
     "foreverypart.sieve",
     "break.sieve",
+    "extracttext.sieve",
   ]) {
     const all = cases(file);
     it(`${file}: the fixture splits into cases`, () => {
@@ -76,6 +83,12 @@ describe("Pigeonhole mime/errors fixtures, case by case", () => {
       });
     }
   }
+
+  it("extracttext-nofep.sieve and -novar.sieve: extracttext needs foreverypart and variables", () => {
+    for (const f of ["extracttext-nofep.sieve", "extracttext-novar.sieve"]) {
+      expect(() => compile(fs.readFileSync(path.join(DIR, f), "utf8")), f).toThrow(/extracttext/);
+    }
+  });
 
   it("limits.sieve: foreverypart nests at most four deep", () => {
     const src = fs.readFileSync(path.join(DIR, "limits.sieve"), "utf8");

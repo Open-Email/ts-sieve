@@ -30,7 +30,7 @@ import {
 } from "./dovecot-testsuite.js";
 import { CmdAddHeader, CmdDeleteHeader } from "./editheader.js";
 import { decodeEncodedChars } from "./encoded.js";
-import { CmdBreak, CmdForEveryPart } from "./foreverypart.js";
+import { CmdBreak, CmdExtractText, CmdForEveryPart } from "./foreverypart.js";
 import { MailboxExistsTest } from "./mailbox.js";
 import { MimeOpts } from "./mime.js";
 import { MatcherTest } from "./matcher.js";
@@ -65,6 +65,7 @@ const supportedRequires = new Set([
   "fileinto",
   "mime",
   "foreverypart",
+  "extracttext",
   "envelope",
   "imap4flags",
   "subaddress",
@@ -642,6 +643,37 @@ function loadForEveryPart(s: Script, pcmd: PCmd): Cmd {
   return cmd;
 }
 
+function loadExtractText(s: Script, pcmd: PCmd): Cmd {
+  if (!s.requiresExtension("extracttext")) throw at(pcmd, "missing require 'extracttext'");
+  // RFC 5703 §7: outside a loop it "SHOULD be flagged as a compilation error".
+  if (s.loops.length === 0) throw at(pcmd, "extracttext outside foreverypart");
+  const cmd = new CmdExtractText();
+  const tags = setModifierTags(cmd.modifiers);
+  tags["first"] = { needsValue: true, matchNum: (n) => (cmd.first = n) };
+  loadSpec(
+    s,
+    { tags, pos: [{ minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.name = v[0]!) }] },
+    pcmd,
+    pcmd.args,
+    pcmd.tests,
+    pcmd.block,
+  );
+  if (conflictingModifiers(cmd.modifiers)) throw at(pcmd, "extracttext: conflicting modifiers");
+  const why = badVariableName(s, cmd.name);
+  if (why !== null) throw at(pcmd, `extracttext: ${why}`);
+  return cmd;
+}
+
+/**
+ * Extensions that only work alongside others, checked once every require is
+ * known: RFC 5703 §7, extracttext needs foreverypart and variables.
+ */
+export function checkExtensionDependencies(s: Script): void {
+  if (!s.requiresExtension("extracttext")) return;
+  if (!s.requiresExtension("foreverypart")) throw new SieveError('extracttext requires "foreverypart"');
+  if (!s.requiresExtension("variables")) throw new SieveError('extracttext requires "variables"');
+}
+
 function loadBreak(s: Script, pcmd: PCmd): Cmd {
   if (!s.requiresExtension("foreverypart")) throw at(pcmd, "missing require 'foreverypart'");
   const cmd = new CmdBreak();
@@ -834,14 +866,7 @@ function loadSet(s: Script, pcmd: PCmd): Cmd {
   loadSpec(
     s,
     {
-      tags: {
-        lower: { matchBool: () => cmd.modifiers.push("lower") },
-        upper: { matchBool: () => cmd.modifiers.push("upper") },
-        lowerfirst: { matchBool: () => cmd.modifiers.push("lowerfirst") },
-        upperfirst: { matchBool: () => cmd.modifiers.push("upperfirst") },
-        quotewildcard: { matchBool: () => cmd.modifiers.push("quotewildcard") },
-        length: { matchBool: () => cmd.modifiers.push("length") },
-      },
+      tags: setModifierTags(cmd.modifiers),
       pos: [
         { minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.name = v[0]!) },
         { minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.value = v[0]!) },
@@ -852,12 +877,23 @@ function loadSet(s: Script, pcmd: PCmd): Cmd {
     pcmd.tests,
     pcmd.block,
   );
-  // Same-precedence-tier modifiers conflict (e.g. :lower + :upper).
-  const tiers = cmd.modifiers.map((m) => SET_MODIFIERS[m]!.precedence);
-  if (new Set(tiers).size !== tiers.length) throw at(pcmd, "set: conflicting modifiers");
+  if (conflictingModifiers(cmd.modifiers)) throw at(pcmd, "set: conflicting modifiers");
   const why = badVariableName(s, cmd.name);
   if (why !== null) throw at(pcmd, `set: ${why}`);
   return cmd;
+}
+
+/** The set modifier tags (RFC 5229 §4.1), recorded in load order. */
+function setModifierTags(modifiers: string[]): Record<string, SpecTag> {
+  const tags: Record<string, SpecTag> = {};
+  for (const m of Object.keys(SET_MODIFIERS)) tags[m] = { matchBool: () => modifiers.push(m) };
+  return tags;
+}
+
+/** Same-precedence-tier modifiers conflict (e.g. :lower + :upper). */
+function conflictingModifiers(modifiers: string[]): boolean {
+  const tiers = modifiers.map((m) => SET_MODIFIERS[m]!.precedence);
+  return new Set(tiers).size !== tiers.length;
 }
 
 const VARIABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -1098,6 +1134,7 @@ const commands: Record<string, (s: Script, cmd: PCmd) => Cmd | null> = {
   addheader: loadAddHeader,
   foreverypart: loadForEveryPart,
   break: loadBreak,
+  extracttext: loadExtractText,
   deleteheader: loadDeleteHeader,
   set: loadSet,
   vacation: loadVacation,

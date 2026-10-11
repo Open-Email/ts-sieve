@@ -174,20 +174,24 @@ export class CmdSet implements Cmd {
   modifiers: string[] = []; // in load order; applied high-precedence first
 
   execute(d: RuntimeData): void {
-    let v = expandVars(d, this.value);
-    const ordered = [...this.modifiers].sort(
-      (a, b) => (SET_MODIFIERS[b]?.precedence ?? 0) - (SET_MODIFIERS[a]?.precedence ?? 0),
-    );
-    let lastPrec = 0;
-    for (const m of ordered) {
-      v = SET_MODIFIERS[m]!.apply(v);
-      lastPrec = SET_MODIFIERS[m]!.precedence;
-    }
-    if (lastPrec === SET_MODIFIERS.quotewildcard!.precedence) {
-      v = truncateQuoted(v, d.script.opts.maxVariableLen);
-    }
-    setVar(d, this.name, v);
+    setVar(d, this.name, applySetModifiers(d, this.modifiers, expandVars(d, this.value)));
   }
+}
+
+/** Apply set modifiers (RFC 5229 §4.1), highest precedence first; shared by
+ * set and extracttext. */
+export function applySetModifiers(d: RuntimeData, modifiers: string[], value: string): string {
+  let v = value;
+  const ordered = [...modifiers].sort((a, b) => (SET_MODIFIERS[b]?.precedence ?? 0) - (SET_MODIFIERS[a]?.precedence ?? 0));
+  let lastPrec = 0;
+  for (const m of ordered) {
+    v = SET_MODIFIERS[m]!.apply(v);
+    lastPrec = SET_MODIFIERS[m]!.precedence;
+  }
+  if (lastPrec === SET_MODIFIERS.quotewildcard!.precedence) {
+    v = truncateQuoted(v, d.script.opts.maxVariableLen);
+  }
+  return v;
 }
 
 // ---------------------------------------------------------------------------

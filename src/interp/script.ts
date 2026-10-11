@@ -5,7 +5,7 @@
 import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import { parse } from "../parser/parse.js";
-import { loadBlock } from "./load.js";
+import { checkExtensionDependencies, loadBlock } from "./load.js";
 import { checkRejectConflicts } from "./reject.js";
 import { type Cmd, type RuntimeData, StopSignal, type TestEnv } from "./runtime.js";
 
@@ -119,5 +119,6 @@ export function load(source: string, opts: Options = {}): Script {
     maxTestNesting: script.opts.maxTestNesting,
   });
   script.cmds = loadBlock(script, cmds);
+  checkExtensionDependencies(script);
   return script;
 }
