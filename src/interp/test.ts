@@ -400,8 +400,8 @@ export class HeaderTest implements Test {
     return unknown ? "unknown" : false;
   }
 
-  /** The fields of every part in scope, through the MIMEOPT. Over a scope that
-   * may go on past the read-window cut, a miss is unknown. */
+  /** The fields of every part in scope :index selects, through the MIMEOPT.
+   * Over a scope that may go on past the read-window cut, a miss is unknown. */
   private checkMime(d: RuntimeData, mime: MimeOpts): Tri {
     const { parts, open } = mime.scope(d);
     const params = mime.params.map((p) => expandVars(d, p));
@@ -415,8 +415,16 @@ export class HeaderTest implements Test {
       for (const hdr of this.header) {
         const name = expandVars(d, hdr);
         d.budget.consume(1); // the name; mime.values charges each value
-        let raw = partHeader(d, part, name);
-        const marks = valueMarks(raw);
+        const all = partHeader(d, part, name);
+        // RFC 5260 :index counts the fields of the part's own header, as it
+        // counts the message's (Pigeonhole counts the values the MIMEOPT
+        // derives, across the parts in scope). Without it, a MIMEOPT on
+        // Content-Type or Content-Disposition reads the first (see
+        // MimeOpts.firstOnly): the first field, before a marked one is set
+        // aside, so a first field in doubt is not passed over for the next.
+        const [from, to] = this.index === 0 && mime.firstOnly(name) ? [0, Math.min(1, all.length)] : indexRange(all.length, this.index, this.last);
+        let raw = from === 0 && to === all.length ? all : all.slice(from, to);
+        const marks = valueMarks(all)?.slice(from, to);
         if (marks?.some((m) => m !== "")) {
           marked = true;
           raw = raw.filter((_, i) => marks[i] === "");
