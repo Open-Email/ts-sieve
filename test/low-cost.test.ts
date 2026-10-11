@@ -23,6 +23,18 @@ describe("quoted-printable takes two hex digits after '='", () => {
     });
   }
 
+  it("soft line breaks still join lines", () => {
+    expect(run(is("café"), qp("caf=\r\n=C3=A9"))).toEqual(R({ fileinto: ["Is"] }));
+    expect(run(is("ab"), qp("a=\nb"))).toEqual(R({ fileinto: ["Is"] }));
+  });
+
+  it("the hex digits are 0-9, a-f and A-F, no further", () => {
+    expect(run(is("aOb"), qp("a=4fb"))).toEqual(R({ fileinto: ["Is"] }));
+    expect(run(is("aOb"), qp("a=4Fb"))).toEqual(R({ fileinto: ["Is"] }));
+    expect(run(is("a=g1b"), qp("a=g1b"))).toEqual(R({ fileinto: ["Is"] }));
+    expect(run(is("a=4gb"), qp("a=4gb"))).toEqual(R({ fileinto: ["Is"] }));
+  });
+
   it("upper- and lower-case hex both decode", () => {
     expect(run(is("café"), qp("caf=C3=A9"))).toEqual(R({ fileinto: ["Is"] }));
     expect(run(is("café"), qp("caf=c3=a9"))).toEqual(R({ fileinto: ["Is"] }));
@@ -36,7 +48,8 @@ function time(f: () => unknown): number {
 }
 
 describe("many :contains keys over a large value", () => {
-  const big = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"x".repeat(1024 * 1024)}\r\n`;
+  // Mixed case, so folding it is real work for i;ascii-casemap.
+  const big = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"Hello World ".repeat(87_382)}\r\n`;
   const keys = Array.from({ length: 1000 }, (_, i) => `"Key${i}"`).join(",");
   const script = `require ["body","fileinto"]; if body :contains [${keys}] { fileinto "Hit"; }`;
 
@@ -49,6 +62,40 @@ describe("many :contains keys over a large value", () => {
     expect(run(script, big, { options: { maxExecSteps: 200_000 } })).toEqual(
       R({ implicitKeep: true, indeterminate: true }),
     );
+  });
+});
+
+describe(":value with many keys over a large value", () => {
+  it("folds the value once, not once per key", () => {
+    // Alternating case is the fold's worst input; 300 keys took 3.5 s.
+    const body = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"aA".repeat(512 * 1024)}\r\n`;
+    const keys = Array.from({ length: 300 }, (_, i) => `"k${i}"`).join(",");
+    const script = `require ["body","relational","fileinto"]; if body :value "eq" [${keys}] { fileinto "Eq"; }`;
+    expect(time(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBeLessThan(1000);
+  });
+});
+
+describe("a part whose transfer encoding is not decoded", () => {
+  it("is skipped, and not counted", () => {
+    const eml = [
+      "From: a@x",
+      "To: b@y",
+      "Content-Type: multipart/mixed; boundary=b",
+      "",
+      "--b",
+      "Content-Type: text/plain",
+      "",
+      "one",
+      "--b",
+      "Content-Type: text/plain",
+      "Content-Transfer-Encoding: x-uuencode",
+      "",
+      "two",
+      "--b--",
+      "",
+    ].join("\r\n");
+    const script = 'require ["body","relational","fileinto"]; if body :count "eq" "1" { fileinto "One"; }';
+    expect(run(script, eml)).toEqual(R({ fileinto: ["One"] }));
   });
 });
 

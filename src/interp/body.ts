@@ -230,11 +230,14 @@ function splitHeaderBody(b: string): { header: string; headerRaw: string; body: 
 const MAX_MIME_DEPTH = 100;
 
 /**
- * Each leaf's text, per message: decoded, and reduced from HTML for :text
- * ("t") or not ("c"), keyed by mode and the leaf's place in the MIME tree.
- * Every body test walks the same tree, and decoding and HTML reduction are
- * linear in the part, so a script with many body tests redid them once per
- * test. null: a transfer encoding not decoded, so the part is skipped.
+ * Each leaf's text, per Message object: decoded, and reduced from HTML for
+ * :text ("t") or not ("c"), keyed by mode and the leaf's place in the MIME
+ * tree. Every body test walks the same tree, and decoding and HTML reduction
+ * are linear in the part, so a script with many body tests redid them once per
+ * test. null: a transfer encoding not decoded, so the part is skipped. The
+ * cache lives as long as the Message object, so it also assumes the object's
+ * top-level Content-Type and transfer encoding and bodyTruncated() do not
+ * change: a host that reuses one object for a changed message gets stale text.
  */
 const leafTexts = new WeakMap<Message, Map<string, string | null>>();
 

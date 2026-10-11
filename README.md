@@ -210,7 +210,8 @@ on them and this one follows the RFC strictly:
   as the cut proves: a character, quoted-printable escape, HTML construct or
   character reference left open at the cut is dropped, never guessed. Each
   part is decoded (and reduced from HTML) once per message and shared by every
-  body test; a quoted-printable "=" not followed by two hex digits is text.
+  body test; a quoted-printable "=" that starts neither an escape (two hex
+  digits) nor a soft line break is text.
 - RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
   labels the runtime provides; unknown charsets fall back to UTF-8/raw.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of

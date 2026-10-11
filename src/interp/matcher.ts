@@ -1,6 +1,7 @@
 // The shared match-type/comparator
 // state for header/address/envelope/string/date/body/hasflag tests. `:is` and
-// `:contains` route through testString; `:matches`/`:regex` compile to the
+// `:contains` fold the value once and compare (compareFolded, or testString for
+// i;ascii-numeric); `:matches`/`:regex` compile to the
 // linear regex engine (patterns without variable refs precompile at load);
 // `:value`/`:count` route through the relational kernel.
 
@@ -253,7 +254,7 @@ export class MatcherTest {
    * Three-valued: `sourceTruncated` marks `source` as a PREFIX of the real
    * value (the host's body read window cut it); `:matches`/`:regex` inputs can
    * additionally be cut by the engine's own maxMatchInputLength. A definite
-   * answer must be provable from the prefix (see testStringPrefix and the
+   * answer must be provable from the prefix (see compareFolded and the
    * sound-on-prefix pattern rules above); anything else is "unknown", which the
    * caller accumulates instead of treating as a miss — the miss reading is how
    * a `not`-guarded test used to invert on bytes the engine never read. An
@@ -266,6 +267,7 @@ export class MatcherTest {
     const cap = opts.maxMatchInputLength || MAX_INPUT_LENGTH;
     const reOpts = { maxInputLength: cap, budget: d.budget };
     let foldedSource: string | undefined;
+    let valueFolded: string | undefined;
     let unknown = false;
     for (let i = 0; i < this.key.length; i++) {
       d.budget.consume(1);
@@ -327,21 +329,30 @@ export class MatcherTest {
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
+            // Folded once per comparison, as for :is/:contains below.
             const fold = this.comparator === "i;octet" ? (x: string) => x : toLowerASCII;
-            if (compareString(this.relational, fold(source), fold(k))) return true;
+            if (valueFolded === undefined) {
+              d.budget.consume(source.length >> 10);
+              valueFolded = fold(source);
+            }
+            if (compareString(this.relational, valueFolded, fold(k))) return true;
           }
         }
       } else {
         // :is/:contains. The value is folded once per comparison, not once per
-        // key, and each key is charged by its size, a step per KiB: 1,000 keys
-        // over a 1 MiB body took seconds, charged a step each.
-        d.budget.consume(source.length >> 10);
+        // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
+        // and charged by the value's size, a step per KiB: once for the fold,
+        // and for :contains once per key searched through it.
         const k = expandVars(d, key);
         let r: Tri;
+        if (this.match === "contains") d.budget.consume(source.length >> 10);
         if (this.comparator === "i;ascii-numeric") {
           r = sourceTruncated ? testStringPrefix(this.comparator, this.match, source, k) : testString(this.comparator, this.match, source, k, opts);
         } else {
-          foldedSource ??= comparatorFold(this.comparator)(source);
+          if (foldedSource === undefined) {
+            d.budget.consume(source.length >> 10);
+            foldedSource = comparatorFold(this.comparator)(source);
+          }
           r = compareFolded(this.match, foldedSource, comparatorFold(this.comparator)(k), sourceTruncated);
         }
         if (r === true) return true;

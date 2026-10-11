@@ -17,12 +17,20 @@ export type Match = "is" | "contains" | "matches" | "value" | "count" | "regex";
 
 export type AddressPart = "all" | "localpart" | "domain" | "user" | "detail";
 
-/** ASCII-only lowercasing (i;ascii-casemap fold). Runs of A–Z are lowered
- * whole (toLowerCase maps them exactly as the fold does); building the result
- * a character at a time made folding a large body slow. Linear: `[A-Z]+`
- * cannot backtrack. */
+/** ASCII-only lowercasing (i;ascii-casemap fold), one UTF-16 unit at a time
+ * into a buffer: building the result a character at a time made folding a
+ * large body slow, and lowering runs of A–Z by replace was slowest on
+ * alternating case. Lone surrogates are copied as they are. */
 export function toLowerASCII(s: string): string {
-  return s.replace(/[A-Z]+/g, (run) => run.toLowerCase());
+  if (!/[A-Z]/.test(s)) return s;
+  const out = new Uint16Array(s.length);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    out[i] = c >= 65 && c <= 90 ? c + 32 : c;
+  }
+  let r = "";
+  for (let i = 0; i < out.length; i += 0x2000) r += String.fromCharCode(...out.subarray(i, i + 0x2000));
+  return r;
 }
 
 export interface MatchOptions {
