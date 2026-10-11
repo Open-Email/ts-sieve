@@ -67,11 +67,13 @@ describe("many :contains keys over a large value", () => {
 
 describe(":value with many keys over a large value", () => {
   it("folds the value once, not once per key", () => {
-    // Alternating case is the fold's worst input; 300 keys took 3.5 s.
+    // Alternating case is the fold's worst input; 300 keys took 3.5 s. Some
+    // 600 ms alone, past 1 s under a loaded full run: the bound tells the two
+    // apart, not a run from a quiet one.
     const body = `From: a@x\r\nTo: b@y\r\nSubject: hi\r\n\r\n${"aA".repeat(512 * 1024)}\r\n`;
     const keys = Array.from({ length: 300 }, (_, i) => `"k${i}"`).join(",");
     const script = `require ["body","relational","fileinto"]; if body :value "eq" [${keys}] { fileinto "Eq"; }`;
-    expect(time(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBeLessThan(1000);
+    expect(time(() => expect(run(script, body)).toEqual(R({ implicitKeep: true })))).toBeLessThan(1500);
   });
 });
 
