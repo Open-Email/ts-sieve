@@ -283,7 +283,8 @@ export class RuntimeData {
    * Mark): this is set only where a command cannot weigh the mark and drops
    * what it would have done (a redirect to one, or a header name built from
    * one). Also set when a fileinto or redirect past its limit was dropped, and
-   * when a reject stood beside a delivering action (see rejectConflict).
+   * when a reject stood beside a delivering action (see rejectConflict). The
+   * redirects and fileintos dropped are counted (see redirectsDropped).
    */
   indeterminate = false;
 
@@ -299,6 +300,18 @@ export class RuntimeData {
   /** A test ran out of its share of the step budget and answered "unknown"
    * (see withShare). The script completed; this says why it guessed. */
   budgetExhausted = false;
+
+  /** Redirects the engine dropped, each disclosed on indeterminate: one to an
+   * address built from a value it could not hold whole (see Mark), or one
+   * past maxRedirects. Its address is in no list, so this is how a host can
+   * say a forward did not go. It counts redirects run, not addresses: a loop
+   * drops one redirect once per iteration, to the same address or not. A
+   * redirect the host's policy refused, or a repeat of a target held, is no
+   * drop. */
+  redirectsDropped = 0;
+  /** Fileintos dropped past maxFileintos, counted as redirectsDropped is: per
+   * fileinto run, not per name. */
+  fileintosDropped = 0;
 
   redirectAddr: string[] = [];
   mailboxes: string[] = [];
@@ -444,6 +457,8 @@ export class RuntimeData {
     c.ifResult = this.ifResult;
     c.indeterminate = this.indeterminate;
     c.budgetExhausted = this.budgetExhausted;
+    c.redirectsDropped = this.redirectsDropped;
+    c.fileintosDropped = this.fileintosDropped;
     c.redirectAddr = [...this.redirectAddr];
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];

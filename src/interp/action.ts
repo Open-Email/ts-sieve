@@ -132,6 +132,7 @@ export class CmdFileInto implements Cmd {
       // Dropped, with nothing else it would have done: inside a loop the
       // message chooses how many targets there are (see maxFileintos).
       d.indeterminate = true;
+      d.fileintosDropped++;
       return;
     }
     // Expanded and charged before anything changes: in a loop a charge may
@@ -184,9 +185,10 @@ export class CmdRedirect implements Cmd {
     const { value: addr, mark } = expandMarked(d, this.addr);
     // An address built from a value the engine could not hold whole is not
     // the whole input's address, and a forward cannot be recalled: dropped,
-    // and disclosed (see Mark).
+    // disclosed (see Mark) and counted, as the host never sees it.
     if (mark !== "") {
       d.indeterminate = true;
+      d.redirectsDropped++;
       // Whole, it may have taken a slot under maxRedirects that a later
       // redirect takes here.
       if (d.script.redirectsMayCap) d.guessAfter = true;
@@ -208,6 +210,7 @@ export class CmdRedirect implements Cmd {
       // Dropped and disclosed, not thrown: a throw fails the whole script, and
       // a host's fail-open turns that into every rule skipped.
       d.indeterminate = true;
+      d.redirectsDropped++;
       return;
     }
     if (!d.policy.redirectAllowed(d, addr)) return;

@@ -18,13 +18,15 @@ export interface Options {
   /** Parser: max test nesting (default 15). */
   maxTestNesting?: number;
   /** Interp: max distinct redirect addresses per message (default 5). A
-   * redirect past it is dropped and sets indeterminate. */
+   * redirect past it is dropped, sets indeterminate and is counted in
+   * RuntimeData.redirectsDropped. */
   maxRedirects?: number;
   /** Interp: max distinct fileinto targets per message (default 32, the
    * default of Pigeonhole's sieve_max_actions, which counts every action and
-   * fails the script past it; 0 allows none). A fileinto past it is dropped
-   * and sets indeterminate: inside a foreverypart loop the message decides how
-   * many targets a script files into. */
+   * fails the script past it; 0 allows none). A fileinto past it is dropped,
+   * sets indeterminate and is counted in RuntimeData.fileintosDropped: inside
+   * a foreverypart loop the message decides how many targets a script files
+   * into. */
   maxFileintos?: number;
   maxVariableCount?: number;
   maxVariableNameLen?: number;
