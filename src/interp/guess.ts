@@ -20,7 +20,7 @@ import type { Cmd } from "./runtime.js";
 import type { Script } from "./script.js";
 import { CmdVacation } from "./vacation.js";
 
-type Counts = { redirects: number; vacations: number; rejects: number };
+type Counts = { redirects: number; vacations: number; rejects: number; fileintos: number };
 
 /** Redirect and vacation commands in `cmds`, one in a loop counting as many. */
 function count(cmds: Cmd[], inLoop: boolean, n: Counts): void {
@@ -28,6 +28,7 @@ function count(cmds: Cmd[], inLoop: boolean, n: Counts): void {
     if (c instanceof CmdRedirect) n.redirects += inLoop ? Number.POSITIVE_INFINITY : 1;
     else if (c instanceof CmdVacation) n.vacations += inLoop ? 2 : 1;
     else if (c instanceof CmdReject) n.rejects += 1;
+    else if (c instanceof CmdFileInto) n.fileintos += inLoop ? Number.POSITIVE_INFINITY : 1;
     const block = blockOf(c);
     if (block !== null) count(block, inLoop || c instanceof CmdForEveryPart, n);
   }
@@ -41,7 +42,7 @@ function blockOf(c: Cmd): Cmd[] | null {
 /** Set mayAffectLater on every arm and loop of the script, and the script's
  * redirectsMayCap. */
 export function analyzeGuessScope(s: Script): void {
-  const n: Counts = { redirects: 0, vacations: 0, rejects: 0 };
+  const n: Counts = { redirects: 0, vacations: 0, rejects: 0, fileintos: 0 };
   count(s.cmds, false, n);
   s.hasReject = n.rejects > 0;
   s.hasVacation = n.vacations > 0;
@@ -49,6 +50,7 @@ export function analyzeGuessScope(s: Script): void {
   // can reach the limit; a vacation, which response is recorded, only if
   // there are two.
   s.redirectsMayCap = n.redirects > s.opts.maxRedirects;
+  s.fileintosMayCap = n.fileintos > s.opts.maxFileintos;
   const vacationsRepeat = n.vacations > 1;
   // A test may set the captures later references read (${1}). The internal
   // flag set is read only by hasflag: a script without one (the JSON rules
@@ -73,9 +75,14 @@ export function analyzeGuessScope(s: Script): void {
         e.vacation ||= inner.vacation;
         e.reject ||= inner.reject;
         affects = inner.affects || ((c instanceof CmdIf || c instanceof CmdElsif) && capturesRead);
-      } else if (c instanceof CmdKeep || c instanceof CmdFileInto) {
+      } else if (c instanceof CmdKeep) {
         // :flags replaces the internal flag set.
         affects = c.flags !== null && flagsRead;
+      } else if (c instanceof CmdFileInto) {
+        // :flags replaces the internal flag set; and near maxFileintos a
+        // target filed (or not) decides whether a later fileinto, and its
+        // :flags, is dropped.
+        affects = flagsRead && (c.flags !== null || s.fileintosMayCap);
       } else if (c instanceof CmdRedirect) {
         affects = s.redirectsMayCap;
       } else if (c instanceof CmdVacation) {

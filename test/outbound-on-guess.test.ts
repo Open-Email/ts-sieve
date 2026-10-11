@@ -236,3 +236,44 @@ describe("a stop or break that ran while a guess is in force", () => {
     expect([d.rejectOnGuess, d.vacationOnGuess]).toEqual([false, false]);
   });
 });
+
+describe("the #69 review's oracle findings", () => {
+  const execO = (script: string, message: string, options: Record<string, number> = {}, bodyTruncated = false) => {
+    const { headers, size, body } = parseEml(message);
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...CORE, ...options });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("from@test.com", "to@test.com"), new MessageStatic(size, headers, body, bodyTruncated));
+    s.execute(d);
+    const guessed = redirectsOnGuess(d);
+    return { d, sentUnflagged: d.redirectAddr.filter((a) => !guessed.includes(a)) };
+  };
+
+  it("an if whose test ran out of its budget doubts the captures it may have set", () => {
+    const long = Array.from({ length: 3 }, () => `X-Long: ${"a".repeat(15_000)}q`).join("\r\n");
+    const m = `From: a@x\r\nTo: b@y\r\nX-A: alice\r\n${long}\r\nSubject: s\r\n\r\nbody\r\n`;
+    const script = 'require ["variables","fileinto","copy"]; if header :matches "x-a" "*" {} if header :matches "x-long" "*a*a*a*q" { fileinto "x"; } if string :is "${1}" "alice" { redirect :copy "boss@x.test"; }';
+    const { d, sentUnflagged } = execO(script, m, { maxExecSteps: 200_000 });
+    expect(d.indeterminate).toBe(true);
+    expect(sentUnflagged).toEqual([]);
+  });
+
+  it("an if whose string test read a value in doubt doubts the captures it may have set", () => {
+    const m = `From: a@x\r\nTo: b@y\r\nX-Long: ${"b".repeat(20_000)}q\r\nSubject: s\r\n\r\nbody\r\n`;
+    const script = 'require ["variables","copy"]; if header :matches "x-long" "*" { set "v" "${1}x"; } if string :matches "${v}" "*q*" { } redirect :copy "${2}@x.test";';
+    const { sentUnflagged } = execO(script, m);
+    expect(sentUnflagged).toEqual([]);
+  });
+
+  it("a fileinto that could take the last slot is not inert when a hasflag reads what it pushes out", () => {
+    const pis = Array.from({ length: 31 }, (_, i) => `fileinto "P${i}";`).join(" ");
+    const script = `require ["fileinto","imap4flags","copy","body"]; ${pis} if body :contains "needle" { fileinto "A"; } fileinto :flags "flagged" "B"; if hasflag "flagged" { redirect :copy "boss@x.test"; }`;
+    const { sentUnflagged } = execO(script, cutBody, { maxFileintos: 32 }, true);
+    expect(sentUnflagged).toEqual([]);
+  });
+
+  it("a vacation built from a value the engine could not hold whole is on a guess", () => {
+    const sub = execO('require ["variables","vacation"]; if header :matches "subject" "*" { vacation :subject "Re: ${1}" "away"; }', longSubject);
+    expect(sub.d.vacationOnGuess).toBe(true);
+    const handle = execO(`require ["variables","vacation"]; if header :matches "x-h" "*" { set "h" "\${1}"; } vacation :handle "\${h}" "away";`, `From: a@x\r\nTo: b@y\r\nX-H: ${"h".repeat(5000)}\r\nSubject: s\r\n\r\nbody\r\n`);
+    expect(handle.d.vacationOnGuess).toBe(true);
+  });
+});

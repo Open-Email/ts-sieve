@@ -16,7 +16,8 @@
 // change what runs after it (mayAffectLater, see guess.ts) puts the rest of
 // the run on a guess. An arm that only files changes nothing after it.
 
-import { type Cmd, onGuess, type RuntimeData, type Test } from "./runtime.js";
+import { type Cmd, doubtCaptures, onGuess, type RuntimeData, type Test } from "./runtime.js";
+import { setsCaptures } from "./test.js";
 
 /** The arm an unknown kept from running may be the whole input's, and so may
  * one skipped while a guess is in force (a definite test over state a guess
@@ -60,6 +61,11 @@ export class CmdIf implements Cmd {
     d.captureDoubt = false;
     if (res === "unknown") {
       d.indeterminate = true;
+      // Over the whole input the test may have set its own captures: an
+      // unknown that ran out of its budget, read a value in doubt or an open
+      // part tree left the ones in force unmarked (as member() does in
+      // anyof/allof).
+      if (setsCaptures(this.test)) doubtCaptures(d);
       // The block not run may be the one the whole input runs.
       if (this.mayAffectLater) d.guessAfter = true;
       armSkipped(d, this);
@@ -96,6 +102,7 @@ export class CmdElsif implements Cmd {
     d.captureDoubt = false;
     if (res === "unknown") {
       d.indeterminate = true;
+      if (setsCaptures(this.test)) doubtCaptures(d);
       if (this.mayAffectLater) d.guessAfter = true;
       armSkipped(d, this);
     } else if (res === false && onGuess(d)) {
