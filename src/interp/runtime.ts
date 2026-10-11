@@ -214,8 +214,17 @@ export class RuntimeData {
    * (discard, redirect-without-keep, reject) and let the recoverable ones
    * stand.
    * Unknowns a definite value absorbed inside allof/anyof never set this.
+   * Also set when a variable's value was cut to its size limit, when a
+   * fileinto or redirect past its limit was dropped, and when a reject stood
+   * beside a delivering action (see rejectConflict).
    */
   indeterminate = false;
+
+  /** RFC 5429 §2.4: the action a reject stood beside ("" for none). The run
+   * is then indeterminate and everything else stands as if the reject had
+   * not run: refuse the reject, deliver the rest. Under strictReject this is
+   * an error instead. */
+  rejectConflict: "" | "keep" | "fileinto" | "redirect" | "vacation" = "";
 
   /** A test ran out of its share of the step budget and answered "unknown"
    * (see withShare). The script completed; this says why it guessed. */
@@ -323,6 +332,7 @@ export class RuntimeData {
     c.rejected = this.rejected;
     c.rejectReason = this.rejectReason;
     c.rejectExtended = this.rejectExtended;
+    c.rejectConflict = this.rejectConflict;
     c.vacationRan = this.vacationRan;
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;

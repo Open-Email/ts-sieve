@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
-import { runDovecotInline } from "./dovecot/harness.js";
+import { mapNamespace, runDovecotInline } from "./dovecot/harness.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
 const EXT = ALL_EXTENSIONS;
@@ -104,9 +104,55 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
     });
   }
 
-  it("the delivering actions stand beside a disclosed reject", () => {
-    const d = exec('require ["reject","fileinto"]; fileinto "X"; reject "a"; fileinto "Y";');
-    expect([d.mailboxes, d.indeterminate]).toEqual([["X", "Y"], true]);
+  it("beside a disclosed reject everything stands as if it had not run, and the conflict is named", () => {
+    // [script, keep, implicitKeep, mailboxes, redirects, vacation responses, conflict]
+    const rows: [string, boolean, boolean, string[], string[], number, string][] = [
+      ['require ["reject","fileinto"]; fileinto "X"; reject "a"; fileinto "Y";', false, false, ["X", "Y"], [], 0, "fileinto"],
+      // :copy asked for the implicit keep: a refused reject must not cancel it.
+      ['require ["reject","fileinto","copy"]; fileinto :copy "X"; reject "a";', false, true, ["X"], [], 0, "fileinto"],
+      ['require "reject"; keep; reject "a";', true, true, [], [], 0, "keep"],
+      ['require "reject"; redirect "a@b.example"; reject "a";', false, false, [], ["a@b.example"], 0, "redirect"],
+      ['require ["reject","copy"]; redirect :copy "a@b.example"; reject "a";', false, true, [], ["a@b.example"], 0, "redirect"],
+      ['require ["reject","vacation"]; vacation "away"; reject "a";', false, true, [], [], 1, "vacation"],
+    ];
+    for (const [script, keep, implicitKeep, mailboxes, redirects, vacation, conflict] of rows) {
+      const d = exec(script);
+      expect([d.rejected, d.indeterminate, d.keep, d.implicitKeep, d.mailboxes, d.redirectAddr, d.vacationResponses.size, d.rejectConflict], script).toEqual([
+        true,
+        true,
+        keep,
+        implicitKeep,
+        mailboxes,
+        redirects,
+        vacation,
+        conflict,
+      ]);
+    }
+  });
+
+  it("a reject that stands cancels the implicit keep, and names no conflict", () => {
+    for (const script of ['require "reject"; reject "a";', 'require "reject"; discard; reject "a";', 'require "reject"; reject "a"; reject "b";']) {
+      const d = exec(script);
+      expect([d.rejected, d.implicitKeep, d.indeterminate, d.rejectConflict], script).toEqual([true, false, false, ""]);
+    }
+  });
+
+  it("a second reject does not hide a conflict", () => {
+    const d = exec('require "reject"; keep; reject "a"; reject "b";');
+    expect([d.rejected, d.rejectReason, d.indeterminate, d.keep, d.rejectConflict]).toEqual([true, "a", true, true, "keep"]);
+  });
+
+  it("a reject that runs out of the loop's share has done nothing", () => {
+    // Its reason is expanded first: a reject half-run recorded "" and
+    // silenced the definite reject after the loop as "a second".
+    const big = "x".repeat(4000);
+    const script = `require ["reject","ereject","foreverypart","variables"]; set "big" "${big}";
+      foreverypart { ereject "${"${big}".repeat(200)}"; } reject "definite";`;
+    const s = load(script, { enabledExtensions: EXT, maxExecSteps: 3000 });
+    const { headers, size, body } = parseEml("From: a@x\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n\r\nx\r\n--b--\r\n");
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect([d.budgetExhausted, d.rejected, d.rejectReason, d.rejectExtended]).toEqual([true, true, "definite", false]);
   });
 
   it("vacation conflicts even when it records no response", () => {
@@ -200,6 +246,32 @@ test "A" { reject "x"; keep; }
     expect(r.report()).toMatch(/conflicts with the keep action/);
   });
 
+  it("refuses a second reject in a block", () => {
+    const r = runDovecotInline(`
+require "vnd.dovecot.testsuite";
+require "reject";
+test "A" { reject "x"; reject "y"; }
+`);
+    expect(r.failures.map((f) => f.name)).toEqual(["A"]);
+    expect(r.report()).toMatch(/more than one reject/);
+  });
+
+  it("a sub-run checks the refusal it inherits as strictly", () => {
+    const r = runDovecotInline(
+      `
+require "vnd.dovecot.testsuite";
+require "reject";
+test "A" {
+  reject "x";
+  if not test_script_compile "k.sieve" { test_fail "compile failed"; }
+  if test_script_run { test_fail "sub-run succeeded"; }
+}
+`,
+      mapNamespace({ "k.sieve": "keep;" }),
+    );
+    expect(r.report()).not.toMatch(/sub-run succeeded/);
+  });
+
   it("checks a block that ends in stop too", () => {
     const r = runDovecotInline(`
 require "vnd.dovecot.testsuite";
@@ -221,9 +293,10 @@ describe("RuntimeData.clone()", () => {
     expect(() => strict.execute(d.clone(strict))).toThrow(/conflicts with the vacation action/);
   });
 
-  it("carries the refusal into a sub-run", () => {
+  it("carries the refusal, and a conflict it met, into a sub-run", () => {
     const d = exec('require "ereject"; ereject "why";');
     const c = d.clone();
     expect([c.rejected, c.rejectReason, c.rejectExtended]).toEqual([true, "why", true]);
+    expect(exec('require "reject"; keep; reject "a";').clone().rejectConflict).toBe("keep");
   });
 });

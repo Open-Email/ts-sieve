@@ -261,6 +261,9 @@ export class TestDovecotCompile implements Test {
         maxRedirects: d.script.opts.maxRedirects,
         maxFileintos: d.script.opts.maxFileintos,
         enabledExtensions: [], // isolate: every `require` fails ⇒ invalid scripts fail
+        // A sub-run inherits the parent's refusal (clone): its conflict check
+        // is Pigeonhole's, as the parent's is.
+        strictReject: true,
       });
       const toks = lex(source, { maxTokens: 5000, filename: this.scriptPath });
       const cmds = parse(new Stream(toks), {
