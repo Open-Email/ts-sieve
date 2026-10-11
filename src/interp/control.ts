@@ -16,11 +16,13 @@
 // change what runs after it (mayAffectLater, see guess.ts) puts the rest of
 // the run on a guess. An arm that only files changes nothing after it.
 
-import type { Cmd, RuntimeData, Test } from "./runtime.js";
+import { type Cmd, onGuess, type RuntimeData, type Test } from "./runtime.js";
 
-/** The arm an unknown kept from running (or that ran on a guess) may be the
- * whole input's: a vacation in it could replace the one recorded, and a
- * reject in it could have refused the message. */
+/** The arm an unknown kept from running may be the whole input's, and so may
+ * one skipped while a guess is in force (a definite test over state a guess
+ * wrote, or a chain an earlier arm of which ran on a guess): a vacation in it
+ * could replace the one recorded, and a reject in it could have refused the
+ * message. */
 export function armSkipped(d: RuntimeData, arm: { mayVacation: boolean; mayReject: boolean }): void {
   if (arm.mayVacation && d.vacationResponses.size > 0) d.vacationOnGuess = true;
   if (arm.mayReject) d.rejectOnGuess = true;
@@ -61,6 +63,8 @@ export class CmdIf implements Cmd {
       // The block not run may be the one the whole input runs.
       if (this.mayAffectLater) d.guessAfter = true;
       armSkipped(d, this);
+    } else if (res === false && onGuess(d)) {
+      armSkipped(d, this);
     }
     if (res === true) runArm(d, this.block, false, this.mayAffectLater);
     d.ifResult = res === true;
@@ -78,7 +82,11 @@ export class CmdElsif implements Cmd {
   mayReject = true;
 
   execute(d: RuntimeData): void {
-    if (d.ifResult) return;
+    if (d.ifResult) {
+      // The arm that ran instead may not be the whole input's.
+      if (d.chainGuessed || onGuess(d)) armSkipped(d, this);
+      return;
+    }
     const prior = d.chainGuessed;
     // Whole, the chain may have ended before this test: the captures it sets
     // are then a guess too.
@@ -89,6 +97,8 @@ export class CmdElsif implements Cmd {
     if (res === "unknown") {
       d.indeterminate = true;
       if (this.mayAffectLater) d.guessAfter = true;
+      armSkipped(d, this);
+    } else if (res === false && onGuess(d)) {
       armSkipped(d, this);
     }
     if (res === true) runArm(d, this.block, prior, this.mayAffectLater);
@@ -106,7 +116,10 @@ export class CmdElse implements Cmd {
   mayReject = true;
 
   execute(d: RuntimeData): void {
-    if (d.ifResult) return;
+    if (d.ifResult) {
+      if (d.chainGuessed || onGuess(d)) armSkipped(d, this);
+      return;
+    }
     runArm(d, this.block, d.chainGuessed, this.mayAffectLater);
   }
 }

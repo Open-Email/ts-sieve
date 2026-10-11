@@ -168,3 +168,36 @@ describe("a reject an unknown may have skipped", () => {
     expect(d.rejectOnGuess).toBe(false);
   });
 });
+
+describe("an arm a definite test skipped over state a guess wrote", () => {
+  const run1 = (script: string) => {
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...CORE });
+    // X-Ok, like the Subject, is past the match cap: a deleteheader over it is unknown.
+    const { headers, size, body } = parseEml(longSubject.replace("Subject: ", `X-Ok: ${"x".repeat(20_000)}zzz\r\nSubject: `));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("from@test.com", "to@test.com"), new MessageStatic(size, headers, body, false));
+    s.execute(d);
+    return d;
+  };
+
+  it("may be the whole input's: a reject in it is reported", () => {
+    for (const script of [
+      `require ["variables","reject"]; if ${U} { set "x" "1"; } if string :is "\${x}" "1" { reject "no"; }`,
+      `require ["imap4flags","reject"]; if ${U} { addflag "spam"; } if hasflag "spam" { reject "no"; }`,
+      `require ["editheader","reject"]; deleteheader :matches "x-ok" "*zzz"; if not exists "x-ok" { reject "no"; }`,
+      `require ["variables","reject","fileinto"]; if ${U} { set "x" "1"; } if string :is "\${x}" "1" { fileinto "A"; } elsif true { keep; } else { reject "no"; }`,
+    ]) {
+      const d = run1(script);
+      expect([script.slice(0, 40), d.rejected, d.rejectOnGuess]).toEqual([script.slice(0, 40), false, true]);
+    }
+  });
+
+  it("may be the whole input's: a vacation in it makes the one recorded a guess", () => {
+    const d = run1(`require ["variables","vacation"]; vacation :subject "A" "generic"; if ${U} { set "x" "1"; } if string :is "\${x}" "1" { vacation :subject "B" "specific"; }`);
+    expect(d.vacationOnGuess).toBe(true);
+  });
+
+  it("is no guess when no guess came before it", () => {
+    const d = run1('require ["reject","vacation"]; vacation "A"; if false { reject "no"; } if false { vacation "B"; }');
+    expect([d.rejectOnGuess, d.vacationOnGuess]).toEqual([false, false]);
+  });
+});
