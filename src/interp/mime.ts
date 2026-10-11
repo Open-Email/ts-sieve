@@ -6,7 +6,10 @@
 // a body the host's read window cut: every part the prefix does not show comes
 // after every part it does, in document order. A part whose children may go on
 // past the cut (or past a cap) is `open`; a part is only in the tree once its
-// header block is complete, so its headers are definite.
+// header block is complete, so its headers are definite. Past the depth cap,
+// and where a part's list turns on core's buffering (see InputEnd in body.ts),
+// an open part can have parts after it: foreverypart discloses an iteration
+// past one.
 
 import {
   binaryToBytes,
@@ -18,9 +21,9 @@ import {
   parseMediaType,
   parseMimeHeader,
   rawBinary,
-  skipDelimiterLineEnd,
-  splitBoundary,
-  splitHeaderBody,
+  readHeaderBlock,
+  splitMultipart,
+  type InputEnd,
 } from "./body.js";
 import { decodeHeaderValue, getHeader } from "./header.js";
 import { hostValueBytes } from "./mediatype.js";
@@ -50,8 +53,8 @@ export interface MimePart {
   /** extracttext's reading of it, for one decode limit. */
   text: { limit: number; text: string; complete: boolean } | null;
   /** The Content-Type and Content-Transfer-Encoding its content is read by:
-   * the fields the body test reads (the message's own first ones at the top,
-   * the last of each in a part), not header edits. */
+   * the fields the body test reads (the first of each, at the top as in a
+   * part), not header edits. */
   contentType: string;
   cte: string;
 }
@@ -87,7 +90,7 @@ export function mimeTree(d: RuntimeData): MimePart {
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
     root = newPart(null, rawBinary(d.msg, raw), cut, contentType, cte);
-    build(root, contentType, root.body, cut, 0, { parts: 0 });
+    build(root, contentType, root.body, cut, "whole", 0, { parts: 0 });
   } else {
     // A body the host did not read: whatever it holds was not seen.
     root = newPart(null, "", true, contentType, cte);
@@ -98,60 +101,46 @@ export function mimeTree(d: RuntimeData): MimePart {
   return root;
 }
 
-/** Whether a part of this type has parts of its own (a multipart the body
- * walker would split, or a nested message). */
+/** Whether a part of this type has parts of its own: a multipart (with no
+ * boundary, or no part found, it has the child core synthesizes), or a nested
+ * message. */
 function holdsParts(contentType: string): boolean {
-  const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
-  return (primary === "multipart" && !!params["boundary"]) || isMessage(mediaType);
+  const { mediaType, primary } = parseMediaType(contentType || "text/plain");
+  return primary === "multipart" || isMessage(mediaType);
 }
 
-function build(p: MimePart, contentType: string, b: string, cut: boolean, depth: number, counter: { parts: number }): void {
+/** `inputEnd`: see InputEnd in body.ts. */
+function build(p: MimePart, contentType: string, b: string, cut: boolean, inputEnd: InputEnd, depth: number, counter: { parts: number }): void {
   const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
   p.container = holdsParts(contentType);
   if (primary === "multipart") {
-    const boundary = params["boundary"];
-    if (!boundary) return;
     if (depth >= MAX_MIME_DEPTH) {
       p.open = true;
     } else {
-      const chunks = splitBoundary(b, boundary, cut);
-      let sawClose = false;
-      const nested: string[] = [];
-      for (let i = 1; i < chunks.length; i++) {
-        const c = chunks[i]!;
-        if (c.startsWith("--")) {
-          sawClose = true;
-          break;
-        }
-        nested.push(skipDelimiterLineEnd(c));
-      }
-      const lastCut = cut && !sawClose;
-      if (lastCut) p.open = true;
-      for (let i = 0; i < nested.length; i++) {
+      const mp = splitMultipart(b, params["boundary"] ?? "", cut, inputEnd);
+      if (mp.open) p.open = true;
+      for (const part of mp.parts) {
         if (++counter.parts > MAX_MIME_PARTS) {
           p.open = true;
           break;
         }
-        const partCut = lastCut && i === nested.length - 1;
-        const { header, body, sep } = splitHeaderBody(nested[i]!);
-        if (partCut && !sep) continue; // its header block is cut: not yet a part
-        const fields = parseMimeHeader(header);
-        const child = newPart(parseHeaderFields(header), body, partCut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
+        const child = newPart(parseHeaderFields(part.fields), part.body, part.cut, part.contentType, part.cte);
         p.children.push(child);
-        build(child, child.contentType, body, partCut, depth + 1, counter);
+        build(child, child.contentType, part.body, part.cut, part.ends, depth + 1, counter);
       }
     }
   } else if (isMessage(mediaType)) {
-    const { header, body, sep } = splitHeaderBody(b);
-    if (cut && !sep) {
+    const h = readHeaderBlock(b, 0, Infinity, cut);
+    if (h.open) {
       p.open = true;
     } else if (depth >= MAX_MIME_DEPTH || ++counter.parts > MAX_MIME_PARTS) {
       p.open = true;
     } else {
-      const fields = parseMimeHeader(header);
-      const child = newPart(parseHeaderFields(header), body, cut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
+      const fields = parseMimeHeader(h.fields);
+      const body = b.slice(h.end);
+      const child = newPart(parseHeaderFields(h.fields), body, cut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
       p.children.push(child);
-      build(child, child.contentType, body, cut, depth + 1, counter);
+      build(child, child.contentType, body, cut, "whole", depth + 1, counter);
     }
   }
   p.openBelow = p.open || p.children.some((c) => c.openBelow);

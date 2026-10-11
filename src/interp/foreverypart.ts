@@ -12,7 +12,12 @@
 // skipped might have acted). And over a body the host's read window cut, parts
 // past the cut are never iterated: a loop that reaches the end of an open part
 // list discloses the iterations it may have missed the same way. One that
-// breaks before the end missed nothing.
+// breaks before the end missed nothing. A list can also be left open inside
+// the tree, with parts after it: one past the depth cap, or one whose parts
+// turn on core's buffering (see InputEnd in body.ts). Its unseen parts would
+// come right after the parts of it the tree holds, so an iteration past that
+// point may follow one the loop missed, and discloses it, whether the loop
+// then breaks or not.
 
 import { currentPart, mimeTree, partText, subtree } from "./mime.js";
 import { MAX_INPUT_LENGTH } from "./regex.js";
@@ -41,9 +46,21 @@ export class CmdForEveryPart implements Cmd {
     const top = cur ?? mimeTree(d);
     const parts = cur === null ? subtree(top) : subtree(top).slice(1);
     let broke = false;
+    // Where the first part an open list may still hold would come.
+    let gap = Infinity;
     const r = withShare(d, this.shareIndex, () => {
       d.budget.consume(parts.length); // the parts it walks, before the block costs
-      for (const p of parts) {
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i]!;
+        if (i === gap) {
+          // The iteration missed would come first over the whole input, and
+          // may have broken, stopped or acted: what runs from here is on a
+          // guess, as after a loop that missed iterations at its end.
+          d.indeterminate = true;
+          if (this.mayAffectLater) d.guessAfter = true;
+          armSkipped(d, this);
+        }
+        if (p.open) gap = Math.min(gap, i + subtree(p).length);
         d.partStack.push(p);
         try {
           for (const c of this.block) {

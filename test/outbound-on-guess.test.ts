@@ -294,3 +294,17 @@ describe("the #69 review's oracle findings", () => {
     expect(handle.d.vacationOnGuess).toBe(true);
   });
 });
+
+describe("a foreverypart iteration past a list left open inside the tree", () => {
+  it("is on a guess: the iteration missed comes first over the whole input", () => {
+    // A chain of multiparts past the nesting cap leaves its list open inside
+    // the tree; the outer part after it is iterated past that gap. Read whole,
+    // the deep part is reached first and the loop breaks there.
+    let inner = "Content-Type: text/plain\r\nX-N: deep\r\n\r\nx\r\n";
+    for (let i = 0; i < 101; i++) inner = `Content-Type: multipart/mixed; boundary=n${i}\r\n\r\n--n${i}\r\n${inner}--n${i}--\r\n`;
+    const m = `From: a@x\r\nTo: b@y\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=o\r\n\r\n--o\r\n${inner}--o\r\nContent-Type: text/plain\r\nX-N: outer\r\n\r\nhello\r\n--o--\r\n`;
+    const r = exec('require ["foreverypart","mime","variables","copy"]; foreverypart { if header :mime :matches "x-n" "*" { redirect :copy "${1}@x.test"; break; } }', m);
+    expect(r.redirect).toEqual(["outer@x.test"]);
+    expect(r.onGuess).toEqual(["outer@x.test"]);
+  });
+});

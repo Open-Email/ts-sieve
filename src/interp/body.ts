@@ -212,25 +212,239 @@ function trimSpHt(s: string): string {
   return s.slice(i, n);
 }
 
+/** A header block as core's walker reads it (see readHeaderBlock). */
+export interface HeaderBlock {
+  /** The fields the reader accepted, without the last one's line break. */
+  fields: string;
+  /** Where the header's bytes end: before the blank line, or where the reader
+   * stopped on a line it refused. */
+  head: number;
+  /** Where the entity's body starts: after the blank line, where the reader
+   * stopped on a line it refused, or the end of the input. */
+  end: number;
+  /** The reader refused a line. A multipart part whose header it refuses is
+   * dropped with every part after it; an embedded message keeps the fields
+   * before that line and its body starts after it. */
+  err: boolean;
+  /** The outcome rests on bytes past the read-window cut: with `err`, only
+   * where the reader stopped does (the refusal is decided). */
+  open: boolean;
+  /** On a refusal, how far the walker's buffered reader had read from its
+   * input: `end`, plus whatever it held buffered past it. `restExact`: that
+   * is known, because its buffer was empty there or it had read everything;
+   * otherwise it hinges on how the input reached it (see splitMultipart). */
+  rest: number;
+  restExact: boolean;
+}
+
+/** go-message's defaultMaxHeaderBytes, under which core's walker reads a
+ * part's header block (an embedded message's has no limit). */
+export const PART_HEADER_MAX = 1 << 20;
+
+/** The buffer of Go's bufio reader under core's walker: a line is read in
+ * pieces of at most this many bytes, and one the walker reads between parts
+ * must fit in it. */
+const LINE_MAX = 4096;
+
 /**
- * Split an entity at the blank line ending its header, reading line by line so
- * a part with NO header fields (it starts with the blank line — RFC 2046 §5.1
- * allows one) keeps its first body line, and a CRLF/LF mix still separates.
- * `header` excludes the final line break, `headerRaw` keeps it; `sep` says
- * whether a blank line was found at all (without one, everything is header).
+ * How core's walker meets the end of the input a header block or a multipart
+ * is read from:
+ * - "whole": a whole body, or an embedded message, read from a copy of its
+ *   bytes, whose end comes after its last bytes;
+ * - "part": a part that ended at a boundary, read through that part, which
+ *   hands over its last bytes with its end or before it, as its own window
+ *   into the input falls, which the size of the message's header moves;
+ * - "ranOut": a part that ran out with no boundary, whose end Go reads as an
+ *   unexpected end of input.
  */
-export function splitHeaderBody(b: string): { header: string; headerRaw: string; body: string; sep: boolean } {
-  let pos = 0;
-  for (;;) {
-    const nl = b.indexOf("\n", pos);
-    if (nl === -1) return { header: b, headerRaw: b, body: "", sep: false };
-    const lineEnd = nl > pos && b.charCodeAt(nl - 1) === 13 /* \r */ ? nl - 1 : nl;
-    if (lineEnd === pos) {
-      const headerRaw = b.slice(0, pos);
-      return { header: headerRaw.replace(/\r?\n$/, ""), headerRaw, body: b.slice(nl + 1), sep: true };
-    }
-    pos = nl + 1;
+export type InputEnd = "whole" | "part" | "ranOut";
+
+/**
+ * The header block at `pos`, read as core's walker reads it (src/lib/mimewalk
+ * textproto.ts, a port of go-message's textproto.ReadHeader). It ends at the
+ * first blank line, or at the end of the input without an error, unless that
+ * input "ranOut". It refuses a block whose first line starts with a space or
+ * tab, a field with no colon on its first line (one on a continuation line
+ * puts the line break in the name), a field name with a byte outside
+ * printable ASCII, a field whose first line ends a "whole" input on a
+ * LINE_MAX boundary (see readLine), and a block over `max`, charged as core's
+ * port charges it: each line's pieces, 2 more at its end, and each field's
+ * buffer slack (see appendSlack). Where a line ends a "part" input on a
+ * LINE_MAX boundary, Go's ReadLine may or may not read the empty piece after
+ * it: what turns on that is left open.
+ *
+ * `cut`: `b` is a prefix of the real content. A line the cut splits, and
+ * whether a continuation line follows the last one seen, are past it.
+ */
+export function readHeaderBlock(b: string, pos: number, max: number, cut: boolean, inputEnd: InputEnd = "whole"): HeaderBlock {
+  const fields = (end: number) => b.slice(pos, withoutLineBreak(b, pos, end));
+  const done = (blank: number, end: number, err: boolean): HeaderBlock => ({
+    fields: fields(blank),
+    head: blank,
+    end,
+    err,
+    open: false,
+    rest: end,
+    restExact: end >= b.length,
+  });
+  /** The reader stopped at `stop` on a refused line; the fields end at `from`. */
+  const refused = (from: number, stop: number, rest = stop, restExact = stop >= b.length): HeaderBlock => ({
+    fields: fields(from),
+    head: stop,
+    end: stop,
+    err: true,
+    open: false,
+    rest,
+    restExact,
+  });
+  const open = (err: boolean): HeaderBlock => ({ fields: "", head: b.length, end: b.length, err, open: true, rest: b.length, restExact: false });
+  const budget = { n: max };
+  if (pos < b.length && isSpHt(b.charCodeAt(pos))) {
+    // The reader takes that line and refuses the block.
+    const line = readLine(b, pos, budget, cut);
+    if (line === null) return open(true);
+    return line.over ? refused(pos, line.rest, line.rest, line.exact) : refused(pos, line.next);
   }
+  let p = pos;
+  for (;;) {
+    if (p >= b.length) {
+      // The end of the input ends the block, charged as an empty line.
+      if (cut) return open(false);
+      budget.n -= 2;
+      return done(p, p, budget.n < 0 || inputEnd === "ranOut");
+    }
+    const first = readLine(b, p, budget, cut);
+    if (first === null) return open(false);
+    if (first.over) return refused(p, first.rest, first.rest, first.exact);
+    if (first.empty) return done(p, first.next, false);
+    if (first.eof && inputEnd !== "part") return refused(p, b.length);
+    // A field: this line, then each line that starts with a space or tab.
+    const bad = !fieldNameOk(b, p, first.contentEnd);
+    let size = first.contentEnd - p + 2;
+    let next = first.next;
+    let eof = first.eof;
+    // A line that ran to the end of the input has none after it.
+    while (first.next > first.contentEnd) {
+      if (next >= b.length) {
+        if (cut) return open(bad);
+        break;
+      }
+      if (!isSpHt(b.charCodeAt(next))) break;
+      const cont = readLine(b, next, budget, cut);
+      if (cont === null) return open(bad);
+      if (cont.over) return refused(p, cont.rest, cont.rest, cont.exact);
+      // A continuation that ends on a LINE_MAX boundary at the end of the
+      // input ends the field, without its line break.
+      size += cont.contentEnd - next + (cont.eof ? 0 : 2);
+      next = cont.next;
+      eof ||= cont.eof;
+    }
+    budget.n -= appendSlack(size);
+    if (eof && inputEnd === "part") {
+      // The field ends the input on a LINE_MAX boundary, and the reader may
+      // have had the end of input with that piece: then the line is whole, a
+      // folded one keeps its line break, and the empty piece is not read.
+      // Read the field to the end both ways; where they differ, unknown.
+      const whole = budget.n + appendSlack(size) - appendSlack(first.eof ? size : size + 2) - 2;
+      const plain = first.eof || bad || budget.n - 2 < 0;
+      const other = bad || whole < 0;
+      if (plain !== other) return open(false);
+      return plain ? refused(p, next) : done(next, next, false);
+    }
+    if (bad || budget.n < 0) return refused(p, next);
+    p = next;
+  }
+}
+
+/** One line as go-message's readLineSlice reads it through Go's ReadLine. */
+interface Line {
+  /** Where the next line starts. */
+  next: number;
+  /** Where its content ends: before its line break, or at the end. */
+  contentEnd: number;
+  /** A blank line. */
+  empty: boolean;
+  /** It ended at the end of the input on a LINE_MAX boundary: Go's ReadLine
+   * then returns its last, empty, piece with the end-of-input error. */
+  eof: boolean;
+  /** The budget ran out on it: the reader stopped there, having read to
+   * `rest`, which is `exact` when its buffer was then empty. */
+  over: boolean;
+  rest: number;
+  exact: boolean;
+}
+
+/**
+ * The line at `start`, charged to `budget` as the reader charges it: in the
+ * pieces Go's ReadLine returns. A line with no line break within LINE_MAX
+ * bytes comes in a full buffer's worth (less a CR at its end, which is read
+ * again with the next piece), and is charged its length; the last piece is
+ * charged its length plus 2. The reader stops at the piece that runs the
+ * budget out. After a full piece its buffer is empty, so it has read exactly
+ * to that piece's buffer end; after a last piece its buffer may hold more.
+ * null: the cut leaves the line open.
+ */
+function readLine(b: string, start: number, budget: { n: number }, cut: boolean): Line | null {
+  const lf = b.indexOf("\n", start);
+  const over = (rest: number, exact: boolean): Line => ({ next: rest, contentEnd: rest, empty: false, eof: false, over: true, rest, exact });
+  let s = start;
+  let full = false;
+  for (;;) {
+    if (lf !== -1 && lf - s < LINE_MAX) {
+      const end = lf > s && b.charCodeAt(lf - 1) === 13 /* \r */ ? lf - 1 : lf;
+      budget.n -= end - s + 2;
+      if (budget.n < 0) return over(lf + 1, lf + 1 >= b.length);
+      return { next: lf + 1, contentEnd: end, empty: !full && end === s, eof: false, over: false, rest: lf + 1, exact: false };
+    }
+    if (b.length - s >= LINE_MAX) {
+      const len = b.charCodeAt(s + LINE_MAX - 1) === 13 /* \r */ ? LINE_MAX - 1 : LINE_MAX;
+      budget.n -= len;
+      if (budget.n < 0) return over(s + LINE_MAX, true);
+      s += len;
+      full = true;
+      continue;
+    }
+    if (cut) return null;
+    // The end of the input, with no line break.
+    budget.n -= b.length - s + 2;
+    if (budget.n < 0) return over(b.length, true);
+    return { next: b.length, contentEnd: b.length, empty: false, eof: full && s === b.length, over: false, rest: b.length, exact: true };
+  }
+}
+
+/** `end`, less the line break that ends the text before it. */
+function withoutLineBreak(b: string, start: number, end: number): number {
+  if (end > start && b.charCodeAt(end - 1) === 10 /* \n */) end--;
+  if (end > start && b.charCodeAt(end - 1) === 13 /* \r */) end--;
+  return end;
+}
+
+/** Whether the line [start, end) has a colon, and the name before it (less
+ * outer space and tab) only printable ASCII. */
+function fieldNameOk(b: string, start: number, end: number): boolean {
+  let colon = start;
+  while (colon < end && b.charCodeAt(colon) !== 58 /* : */) colon++;
+  if (colon === end) return false;
+  let i = start;
+  let n = colon;
+  while (i < n && isSpHt(b.charCodeAt(i))) i++;
+  while (n > i && isSpHt(b.charCodeAt(n - 1))) n--;
+  for (; i < n; i++) {
+    const c = b.charCodeAt(i);
+    if (c < 33 || c > 126) return false;
+  }
+  return true;
+}
+
+/** What the reader charges a field's buffer beyond its length: Go's slack
+ * past a 256-byte allocation, exact up to it and an upper bound above (see
+ * goAppendSlack in core's textproto.ts). */
+function appendSlack(len: number): number {
+  return len <= 256 ? 256 - len : (len >> 1) + 256;
+}
+
+function isSpHt(c: number): boolean {
+  return c === 32 || c === 9;
 }
 
 // -------- the body test --------
@@ -318,7 +532,7 @@ export class TestBody implements Test {
       const topCte = hostValueBytes(d.msg.headerGet("content-transfer-encoding")[0] ?? "");
       const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
-      const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, flags, 0, "");
+      const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, "whole", flags, 0, "");
       if (matched) return true;
       if (this.matcher.isCount()) {
         const res = this.matcher.countMatches(d, counter.count);
@@ -377,8 +591,8 @@ export class TestBody implements Test {
   /** `cut` = this part's content string may be a PREFIX of the real content
    * (the read-window cut fell inside it). Splitting on a FOUND boundary proves
    * everything before that boundary complete, so only the fragment that ran to
-   * the end of a cut string inherits the flag. Returns definite matches only;
-   * unknowns accumulate in `flags`. */
+   * the end of a cut string inherits the flag. `inputEnd`: see InputEnd.
+   * Returns definite matches only; unknowns accumulate in `flags`. */
   private walk(
     d: RuntimeData,
     ctHeader: string,
@@ -386,6 +600,7 @@ export class TestBody implements Test {
     b: string,
     counter: { count: number; parts: number },
     cut: boolean,
+    inputEnd: InputEnd,
     flags: { unknown: boolean },
     depth: number,
     path: string,
@@ -402,73 +617,30 @@ export class TestBody implements Test {
     const process = this.wantsPart(mediaType);
 
     if (primary === "multipart") {
-      const boundary = params["boundary"];
-      if (!boundary) {
-        return process ? this.matchOrCount(d, b, counter, cut, flags) : false;
-      }
-      const parts = splitBoundary(b, boundary, cut);
-      // parts[0] = prologue; find closing --boundary-- marker → epilogue; rest = nested
-      let epilogue = "";
-      let sawClose = false;
-      const nested: string[] = [];
-      for (let i = 1; i < parts.length; i++) {
-        const p = parts[i]!;
-        if (p.startsWith("--")) {
-          sawClose = true;
-          epilogue = skipDelimiterLineEnd(p.slice(2));
-          break;
-        }
-        nested.push(skipDelimiterLineEnd(p));
-      }
-      // Which fragment ran into the cut: the epilogue when the close marker was
-      // found, the last nested part otherwise (or the prologue when no boundary
-      // was found at all — parts === [b]).
-      const prologueCut = cut && parts.length === 1;
-      // Before the close marker is seen the epilogue is unseen, after it the
-      // epilogue runs into the cut: a prefix either way.
-      const epilogueCut = cut;
-      const lastNestedCut = cut && !sawClose;
-      // A cut multipart whose close marker never appeared may CONTINUE past the
-      // cut: whole sibling parts — even whole part TYPES a :content filter
-      // wanted — can be hidden there. Any no-match at this level is therefore
-      // unknown. (With the close marker in view the structure is complete and
-      // only the epilogue is a prefix; a cut inside a LEAF needs no flag — its
-      // comparison runs under prefix semantics, and its tail cannot hide
-      // another part.)
-      if (lastNestedCut) flags.unknown = true;
+      // A multipart with no boundary has the one synthesized child, as in core.
+      const mp = splitMultipart(b, params["boundary"] ?? "", cut, inputEnd);
+      // A list that may go on past the cut can hide whole sibling parts —
+      // even whole part TYPES a :content filter wanted — so any no-match at
+      // this level is unknown. (With the list's end in view the structure is
+      // complete and only the epilogue is a prefix; a cut inside a LEAF needs
+      // no flag — its comparison runs under prefix semantics, and its tail
+      // cannot hide another part.)
+      if (mp.open) flags.unknown = true;
       if (process) {
         if (this.matcher.isCount()) {
           counter.count += 2;
         } else {
-          if (this.matchOrCount(d, parts[0] ?? "", counter, prologueCut, flags)) return true;
-          if (this.matchOrCount(d, epilogue, counter, epilogueCut, flags)) return true;
+          if (this.matchOrCount(d, mp.prologue, counter, mp.prologueCut, flags)) return true;
+          if (this.matchOrCount(d, mp.epilogue, counter, mp.epilogueCut, flags)) return true;
         }
       }
-      for (let i = 0; i < nested.length; i++) {
+      for (let i = 0; i < mp.parts.length; i++) {
         if (++counter.parts > MAX_MIME_PARTS) {
           flags.unknown = true;
           return false;
         }
-        const partCut = lastNestedCut && i === nested.length - 1;
-        const { header, body, sep } = splitHeaderBody(nested[i]!);
-        // A last part cut inside its own header has no known type yet: it
-        // would default to text/plain and be matched and counted as one. The
-        // multipart is already unknown (lastNestedCut), so it is skipped.
-        if (partCut && !sep) continue;
-        const h = parseMimeHeader(header);
-        if (
-          this.walk(
-            d,
-            h.get("content-type") ?? "",
-            h.get("content-transfer-encoding") ?? "",
-            body,
-            counter,
-            partCut,
-            flags,
-            depth + 1,
-            `${path}.${i}`,
-          )
-        ) {
+        const part = mp.parts[i]!;
+        if (this.walk(d, part.contentType, part.cte, part.body, counter, part.cut, part.ends, flags, depth + 1, `${path}.${i}`)) {
           return true;
         }
       }
@@ -476,25 +648,31 @@ export class TestBody implements Test {
     }
 
     if (isMessage(mediaType)) {
-      const { header, headerRaw, body, sep } = splitHeaderBody(b);
-      // No separator found in a cut string ⇒ the header block itself may be a
-      // prefix; with a separator, the cut can only fall in the body (the tail).
-      if (process && this.matchOrCount(d, headerRaw, counter, cut && !sep, flags)) return true;
+      // Its header block as core reads it: a line the reader refuses ends the
+      // fields, and the body starts after that line.
+      const h = readHeaderBlock(b, 0, Infinity, cut);
+      // A header block the cut leaves open may be a prefix of the real one;
+      // otherwise the cut can only fall in the body (the tail).
+      if (process && this.matchOrCount(d, b.slice(0, h.head), counter, h.open, flags)) return true;
       // A cut inside the nested header hides the entity's real type and
-      // structure, so nothing walked below it can prove a miss.
-      if (cut && !sep) flags.unknown = true;
+      // structure, so nothing below it is walked, and a miss is not proven.
+      if (h.open) {
+        flags.unknown = true;
+        return false;
+      }
       if (++counter.parts > MAX_MIME_PARTS) {
         flags.unknown = true;
         return false;
       }
-      const h = parseMimeHeader(header);
+      const f = parseMimeHeader(h.fields);
       return this.walk(
         d,
-        h.get("content-type") ?? "",
-        h.get("content-transfer-encoding") ?? "",
-        body,
+        f.get("content-type") ?? "",
+        f.get("content-transfer-encoding") ?? "",
+        b.slice(h.end),
         counter,
         cut,
+        "whole", // core reads an embedded message from a copy of its bytes
         flags,
         depth + 1,
         `${path}.m`,
@@ -537,96 +715,239 @@ export class TestBody implements Test {
   }
 }
 
+// -------- the multipart walker --------
+
+/** A part of a multipart, as core's walker lists it. */
+export interface SplitPart {
+  /** Its header fields (see HeaderBlock.fields); "" for a synthesized child. */
+  fields: string;
+  /** Its first Content-Type and Content-Transfer-Encoding, as the walker
+   * reads a part's header. */
+  contentType: string;
+  cte: string;
+  /** Its body, still transfer-encoded. */
+  body: string;
+  /** The body is a prefix of the real one: the read-window cut fell in it, or
+   * (a synthesized child) what core puts in it is not known here. */
+  cut: boolean;
+  /** How the body's end reaches the walker: "part", or "ranOut" with no
+   * boundary (see InputEnd). */
+  ends: InputEnd;
+}
+
+export interface Multipart {
+  /** The text before the first delimiter line (all of it, without one), less
+   * the line break before that line. */
+  prologue: string;
+  prologueCut: boolean;
+  parts: SplitPart[];
+  /** The text after the list: after a close delimiter line, or from the line
+   * that ended the list. */
+  epilogue: string;
+  epilogueCut: boolean;
+  /** Parts may follow the listed ones past the read-window cut. */
+  open: boolean;
+}
+
+/** The child core synthesizes for a multipart with no part (RFC 3501's
+ * BODYSTRUCTURE needs one). */
+const SYNTHESIZED = "text/plain; charset=utf-8";
+
 /**
- * Split a multipart body at its delimiters: [prologue, ...chunks]. Each chunk
- * starts right after "--" boundary — so a close starts "--", and a part starts
- * with the rest of its delimiter line (see skipDelimiterLineEnd).
+ * A multipart body's parts as core's walker (src/lib/mimewalk/multipart.ts, a
+ * port of go-message's fork of Go's mime/multipart) lists them: the parts the
+ * user's mail client is served, so a rule neither acts on a part the client
+ * does not show nor misses one it does.
  *
- * One scan for the LF form, taking a CR before it as part of the delimiter:
- * scanning for CRLF first skipped an earlier bare-LF delimiter in a body with
- * mixed line endings, merging two parts. A match counts only where a delimiter
- * LINE can end (see delimiterEnds). That is stricter than RFC 2046 §5.1.1,
- * which lets the boundary merely start the line and instead forbids a sender
- * to nest a boundary the outer one prefixes (§5.1) — but mail breaks that
- * rule, and go-sieve, Go's, Python's and Thunderbird's parsers are strict the
- * same way: boundary "b" does not split the lines of a nested part whose
- * boundary is "b-alt", nor a content line "--bye".
+ * Preamble lines are skipped up to the first delimiter line: "--" boundary,
+ * transport padding, a line break. Its line break is the multipart's: a bare
+ * LF there makes "\n--boundary" the delimiter, otherwise only
+ * "\r\n--boundary" is, and the other form is content or ends the list. A
+ * part's header block is read as readHeaderBlock reads it; a refused one
+ * drops the part and every one after it. Its body ends before the line break
+ * of the first line that starts with the boundary and then "-", a space, a
+ * tab, CR or LF (or anything, when the line break, "--" and the boundary fill
+ * LINE_MAX), or at the end of the input, and the list goes on only if
+ * that line is a delimiter line. Anything else ends it: a close delimiter,
+ * but also "--b-alt" (a nested boundary that "b" prefixes), "--b junk",
+ * "--b--junk", or a delimiter in the other line-break form. So does a line
+ * between parts longer than LINE_MAX. That is looser than RFC 2046 §5.1.1
+ * about where a part ends and stricter about what follows, and it is what the
+ * client shows.
  *
- * `cut`: `b` is a prefix of the real content. The end of the input then ends
- * no delimiter line (the rest of the line is unseen), and the last fragment
- * loses any tail that could still turn out to be a delimiter.
+ * A multipart with no part gets one text/plain child holding what core's
+ * reader has left: the whole body for an empty boundary (it reads nothing),
+ * nothing once the preamble ran to the end, the body past LINE_MAX bytes of
+ * an over-long preamble line, the body past the full buffer on which a first
+ * part's header ran out its budget. After a close delimiter, or a first part
+ * whose header was refused anywhere else, its reader has read ahead by an
+ * amount that hinges on the size of the message's own header, so the child
+ * is "" read as a prefix: only what any content would match is definite.
+ *
+ * It stops after MAX_MIME_PARTS + 1 parts, open, as the walkers stop there.
+ *
+ * `inputEnd`: see InputEnd. `cut`: `b` is a prefix of the real content.
+ * A decision that rests on bytes past it stays open: whether a line is a
+ * delimiter line, whether a part's header block completes, whether the list
+ * goes on.
  */
-export function splitBoundary(b: string, boundary: string, cut: boolean): string[] {
-  const dash = `\n--${boundary}`;
-  const parts: string[] = [];
+export function splitMultipart(b: string, boundary: string, cut: boolean, inputEnd: InputEnd = "whole"): Multipart {
+  if (boundary === "") {
+    return { prologue: b, prologueCut: cut, parts: [synthesized(b, cut)], epilogue: "", epilogueCut: cut, open: false };
+  }
+  const dash = `--${boundary}`;
+  let nl = "\r\n";
+  let nlDash = `\r\n${dash}`;
+  const parts: SplitPart[] = [];
+  let first = -1; // where the first delimiter line starts
+  let expectNewPart = false;
   let pos = 0;
-  if (b.startsWith(`--${boundary}`) && delimiterEnds(b, boundary.length + 2, cut)) {
-    parts.push("");
-    pos = boundary.length + 2;
-  }
-  for (;;) {
-    let idx = b.indexOf(dash, pos);
-    while (idx !== -1 && !delimiterEnds(b, idx + dash.length, cut)) idx = b.indexOf(dash, idx + 1);
-    if (idx === -1) {
-      parts.push(cut ? trimDelimiterTail(b, pos, boundary) : b.slice(pos));
-      return parts;
+
+  /** The list ends. `rest`: how far core's reader has read, `exact` when
+   * that is known, for the child of a multipart with no part. */
+  const finish = (prologueEnd: number, epilogue: number, rest: number, exact: boolean): Multipart => {
+    if (parts.length === 0) {
+      const known = exact || (rest >= b.length && !cut);
+      parts.push(synthesized(known ? b.slice(rest) : "", cut || !known));
     }
-    const end = idx > pos && b.charCodeAt(idx - 1) === 13 /* \r */ ? idx - 1 : idx;
-    parts.push(b.slice(pos, end));
-    pos = idx + dash.length;
+    return {
+      prologue: b.slice(0, first !== -1 ? withoutLineBreak(b, 0, first) : prologueEnd),
+      prologueCut: false,
+      parts,
+      epilogue: b.slice(epilogue),
+      epilogueCut: cut,
+      open: false,
+    };
+  };
+  /** The list runs past the cut, or past MAX_MIME_PARTS: the epilogue is
+   * unseen. A preamble line the cut split is not prologue if it could still
+   * turn out to be a delimiter line. */
+  const open = (): Multipart => {
+    let prologueEnd = b.length;
+    if (first !== -1) prologueEnd = withoutLineBreak(b, 0, first);
+    else if (lineCouldBe(b, pos, dash, true) || lineCouldBe(b, pos, `${dash}--`, true)) prologueEnd = withoutLineBreak(b, 0, pos);
+    else if (b.charCodeAt(b.length - 1) === 13 /* \r */) prologueEnd--;
+    return { prologue: b.slice(0, prologueEnd), prologueCut: first === -1, parts, epilogue: "", epilogueCut: true, open: true };
+  };
+  /** After "--" boundary at `k`: 1, the boundary ends a part's body; -1, it
+   * does not; 0, the cut leaves it open. */
+  const afterBoundary = (k: number): -1 | 0 | 1 => {
+    if (k >= b.length) return cut ? 0 : 1;
+    const c = b.charCodeAt(k);
+    return c === 45 /* - */ || c === 32 || c === 9 || c === 13 || c === 10 ? 1 : -1;
+  };
+  /** Where the body of a part that starts at `s` ends. `eof`: it ran to the
+   * end of a complete input; `cut`: to the cut, or the cut leaves open
+   * whether it ends there. */
+  const bodyEnd = (s: number): { end: number; cut: boolean; eof: boolean } => {
+    let from = s;
+    if (b.startsWith(dash, s)) {
+      // A boundary right at the start, with no line break before it.
+      const m = afterBoundary(s + dash.length);
+      if (m !== -1) return { end: s, cut: m === 0, eof: false };
+      from = s + dash.length;
+    } else if (b.length - s < dash.length && dash.startsWith(b.slice(s))) {
+      return { end: s, cut, eof: !cut };
+    }
+    for (let i = b.indexOf(nlDash, from); i !== -1; i = b.indexOf(nlDash, from)) {
+      // A delimiter that fills the reader's buffer leaves it no room to look
+      // at the byte after it, and it takes the boundary as found. (A longer
+      // one has no delimiter line that fits, so no part to end.)
+      const m = nlDash.length >= LINE_MAX ? 1 : afterBoundary(i + nlDash.length);
+      if (m !== -1) return { end: i, cut: m === 0, eof: false };
+      from = i + nlDash.length;
+    }
+    // No boundary. A tail that could still begin one is held back, at the
+    // end of a complete input as at the cut.
+    const j = b.lastIndexOf(nlDash[0]!);
+    const held = j >= from && b.length - j < nlDash.length && nlDash.startsWith(b.slice(j));
+    return { end: held ? j : b.length, cut, eof: !cut };
+  };
+  /** Whether [start, end) is "--" boundary, padding, then `tail`. */
+  const lineIs = (start: number, end: number, prefix: string, tail: string): boolean => {
+    if (!b.startsWith(prefix, start)) return false;
+    let i = start + prefix.length;
+    while (i < end && isSpHt(b.charCodeAt(i))) i++;
+    return end - i === tail.length && b.startsWith(tail, i);
+  };
+
+  for (;;) {
+    const lf = b.indexOf("\n", pos);
+    if (lf === -1 || lf - pos >= LINE_MAX) {
+      // The reader's buffer fills with no line break: it gives up there. In
+      // the preamble the prologue keeps what it read of the line, as it does
+      // when the cut falls in the line first.
+      if (b.length - pos >= LINE_MAX) {
+        const read = pos + LINE_MAX;
+        return finish(read, first === -1 ? read : pos, read, true);
+      }
+      if (cut) {
+        // A line the cut split ends the list only if it cannot turn out to
+        // be a delimiter line (nor the line break before one). Whether the
+        // epilogue follows it (a close delimiter) or starts with it is open.
+        const partial = b.slice(pos);
+        if (first === -1 || lineCouldBe(b, pos, dash, nl === "\r\n") || (!expectNewPart && nl.startsWith(partial))) return open();
+        return finish(0, lineCouldBe(b, pos, `${dash}--`, nl === "\r\n") ? b.length : pos, b.length, true);
+      }
+      // The last line has no line break: the list ends, cleanly at a close
+      // delimiter, and the reader has read everything.
+      const close = lineIs(pos, b.length, `${dash}--`, "");
+      return finish(close ? withoutLineBreak(b, 0, pos) : b.length, close ? b.length : pos, b.length, true);
+    }
+    const lineEnd = lf + 1;
+    if (b.startsWith(dash, pos)) {
+      // The first delimiter line sets the line break, a bare LF if it ends so.
+      if (first === -1 && lineIs(pos, lineEnd, dash, "\n")) {
+        nl = "\n";
+        nlDash = `\n${dash}`;
+      }
+      if (lineIs(pos, lineEnd, dash, nl)) {
+        if (first === -1) first = pos;
+        const h = readHeaderBlock(b, lineEnd, PART_HEADER_MAX, cut, inputEnd);
+        if (h.err) return finish(0, pos, h.rest, h.restExact);
+        if (h.open) return open();
+        const body = bodyEnd(h.end);
+        const fields = parseMimeHeader(h.fields);
+        parts.push({
+          fields: h.fields,
+          contentType: fields.get("content-type") ?? "",
+          cte: fields.get("content-transfer-encoding") ?? "",
+          body: b.slice(h.end, body.end),
+          cut: body.cut,
+          ends: body.eof ? "ranOut" : "part",
+        });
+        // Past the walkers' cap the list is not read on (both stop there).
+        if (body.cut || parts.length > MAX_MIME_PARTS) return open();
+        if (body.eof) return finish(0, body.end, b.length, true);
+        pos = body.end;
+        expectNewPart = false;
+        continue;
+      }
+      if (lineIs(pos, lineEnd, `${dash}--`, nl)) {
+        return finish(withoutLineBreak(b, 0, pos), lineEnd, lineEnd, false);
+      }
+    }
+    if (expectNewPart) return finish(0, pos, lineEnd, false);
+    if (first !== -1) {
+      // Between parts only the line break before a delimiter line may come.
+      if (lineEnd - pos !== nl.length || !b.startsWith(nl, pos)) return finish(0, pos, lineEnd, false);
+      expectNewPart = true;
+    }
+    pos = lineEnd;
   }
 }
 
-/** Whether the text at `end`, right after a boundary, ends a delimiter line:
- * an optional closing "--", optional transport padding, then the line break —
- * or the end of a complete input. A lone "-" cannot ("b-alt" is another
- * boundary), and neither can text after the padding or the "--". */
-function delimiterEnds(b: string, end: number, cut: boolean): boolean {
-  let i = end;
-  if (b.charCodeAt(i) === 45 /* - */ && b.charCodeAt(i + 1) === 45) i += 2;
-  while (b.charCodeAt(i) === 32 || b.charCodeAt(i) === 9) i++;
-  if (i >= b.length) return !cut;
-  const c = b.charCodeAt(i);
-  return c === 13 || c === 10;
+/** Whether the line at `start`, which has no line break yet, could still turn
+ * out to be `prefix`, transport padding and a line break: LF, or with `crlf`
+ * CRLF. */
+function lineCouldBe(b: string, start: number, prefix: string, crlf: boolean): boolean {
+  if (b.length - start <= prefix.length) return prefix.startsWith(b.slice(start));
+  if (!b.startsWith(prefix, start)) return false;
+  let i = start + prefix.length;
+  while (i < b.length && isSpHt(b.charCodeAt(i))) i++;
+  return i === b.length || (crlf && i === b.length - 1 && b.charCodeAt(i) === 13);
 }
 
-/** Drop a delimiter line's transport padding (LWSP) and line break. */
-export function skipDelimiterLineEnd(p: string): string {
-  let i = 0;
-  while (i < p.length && (p.charCodeAt(i) === 32 || p.charCodeAt(i) === 9)) i++;
-  if (p.charCodeAt(i) === 13 && p.charCodeAt(i + 1) === 10) return p.slice(i + 2);
-  if (p.charCodeAt(i) === 10) return p.slice(i + 1);
-  return i > 0 ? p.slice(i) : p;
-}
-
-/**
- * The last fragment of a CUT body, without the tail that could still turn out
- * to be a delimiter: a final line that could still become a delimiter line
- * (see couldBeDelimiterLine), with the line break before it, or a lone
- * trailing CR. A shorter prefix of the real content is still a prefix, so this
- * only costs precision.
- */
-function trimDelimiterTail(b: string, pos: number, boundary: string): string {
-  const lf = b.lastIndexOf("\n");
-  // The first line of a fragment after a delimiter is that delimiter line's
-  // rest, never a content line; only the whole input (pos 0) starts on one.
-  const lineStart = lf >= pos ? lf + 1 : pos === 0 ? 0 : -1;
-  if (lineStart !== -1 && couldBeDelimiterLine(b.slice(lineStart), boundary)) {
-    let end = lineStart === 0 ? 0 : lineStart - 1;
-    if (end > pos && b.charCodeAt(end - 1) === 13 /* \r */) end--;
-    return b.slice(pos, Math.max(end, pos));
-  }
-  return b.charCodeAt(b.length - 1) === 13 /* \r */ ? b.slice(pos, -1) : b.slice(pos);
-}
-
-/** Whether a final, cut line could still turn out to be a delimiter line: a
- * prefix of "--boundary--", or "--boundary" with an optional "--" and then
- * only padding, whose line break may lie past the cut. */
-function couldBeDelimiterLine(line: string, boundary: string): boolean {
-  if (`--${boundary}--`.startsWith(line)) return true;
-  if (!line.startsWith(`--${boundary}`)) return false;
-  let i = boundary.length + 2;
-  if (line.charCodeAt(i) === 45 /* - */ && line.charCodeAt(i + 1) === 45) i += 2;
-  while (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9) i++;
-  return i >= line.length;
+function synthesized(body: string, cut: boolean): SplitPart {
+  return { fields: "", contentType: SYNTHESIZED, cte: "", body, cut, ends: "part" };
 }
