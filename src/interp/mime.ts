@@ -14,6 +14,7 @@ import {
   cteDecode,
   MAX_MIME_DEPTH,
   MAX_MIME_PARTS,
+  isMessage,
   parseMediaType,
   parseMimeHeader,
   rawBinary,
@@ -99,14 +100,14 @@ export function mimeTree(d: RuntimeData): MimePart {
 /** Whether a part of this type has parts of its own (a multipart the body
  * walker would split, or a nested message). */
 function holdsParts(contentType: string): boolean {
-  const { mediaType, params } = parseMediaType(contentType || "text/plain");
-  return (mediaType.startsWith("multipart/") && !!params["boundary"]) || mediaType === "message/rfc822";
+  const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
+  return (primary === "multipart" && !!params["boundary"]) || isMessage(mediaType);
 }
 
 function build(p: MimePart, contentType: string, b: string, cut: boolean, depth: number, counter: { parts: number }): void {
-  const { mediaType, params } = parseMediaType(contentType || "text/plain");
+  const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
   p.container = holdsParts(contentType);
-  if (mediaType.startsWith("multipart/")) {
+  if (primary === "multipart") {
     const boundary = params["boundary"];
     if (!boundary) return;
     if (depth >= MAX_MIME_DEPTH) {
@@ -139,7 +140,7 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
         build(child, child.contentType, body, partCut, depth + 1, counter);
       }
     }
-  } else if (mediaType === "message/rfc822") {
+  } else if (isMessage(mediaType)) {
     const { header, body, sep } = splitHeaderBody(b);
     if (cut && !sep) {
       p.open = true;

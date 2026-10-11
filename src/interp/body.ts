@@ -6,6 +6,7 @@
 // charset-decoded to UTF-8; :text HTML parts are stripped to text. Everything is
 // linear/bounded (no backtracking regex on body content).
 
+import { contentType } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import { MatcherTest } from "./matcher.js";
 import type { Message, RuntimeData, Test, Tri } from "./runtime.js";
@@ -161,31 +162,28 @@ export function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean):
 
 // -------- media type + header parsing --------
 
-export function parseMediaType(ct: string): { mediaType: string; params: Record<string, string> } {
-  const semi = ct.indexOf(";");
-  const mediaType = (semi === -1 ? ct : ct.slice(0, semi)).trim().toLowerCase();
-  const params: Record<string, string> = {};
-  if (semi !== -1) {
-    for (const part of ct.slice(semi + 1).split(";")) {
-      const eq = part.indexOf("=");
-      if (eq === -1) continue;
-      const k = part.slice(0, eq).trim().toLowerCase();
-      let v = part.slice(eq + 1).trim();
-      if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
-      params[k] = v;
-    }
-  }
-  return { mediaType, params };
+/** A Content-Type as core's MIME walker reads it (see mediatype.ts): what the
+ * user's mail client shows is what the engine splits. */
+export function parseMediaType(ct: string): { mediaType: string; primary: string; params: Record<string, string> } {
+  return contentType(ct);
 }
 
-/** Parse a MIME header block (binary string) into a case-insensitive last-value map. */
+/** Whether a part of this media type nests a message the walker descends. */
+export function isMessage(mediaType: string): boolean {
+  return mediaType === "message/rfc822" || mediaType === "message/global";
+}
+
+/** Parse a MIME header block (binary string) into a case-insensitive map of
+ * each field's FIRST value, as core's walker reads a part's header. */
 export function parseMimeHeader(block: string): Map<string, string> {
   const h = new Map<string, string>();
   const lines = block.split(/\r?\n/);
   let cur = "";
   const flush = (line: string) => {
     const idx = line.indexOf(":");
-    if (idx !== -1) h.set(line.slice(0, idx).trim().toLowerCase(), line.slice(idx + 1).trim());
+    if (idx === -1) return;
+    const k = line.slice(0, idx).trim().toLowerCase();
+    if (!h.has(k)) h.set(k, line.slice(idx + 1).trim());
   };
   for (const line of lines) {
     if (/^[ \t]/.test(line) && cur) {
@@ -384,11 +382,11 @@ export class TestBody implements Test {
       flags.unknown = true;
       return false;
     }
-    const { mediaType, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
+    const { mediaType, primary, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
     d.budget.consume(this.content.length); // each :content type, per part
     const process = this.wantsPart(mediaType);
 
-    if (mediaType.startsWith("multipart/")) {
+    if (primary === "multipart") {
       const boundary = params["boundary"];
       if (!boundary) {
         return process ? this.matchOrCount(d, b, counter, cut, flags) : false;
@@ -462,7 +460,7 @@ export class TestBody implements Test {
       return false;
     }
 
-    if (mediaType === "message/rfc822") {
+    if (isMessage(mediaType)) {
       const { header, headerRaw, body, sep } = splitHeaderBody(b);
       // No separator found in a cut string ⇒ the header block itself may be a
       // prefix; with a separator, the cut can only fall in the body (the tail).

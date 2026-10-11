@@ -215,7 +215,11 @@ on them and this one follows the RFC strictly:
   headers (From/To/Cc/…); other header names are silently skipped per RFC 5228
   §5.1's "MUST restrict" guidance.
 - The `body` walker is an approximation of a full MIME parser (byte-exact
-  boundaries, last-value headers). It descends at most 100 levels (Dovecot's
+  boundaries). A part's Content-Type is read as core's MIME walker (a port of
+  go-message) reads it, so a part the user's mail client shows is one an
+  attachment rule sees: the first of a repeated field, Go's media-type parser
+  (quoted-pairs, RFC 2231 continuations, RFC 2047 encoded parameters), a
+  bare `multipart`, and `message/global` descended like `message/rfc822`. It descends at most 100 levels (Dovecot's
   limit) and visits at most 1024 parts; a no-match that depends on structure
   past either cap is "unknown" (`indeterminate`), as for a body the host's read
   window cut. A part that window cut is decoded and reduced to text only as far
