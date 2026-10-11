@@ -64,8 +64,8 @@ runs; if the expanded text does not compile, or is past the pattern-length
 cap, the comparison is "unknown" rather than an error. An `envelope`
 envelope-part built from a variable that names no part the test reads has no
 value, like a missing header. No other value from the message is known to
-reach a throw; a literal error in a branch the message picks still can
-(a variable name past `maxVariableNameLen`, #41).
+reach a throw; the runtime errors left (too many redirects, conflicting
+reject actions) are the script's own, reached by the branches a message picks.
 
 ### What the host implements
 
