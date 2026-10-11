@@ -15,7 +15,7 @@
 // target the execution already holds is no new target, so a loop filing or
 // redirecting to one name is never limited.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type RuntimeData } from "../src/index.js";
 import { ALL_EXTENSIONS, parseEml, R, run } from "./harness.js";
 
@@ -216,22 +216,41 @@ describe("which redirect addresses are the same", () => {
 
   it("a repeat's check does not re-read every address held", () => {
     // Five 16,000-character addresses held, then a loop redirecting to one of
-    // them: each repeat computed a key per held address and for its own, all
-    // uncharged.
+    // them some 97,000 times: each repeat computed a key per held address and
+    // for its own, all uncharged. Counted, not timed: that took 920 ms and the
+    // fix 75 ms, but a loaded CI runner under coverage took 585 ms for the
+    // fix, and a bound above that let the regression pass anywhere else.
     const long = (i: number) => `${"a".repeat(16_000)}${i}@x.com`;
     const held = Array.from({ length: 5 }, (_, i) => `redirect "${long(i)}";`).join(" ");
     let body = "";
     for (let i = 1; i <= 99; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
     body += "--b99\r\nContent-Type: text/plain\r\n\r\nx\r\n";
     for (let i = 99; i >= 0; i--) body += `--b${i}--\r\n`;
-    const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+    const { headers, size, body: raw } = parseEml(`From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`);
     const script = `require ["foreverypart"]; ${held} foreverypart { foreverypart { foreverypart { redirect "${long(0)}"; } } }`;
-    const t0 = performance.now();
-    run(script, eml, { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } });
-    // 920 ms before, 75 ms after, uninstrumented. A loaded CI runner under
-    // coverage took 469 and 585 ms for the fixed code; the regression would
-    // take seconds there.
-    expect(performance.now() - t0).toBeLessThan(1000);
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
+    // A held address is read through the list, and every key begins by
+    // trimming its address: only the addresses are this long.
+    const [list, reads] = readCounted(d.redirectAddr);
+    d.redirectAddr = list;
+    let keyed = 0;
+    const trim = String.prototype.trim;
+    const spy = vi.spyOn(String.prototype, "trim").mockImplementation(function (this: string) {
+      if (this.length > 16_000) keyed++;
+      return trim.call(this);
+    });
+    try {
+      s.execute(d);
+    } finally {
+      spy.mockRestore();
+    }
+    expect([d.redirectAddr.length, d.budgetExhausted]).toEqual([5, true]); // the loop ran as long as it could
+    // Each held address read at most once, and each command's literal keyed
+    // once: some 97,000 reads and 195,000 keys before.
+    expect(reads()).toBeLessThanOrEqual(5);
+    expect(keyed).toBeGreaterThan(0);
+    expect(keyed).toBeLessThanOrEqual(6);
   });
 });
 
@@ -265,27 +284,31 @@ describe("the names a host pushed", () => {
 
   it("a duplicate a host pushed does not make every fileinto re-read the list", () => {
     // Two "Z": the names' set is smaller than the list for good, and was
-    // rebuilt on every fileinto, the old scan again.
-    let body = "";
-    for (let i = 1; i <= 30; i++) body += `--b${i - 1}\r\nX-N: n${i}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
-    body += "--b30\r\nX-N: leaf\r\nContent-Type: text/plain\r\n\r\nx\r\n";
-    for (let i = 30; i >= 0; i--) body += `--b${i}--\r\n`;
-    const { headers, size, body: raw } = parseEml(`From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`);
-    const keepN = (v: string) => `if header :mime :matches "x-n" "*" { set "${v}" "\${1}"; }`;
-    const files = Array.from({ length: 10 }, (_, i) => `fileinto "\${a}.\${b}.\${c}.\${e}.${i}";`).join(" ");
-    const s = load(
-      `require ["mime","foreverypart","fileinto","variables"];
-       foreverypart { ${keepN("a")} foreverypart { ${keepN("b")} foreverypart { ${keepN("c")} foreverypart { ${keepN("e")} ${files} } } } }`,
-      { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024, maxFileintos: 1_000_000 },
-    );
-    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, raw));
-    d.mailboxes.push("Z", "Z");
-    const t0 = performance.now();
+    // rebuilt on every fileinto, the old scan again (20,000 fileintos: 2 ms to
+    // 4.4 s). Counted, not timed: here 300 fileintos read some 45,000 names.
+    const script = `${REQ} foreverypart { if header :mime :matches "x-n" "*" { fileinto "F/\${1}"; } }`;
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxFileintos: 1000 });
+    const { headers, size, body } = parseEml(parts(300));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    const [list, reads] = readCounted(["Z", "Z"]);
+    d.mailboxes = list;
     s.execute(d);
-    expect(d.mailboxes.length).toBeGreaterThan(10_000);
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(d.mailboxes).toHaveLength(302);
+    expect(reads()).toBeLessThanOrEqual(2); // the host's two, once
   });
 });
+
+/** `list` behind a proxy, and how many of its entries were read through it. */
+function readCounted(list: string[]): [string[], () => number] {
+  let reads = 0;
+  const proxy = new Proxy(list, {
+    get(target, key, recv) {
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, recv);
+    },
+  });
+  return [proxy, () => reads];
+}
 
 it("an address the host's policy appended is held, not redirected to again", () => {
   const policy = new (class extends DummyPolicy {
