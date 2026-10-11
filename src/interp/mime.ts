@@ -47,10 +47,27 @@ export interface MimePart {
   container: boolean;
   /** extracttext's reading of it, for one decode limit. */
   text: { limit: number; text: string; complete: boolean } | null;
+  /** The Content-Type and Content-Transfer-Encoding its content is read by:
+   * the fields the body test reads (the message's own first ones at the top,
+   * the last of each in a part), not header edits. */
+  contentType: string;
+  cte: string;
 }
 
-function newPart(headers: Map<string, string[]> | null, body: string, cut: boolean): MimePart {
-  return { headers, children: [], open: false, openBelow: false, all: null, body, cut, container: false, text: null };
+function newPart(headers: Map<string, string[]> | null, body: string, cut: boolean, contentType = "", cte = ""): MimePart {
+  return {
+    headers,
+    children: [],
+    open: false,
+    openBelow: false,
+    all: null,
+    body,
+    cut,
+    container: false,
+    text: null,
+    contentType,
+    cte,
+  };
 }
 
 const trees = new WeakMap<Message, MimePart>();
@@ -63,14 +80,15 @@ export function mimeTree(d: RuntimeData): MimePart {
   let root = trees.get(d.msg);
   if (root !== undefined) return root;
   const contentType = d.msg.headerGet("content-type")[0] ?? "";
+  const cte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
   const raw = d.msg.bodyRaw();
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
-    root = newPart(null, rawBinary(d.msg, raw), cut);
+    root = newPart(null, rawBinary(d.msg, raw), cut, contentType, cte);
     build(root, contentType, root.body, cut, 0, { parts: 0 });
   } else {
     // A body the host did not read: whatever it holds was not seen.
-    root = newPart(null, "", true);
+    root = newPart(null, "", true, contentType, cte);
     root.container = holdsParts(contentType);
     if (root.container) root.open = root.openBelow = true;
   }
@@ -115,9 +133,10 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
         const partCut = lastCut && i === nested.length - 1;
         const { header, body, sep } = splitHeaderBody(nested[i]!);
         if (partCut && !sep) continue; // its header block is cut: not yet a part
-        const child = newPart(parseHeaderFields(header), body, partCut);
+        const fields = parseMimeHeader(header);
+        const child = newPart(parseHeaderFields(header), body, partCut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
         p.children.push(child);
-        build(child, parseMimeHeader(header).get("content-type") ?? "", body, partCut, depth + 1, counter);
+        build(child, child.contentType, body, partCut, depth + 1, counter);
       }
     }
   } else if (mediaType === "message/rfc822") {
@@ -127,9 +146,10 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, depth:
     } else if (depth >= MAX_MIME_DEPTH || ++counter.parts > MAX_MIME_PARTS) {
       p.open = true;
     } else {
-      const child = newPart(parseHeaderFields(header), body, cut);
+      const fields = parseMimeHeader(header);
+      const child = newPart(parseHeaderFields(header), body, cut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
       p.children.push(child);
-      build(child, parseMimeHeader(header).get("content-type") ?? "", body, cut, depth + 1, counter);
+      build(child, child.contentType, body, cut, depth + 1, counter);
     }
   }
   p.openBelow = p.open || p.children.some((c) => c.openBelow);
@@ -180,21 +200,21 @@ export function partText(d: RuntimeData, p: MimePart, limit: number): { text: st
   let complete = true;
   if (!p.container) {
     d.budget.consume(1 + (p.body.length >> 10));
-    const first = (name: string) => partHeader(d, p, name)[0] ?? "";
-    const { mediaType, params } = parseMediaType(first("content-type") || "text/plain; charset=us-ascii");
-    let bytes = cteDecode(binaryToBytes(p.body), first("content-transfer-encoding"), p.cut);
-    complete = !p.cut;
-    if (bytes !== null) {
+    const { mediaType, params } = parseMediaType(p.contentType || "text/plain; charset=us-ascii");
+    const charset = params["charset"] ?? "us-ascii";
+    let bytes = cteDecode(binaryToBytes(p.body), p.cte, p.cut);
+    // An encoding or charset that cannot be decoded gives "" however much of
+    // the part was read: nothing is missing from that answer.
+    if (bytes !== null && (!mediaType.startsWith("text/") || charsetKnown(charset))) {
+      complete = !p.cut;
       if (bytes.length > limit) {
         bytes = bytes.subarray(0, limit);
         complete = false;
       }
       const prefix = !complete;
-      if (!mediaType.startsWith("text/")) {
-        text = new TextDecoder().decode(bytes, { stream: prefix });
-      } else if (charsetKnown(params["charset"] ?? "us-ascii")) {
-        text = charsetDecode(bytes, params["charset"] ?? "us-ascii", prefix);
-      }
+      text = mediaType.startsWith("text/")
+        ? charsetDecode(bytes, charset, prefix)
+        : new TextDecoder().decode(bytes, { stream: prefix });
       if (mediaType === "text/html" || mediaType === "application/xhtml+xml") text = htmlToText(text, prefix);
     }
   }

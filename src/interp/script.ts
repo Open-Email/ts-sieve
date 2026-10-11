@@ -22,7 +22,8 @@ export interface Options {
   maxVariableNameLen?: number;
   maxVariableLen?: number;
   /** Cut a `:matches`/`:regex` input to this many UTF-8 bytes (0 = the engine's
-   * default, 256 KiB). A comparison over a cut input is three-valued. */
+   * default, 256 KiB). A comparison over a cut input is three-valued. Also the
+   * octets extracttext decodes from a part. */
   maxMatchInputLength?: number;
   /**
    * Cooperative CPU budget: total interpreter "steps" (command dispatch, match

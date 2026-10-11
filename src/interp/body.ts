@@ -139,6 +139,13 @@ export function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean):
   if (cs === "" || cs === "utf-8" || cs === "utf8" || cs === "us-ascii" || cs === "ascii") {
     return new TextDecoder("utf-8").decode(bytes, { stream: cut });
   }
+  if (cs === "utf-16" || cs === "utf16") {
+    // RFC 2781 §4.3: a byte-order mark decides; without one, big-endian.
+    // (TextDecoder's "utf-16" label means little-endian.)
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes.subarray(2), { stream: cut });
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes.subarray(2), { stream: cut });
+    return new TextDecoder("utf-16be").decode(bytes, { stream: cut });
+  }
   if (cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") {
     // True Latin-1 (byte → code point). TextDecoder maps this label to cp1252.
     let s = "";
