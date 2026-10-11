@@ -798,6 +798,9 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
   const dash = `--${boundary}`;
   let nl = "\r\n";
   let nlDash = `\r\n${dash}`;
+  /** The search for nlDash, built at the first part's body: the first
+   * delimiter line has set nl by then, and nothing changes it after. */
+  let search: DelimiterSearch | undefined;
   const parts: SplitPart[] = [];
   let first = -1; // where the first delimiter line starts
   let expectNewPart = false;
@@ -849,7 +852,8 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
     } else if (b.length - s < dash.length && dash.startsWith(b.slice(s))) {
       return { end: s, cut, eof: !cut };
     }
-    for (let i = indexOfDelimiter(b, nl, boundary, from); i !== -1; i = indexOfDelimiter(b, nl, boundary, from)) {
+    search ??= delimiterSearch(nl, boundary);
+    for (let i = search(b, from); i !== -1; i = search(b, from)) {
       // A delimiter that fills the reader's buffer leaves it no room to look
       // at the byte after it, and it takes the boundary as found. (A longer
       // one has no delimiter line that fits, so no part to end.)
@@ -941,14 +945,18 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
   }
 }
 
-/** How much of a boundary the delimiter search hands to indexOf (see
- * indexOfDelimiter). */
-const DELIMITER_HEAD = 200;
+/** How much of a boundary the delimiter search hands to indexOf: V8 finds a
+ * pattern of up to 250 bytes in linear time (its Boyer-Moore tables stop at
+ * kBMMaxShift, 250), and CRLF "--" takes 4 of them. */
+const DELIMITER_HEAD = 246;
+
+/** Where nl "--" boundary first starts in `b` at or after `from`. */
+export type DelimiterSearch = (b: string, from: number) => number;
 
 /**
- * Where nl "--" boundary first starts in `b` at or after `from`: where
- * b.indexOf(nl + "--" + boundary, from) finds it, in time linear in the bytes
- * it reads.
+ * A search for nl "--" boundary that finds where b.indexOf(nl + "--" +
+ * boundary, from) finds it, in time linear in the bytes it reads. It is built
+ * once per split, as everything it holds depends only on nl and the boundary.
  *
  * V8's indexOf finds a pattern of up to 250 bytes (what its Boyer-Moore
  * tables cover) in linear time, mostly without reading every byte. Past that
@@ -956,12 +964,12 @@ const DELIMITER_HEAD = 200;
  * over a body full of them (#68). So a boundary of up to `head` bytes is
  * searched for whole, as before, and a longer one by its first `head` bytes,
  * comparing the rest after each hit. Without a line break in the boundary a
- * hit holds one LF, its line break's, so hits do not overlap, and a
- * comparison stops at the next LF, before the next hit's: no byte is compared
- * twice. A boundary can hold one (percent-encoded, through RFC 2231), and then
- * a comparison could run on over the hits after it: that one is found by
- * Knuth-Morris-Pratt. A call costs |boundary| more, which the splitter's
- * calls have read already: each starts past a delimiter line or a hit.
+ * hit holds one LF, its line break's, so two hits overlap at most in a CR
+ * that ends one and starts the next (a head that ends in CR, with CRLF), and
+ * a comparison stops at the next LF, before the next hit's rest: no byte is
+ * compared twice. A boundary can hold one (percent-encoded, through RFC
+ * 2231), and then a comparison could run on over the hits after it: that one
+ * is found by Knuth-Morris-Pratt.
  *
  * Searching for nl "--" alone would be linear too, but it reads every byte
  * and stops at each line break: up to 250 times what indexOf costs on the
@@ -969,28 +977,39 @@ const DELIMITER_HEAD = 200;
  *
  * `head`: smaller in tests, to take short boundaries down a long one's paths.
  */
-export function indexOfDelimiter(b: string, nl: string, boundary: string, from: number, head = DELIMITER_HEAD): number {
-  const needle = `${nl}--${boundary.slice(0, head)}`;
-  if (boundary.length <= head) return b.indexOf(needle, from);
-  if (boundary.includes("\n")) return kmpIndexOf(b, `${nl}--${boundary}`, from);
-  const rest = boundary.slice(head);
-  for (let i = b.indexOf(needle, from); i !== -1; i = b.indexOf(needle, i + 1)) {
-    if (b.startsWith(rest, i + needle.length)) return i;
+export function delimiterSearch(nl: string, boundary: string, head = DELIMITER_HEAD): DelimiterSearch {
+  const delimiter = `${nl}--${boundary}`;
+  if (boundary.length <= head) return (b, from) => b.indexOf(delimiter, from);
+  if (boundary.includes("\n")) {
+    const border = kmpBorders(delimiter);
+    return (b, from) => kmpIndexOf(b, delimiter, border, from);
   }
-  return -1;
+  const needle = delimiter.slice(0, delimiter.length - boundary.length + head);
+  const rest = boundary.slice(head);
+  return (b, from) => {
+    for (let i = b.indexOf(needle, from); i !== -1; i = b.indexOf(needle, i + 1)) {
+      if (b.startsWith(rest, i + needle.length)) return i;
+    }
+    return -1;
+  };
 }
 
-/** The first `p` in `b` at or after `from`, by Knuth-Morris-Pratt: each byte
- * of `b` is read once, and each step back gives up a byte matched before it,
- * so the search is linear; the table costs |p|. */
-function kmpIndexOf(b: string, p: string, from: number): number {
-  // border[i]: the longest proper prefix of p[0..i] that is a suffix of it.
+/** For each i, the longest proper prefix of p[0..i] that is a suffix of it:
+ * Knuth-Morris-Pratt's table, in time linear in |p|. */
+function kmpBorders(p: string): Int32Array {
   const border = new Int32Array(p.length);
   for (let i = 1, k = 0; i < p.length; i++) {
     while (k > 0 && p.charCodeAt(i) !== p.charCodeAt(k)) k = border[k - 1]!;
     if (p.charCodeAt(i) === p.charCodeAt(k)) k++;
     border[i] = k;
   }
+  return border;
+}
+
+/** The first `p` in `b` at or after `from`, by Knuth-Morris-Pratt over its
+ * table: each byte of `b` is read once, and each step back gives up a byte
+ * matched before it, so the search is linear. */
+function kmpIndexOf(b: string, p: string, border: Int32Array, from: number): number {
   for (let i = from, k = 0; i < b.length; i++) {
     const c = b.charCodeAt(i);
     while (k > 0 && c !== p.charCodeAt(k)) k = border[k - 1]!;

@@ -5,7 +5,7 @@
 // near-matches of it: a 4091-byte boundary over a 1 MB part of them took half
 // a second, once per split, and every body test splits again. RFC 2231
 // continuations build a boundary that long, and core takes it. The search
-// hands indexOf at most the first 200 bytes of the boundary now (a short one
+// hands indexOf at most the first 246 bytes of the boundary now (a short one
 // whole, as before), compares the rest after each hit, and finds what indexOf
 // found, in linear time. The preamble's comparison of each line with the
 // boundary is linear now too: for a boundary with a line break in it
@@ -14,7 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { indexOfDelimiter, type InputEnd, type Multipart, splitMultipart } from "../src/interp/body.js";
+import { delimiterSearch, type InputEnd, type Multipart, splitMultipart } from "../src/interp/body.js";
 
 /** A deterministic generator: rnd(n) is in [0, n). Math.imul keeps the
  * product exact, and the high bits are the random ones. */
@@ -26,9 +26,9 @@ function rng(seed: number): (n: number) => number {
 }
 
 describe("the delimiter search", () => {
-  // It hands indexOf the first `head` bytes of the boundary (200 unless
+  // It hands indexOf the first `head` bytes of the boundary (246 unless
   // given): a smaller head takes these short boundaries down the paths a long
-  // one takes.
+  // one takes. One search serves every call, as one serves a split.
   const HEADS = [0, 1, 3, undefined];
 
   it("finds what indexOf finds, from anywhere, whatever the head", () => {
@@ -66,9 +66,10 @@ describe("the delimiter search", () => {
       for (let i = rnd(24); i > 0; i--) b += pick(fragments)();
       const delimiter = `${nl}--${boundary}`;
       const head = HEADS[(t >> 1) % HEADS.length];
+      const search = delimiterSearch(nl, boundary, head);
       for (let from = 0; from <= b.length + 1; from++) {
         const want = b.indexOf(delimiter, from);
-        const got = indexOfDelimiter(b, nl, boundary, from, head);
+        const got = search(b, from);
         if (got !== want) {
           misses.push(`${JSON.stringify({ b, nl, boundary, from, head })}: ${got}, not ${want}`);
           break;
@@ -97,10 +98,11 @@ describe("the delimiter search", () => {
       boundaries = boundaries.flatMap((s) => [`${s}\n`, `${s}-`, `${s}q`]);
       for (const boundary of boundaries) {
         const delimiter = `\n--${boundary}`;
-        for (let i = 0; i < delimiter.length; i++) {
-          const b = delimiter.slice(0, i) + delimiter;
-          for (const head of HEADS) {
-            const got = indexOfDelimiter(b, "\n", boundary, 0, head);
+        for (const head of HEADS) {
+          const search = delimiterSearch("\n", boundary, head);
+          for (let i = 0; i < delimiter.length; i++) {
+            const b = delimiter.slice(0, i) + delimiter;
+            const got = search(b, 0);
             if (got !== b.indexOf(delimiter)) misses.push(`${JSON.stringify({ b, boundary, head })}: ${got}`);
           }
         }
@@ -348,7 +350,7 @@ describe("the delimiter search's cost", () => {
 
   it("is linear over near-matches of a long boundary with a line break in it", () => {
     repeatedWithin(BOUND, 1, () => {
-      for (const { b, boundary, at } of cases) expect(indexOfDelimiter(b, "\n", boundary, 0)).toBe(at);
+      for (const { b, boundary, at } of cases) expect(delimiterSearch("\n", boundary)(b, 0)).toBe(at);
     });
   });
 });
