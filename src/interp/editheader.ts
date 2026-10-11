@@ -7,7 +7,7 @@
 
 import { decodeHeaderValue } from "./header.js";
 import { MatcherTest } from "./matcher.js";
-import type { Cmd, RuntimeData } from "./runtime.js";
+import { type Cmd, type RuntimeData, withShare } from "./runtime.js";
 import { expandVars, expandVarsList } from "./variables.js";
 
 export interface HeaderEdit {
@@ -126,6 +126,8 @@ export class CmdDeleteHeader implements Cmd {
   valuePatterns: string[] = [];
   index = 0;
   last = false;
+  /** This command's number among the script's budgeted work (see withShare). */
+  shareIndex = 0;
 
   execute(d: RuntimeData): void {
     const fieldName = expandVars(d, this.fieldName);
@@ -141,20 +143,29 @@ export class CmdDeleteHeader implements Cmd {
     const values = applyHeaderEditsToValues(d, fieldName, d.msg.headerGet(fieldName));
     if (values.length === 0) return;
 
-    if (this.index > 0) {
-      let idx = this.index - 1;
-      if (this.last) idx = values.length - this.index;
-      if (idx < 0 || idx >= values.length) return;
-      if (!this.valueMatchesPatterns(d, values[idx]!)) return;
-      d.headerEdits.push({ action: "delete", fieldName, value: values[idx]!, index: this.index, last: this.last });
+    // The matching spends a share of the step budget, as a test does. When the
+    // share runs out nothing is deleted, and the guess is disclosed as for an
+    // unknown match (see valueMatchesPatterns).
+    const edits: HeaderEdit[] = [];
+    const r = withShare(d, this.shareIndex, () => {
+      if (this.index > 0) {
+        let idx = this.index - 1;
+        if (this.last) idx = values.length - this.index;
+        if (idx >= 0 && idx < values.length && this.valueMatchesPatterns(d, values[idx]!)) {
+          edits.push({ action: "delete", fieldName, value: values[idx]!, index: this.index, last: this.last });
+        }
+        return true;
+      }
+      for (const val of values) {
+        if (this.valueMatchesPatterns(d, val)) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false });
+      }
+      return true;
+    });
+    if (r === "unknown") {
+      d.indeterminate = true;
       return;
     }
-
-    for (const val of values) {
-      if (this.valueMatchesPatterns(d, val)) {
-        d.headerEdits.push({ action: "delete", fieldName, value: val, index: 0, last: false });
-      }
-    }
+    d.headerEdits.push(...edits);
   }
 
   private valueMatchesPatterns(d: RuntimeData, value: string): boolean {

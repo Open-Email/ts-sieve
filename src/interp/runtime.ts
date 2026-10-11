@@ -11,18 +11,81 @@ import type { HeaderEdit } from "./editheader.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
+/** Thrown by Budget.consume when a share runs out; withShare catches it. */
+const SHARE_EXHAUSTED = Symbol("share exhausted");
+
 /**
  * A cooperative execution budget: script work is bounded by counting steps
  * rather than wall-clock time, so execution stays deterministic and cannot be
  * preempted mid-run. The interpreter ticks this counter in its hot loops
- * (command dispatch, match keys, the regex VM's inner loop) and throws when it
- * is exhausted — a deterministic CPU cap for a Worker.
+ * (command dispatch, match keys, the regex VM's inner loop) — a deterministic
+ * CPU cap for a Worker. Tests spend it under a share (withShare), and a test
+ * that runs out of its share is "unknown"; running out outside one throws.
  */
 class Budget {
+  /** consume() may not take `remaining` below this: 0 for the script, higher
+   * inside a test's share. */
+  floor = 0;
+  /** How many shares are open. */
+  shares = 0;
   constructor(public remaining: number) {}
   consume(n = 1): void {
     this.remaining -= n;
-    if (this.remaining < 0) throw new SieveError("sieve: script execution budget exceeded");
+    if (this.remaining < this.floor) {
+      if (this.shares > 0) throw SHARE_EXHAUSTED;
+      throw new SieveError("sieve: script execution budget exceeded");
+    }
+  }
+}
+
+/** Steps kept back for each test after the running one, as a fraction of
+ * maxExecSteps (3125 of core's 200k: a header test, not a body glob). */
+const LATER_TEST_RESERVE = 1 / 64;
+
+/**
+ * Run budgeted work number `index` (a test, or deleteheader's matching, in
+ * script order) under a share of the step budget, returning "unknown" when the
+ * share runs out. Without this, exhausting the budget threw, and a message can
+ * drive that (large parts under a glob, a :regex key built from a header): a
+ * thrown execute() skips every rule, which a host's fail-open turns into a
+ * filter bypass.
+ *
+ * The share is everything left, minus the steps command dispatch may still
+ * need (one per command in the script, so it never runs out) and a reserve for
+ * each budgeted step after this one, capped at half of what is left. One
+ * expensive test therefore cannot starve the rest of the script, while a run
+ * that fits the budget spends it as before.
+ */
+export function withShare(d: RuntimeData, index: number, f: () => Tri): Tri {
+  const b = d.budget;
+  if (b.remaining === Number.POSITIVE_INFINITY) return f();
+  const s = d.script;
+  const free = Math.max(0, b.remaining - Math.max(b.floor, s.commandCount));
+  const later = Math.max(0, s.budgetedCount - index - 1);
+  const keep = Math.min(later * Math.floor(s.opts.maxExecSteps * LATER_TEST_RESERVE), Math.floor(free / 2));
+  const outer = b.floor;
+  b.floor = b.remaining - (free - keep);
+  b.shares++;
+  try {
+    return f();
+  } catch (e) {
+    if (e !== SHARE_EXHAUSTED || b.remaining >= b.floor) throw e;
+    d.budgetExhausted = true;
+    return "unknown";
+  } finally {
+    b.floor = outer;
+    b.shares--;
+  }
+}
+
+/** A test run under its share of the budget (see withShare). */
+export class SharedTest implements Test {
+  constructor(
+    private readonly test: Test,
+    private readonly index: number,
+  ) {}
+  check(d: RuntimeData): Tri {
+    return withShare(d, this.index, () => this.test.check(d));
   }
 }
 
@@ -134,6 +197,10 @@ export class RuntimeData {
    */
   indeterminate = false;
 
+  /** A test ran out of its share of the step budget and answered "unknown"
+   * (see withShare). The script completed; this says why it guessed. */
+  budgetExhausted = false;
+
   redirectAddr: string[] = [];
   mailboxes: string[] = [];
   mailboxesCreate: string[] = []; // RFC 5490 :create
@@ -215,6 +282,7 @@ export class RuntimeData {
     const c = new RuntimeData(scriptOverride ?? this.script, this.policy, this.envelope, this.msg, this.budget);
     c.ifResult = this.ifResult;
     c.indeterminate = this.indeterminate;
+    c.budgetExhausted = this.budgetExhausted;
     c.redirectAddr = [...this.redirectAddr];
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];

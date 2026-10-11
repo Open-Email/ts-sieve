@@ -213,7 +213,7 @@ function splitHeaderBody(b: string): { header: string; headerRaw: string; body: 
  * Depth is Dovecot's message-parser limit (100, added for CVE-2020-12100);
  * nesting is cheap in steps. Parts stay at 1024, not Dovecot's 10000: every
  * body test charges every part, so 10000 tiny parts under a handful of body
- * rules exhaust a host's step budget, and that throws.
+ * rules exhaust a host's step budget, and its later tests go unknown.
  */
 const MAX_MIME_DEPTH = 100;
 const MAX_MIME_PARTS = 1024;

@@ -67,6 +67,12 @@ export class Script {
   readonly enabledExtensions: string[] | null;
   readonly opts: Required<Options>;
   cmds: Cmd[] = [];
+  /** Commands at every nesting level: what dispatch can cost at most, kept
+   * back from tests (see withShare). */
+  commandCount = 0;
+  /** Tests and deleteheader commands, numbered in script order: each spends a
+   * share of the step budget (see withShare). */
+  budgetedCount = 0;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };
