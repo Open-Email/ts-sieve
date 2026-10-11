@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
-import { ALL_EXTENSIONS, run } from "./harness.js";
+import { ALL_EXTENSIONS, R, run } from "./harness.js";
 
 const B = String.fromCharCode(92);
 const exe = "Content-Type: application/x-msdownload\r\nContent-Disposition: attachment; filename=\"evil.exe\"\r\n\r\nMZ\r\n";
@@ -127,5 +127,175 @@ describe("header values as core reads them", () => {
       `--outer\r\nContent-Type: multipart/mixed; boundary="a\r\n \x0bb"\r\n\r\n` +
       `--a \x0bb\r\nContent-Type: text/plain\r\n\r\nhello\r\n--a \x0bb\r\n${exe}--a \x0bb--\r\n--outer--\r\n`;
     expect(runRaw(anychild, body)).toEqual(["Junk"]);
+  });
+});
+
+// A part has one media type and one disposition: core's walker reads the
+// first Content-Type and Content-Disposition (go-message's Header.Get), and
+// the client shows that one. A :mime option that read every field matched a
+// second type the client never shows (#72).
+
+/** A multipart message whose second part carries these header lines. */
+const withPart = (lines: string) =>
+  `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n` +
+  `--b\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b\r\n${lines}\r\n\r\nMZ\r\n--b--\r\n`;
+/** The review's dup-part-ct-rev: core shows the second part as text/plain. */
+const twoTypes = withPart("Content-Type: text/plain\r\nContent-Type: application/x-msdownload");
+const exeFirst = withPart("Content-Type: application/x-msdownload\r\nContent-Type: text/plain");
+const rootTwoTypes = "From: a@x\r\nTo: b@y\r\nContent-Type: text/plain\r\nContent-Type: application/x-msdownload\r\n\r\nMZ\r\n";
+/** `test` as the condition of a rule that files Junk. */
+const junkIf = (test: string, extra: string[] = []) =>
+  `require ${JSON.stringify(["fileinto", "mime", ...extra])}; if ${test} { fileinto "Junk"; }`;
+/** `test` as the condition of a rule that files Hit, after `edit` adds a field
+ * in doubt: a prefix of a long Subject, which the engine could not hold whole.
+ * The message's Content-Type is text/plain, its Reply-To one@a.example. */
+const withDoubt = (edit: string, test: string) =>
+  run(
+    `require ["variables","editheader","mime","fileinto","index"]; if header :matches "subject" "*" { set "s" "\${1}"; } ${edit} "\${s}"; if ${test} { fileinto "Hit"; }`,
+    `From: a@x\r\nSubject: ${"x".repeat(4500)}\r\nReply-To: one@a.example\r\nContent-Type: text/plain\r\n\r\nbody\r\n`,
+    { options: { maxMatchInputLength: 16 * 1024 } },
+  );
+
+describe("a MIME option reads a part's first Content-Type and Content-Disposition", () => {
+  it("a second Content-Type is not the part's type", () => {
+    expect(run(anychild, twoTypes).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :anychild :subtype "content-type" "x-msdownload"'), twoTypes).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :anychild :type "content-type" "application"'), twoTypes).fileinto).toEqual([]);
+  });
+
+  it("the body test reads the same field", () => {
+    const body = (type: string) => junkIf(`body :content "${type}" :contains "MZ"`, ["body"]);
+    expect(run(body("application/x-msdownload"), twoTypes).fileinto).toEqual([]);
+    expect(run(body("text/plain"), twoTypes).fileinto).toEqual(["Junk"]);
+  });
+
+  it("at the root", () => {
+    expect(run(junkIf('header :mime :contenttype "content-type" "application/x-msdownload"'), rootTwoTypes).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :subtype "content-type" "x-msdownload"'), rootTwoTypes).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :contenttype "content-type" "text/plain"'), rootTwoTypes).fileinto).toEqual(["Junk"]);
+  });
+
+  it("a second field's parameters are not read", () => {
+    const ct = withPart('Content-Type: text/plain\r\nContent-Type: application/octet-stream; name="evil.exe"');
+    expect(run(junkIf('header :mime :anychild :param "name" :matches "content-type" "*.exe"'), ct).fileinto).toEqual([]);
+    const cd = withPart('Content-Type: application/octet-stream\r\nContent-Disposition: inline\r\nContent-Disposition: attachment; filename="evil.exe"');
+    expect(run(junkIf('header :mime :anychild :param "filename" :matches "content-disposition" "*.exe"'), cd).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :anychild :contenttype "content-disposition" "attachment"'), cd).fileinto).toEqual([]);
+  });
+
+  it("the first field is read", () => {
+    expect(run(anychild, exeFirst).fileinto).toEqual(["Junk"]);
+    expect(run(junkIf('header :mime :anychild :subtype "content-type" "x-msdownload"'), exeFirst).fileinto).toEqual(["Junk"]);
+    const ct = withPart('Content-Type: application/octet-stream; name="evil.exe"\r\nContent-Type: text/plain');
+    expect(run(junkIf('header :mime :anychild :param "name" :matches "content-type" "*.exe"'), ct).fileinto).toEqual(["Junk"]);
+    const cd = withPart('Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="evil.exe"\r\nContent-Disposition: inline');
+    expect(run(junkIf('header :mime :anychild :param "filename" :matches "content-disposition" "*.exe"'), cd).fileinto).toEqual(["Junk"]);
+    expect(run(junkIf('header :mime :anychild :contenttype "content-disposition" "attachment"'), cd).fileinto).toEqual(["Junk"]);
+  });
+
+  it("plain :mime reads every field", () => {
+    expect(run(junkIf('header :mime :anychild "content-type" "application/x-msdownload"'), twoTypes).fileinto).toEqual(["Junk"]);
+    expect(run(junkIf('header :mime "content-type" "application/x-msdownload"'), rootTwoTypes).fileinto).toEqual(["Junk"]);
+  });
+
+  it(":count counts one type a part, and every field without an option", () => {
+    const count = (opt: string, n: number) =>
+      junkIf(`header :mime :anychild :count "eq" :comparator "i;ascii-numeric" ${opt} "content-type" "${n}"`, ["relational", "comparator-i;ascii-numeric"]);
+    // The root, the text part, and the part with two fields.
+    expect(run(count(":contenttype", 3), twoTypes).fileinto).toEqual(["Junk"]);
+    expect(run(count("", 4), twoTypes).fileinto).toEqual(["Junk"]);
+  });
+
+  it("over a cut body, a second field does not decide a miss", () => {
+    // The part with two fields is whole; parts may follow it past the cut.
+    const cut = twoTypes.slice(0, twoTypes.indexOf("--b--"));
+    const exe = junkIf('header :mime :anychild :subtype "content-type" "x-msdownload"');
+    expect(run(exe, cut, { bodyTruncated: true })).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    const clean = 'require ["fileinto","mime"]; if not header :mime :anychild :subtype "content-type" "x-msdownload" { fileinto "Clean"; }';
+    expect(run(clean, cut, { bodyTruncated: true })).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    expect(run(clean, twoTypes)).toEqual(R({ fileinto: ["Clean"] }));
+  });
+
+  it("at the root, the first as the script's edits left it", () => {
+    // RFC 5293: a test reads the header as edited.
+    const edited = (edit: string) =>
+      `require ["fileinto","mime","editheader"]; ${edit}; if header :mime :contenttype "content-type" "application/x-msdownload" { fileinto "Junk"; }`;
+    expect(run(edited('deleteheader :index 1 "content-type"'), rootTwoTypes).fileinto).toEqual(["Junk"]);
+    const root = "From: a@x\r\nTo: b@y\r\nContent-Type: text/plain\r\n\r\nMZ\r\n";
+    expect(run(edited('addheader :last "Content-Type" "application/x-msdownload"'), root).fileinto).toEqual([]);
+    expect(run(edited('addheader "Content-Type" "application/x-msdownload"'), root).fileinto).toEqual(["Junk"]);
+  });
+
+  it("a first field in doubt is not passed over for the second", () => {
+    // The added field, prepended, holds a prefix of a long Subject: its type is
+    // unknown, and the received text/plain after it is not the root's type.
+    expect(withDoubt('addheader "Content-Type"', 'header :mime :contenttype "content-type" "text/plain"')).toMatchObject({ fileinto: [], indeterminate: true });
+  });
+
+  it("a field in doubt after the first is not read", () => {
+    const r = withDoubt('addheader :last "Content-Type"', 'not header :mime :contenttype "content-type" "application/x-msdownload"');
+    expect(r).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+  });
+
+  it("a field name in any case", () => {
+    expect(run(junkIf('header :mime :anychild :contenttype "Content-Type" "application/x-msdownload"'), twoTypes).fileinto).toEqual([]);
+    const cd = withPart('Content-Type: application/octet-stream\r\nContent-Disposition: inline\r\nContent-Disposition: attachment; filename="evil.exe"');
+    expect(run(junkIf('header :mime :anychild :contenttype "CONTENT-DISPOSITION" "attachment"'), cd).fileinto).toEqual([]);
+  });
+});
+
+describe(":index under :mime counts a part's own fields", () => {
+  const indexed = (tags: string, value: string) => junkIf(`header :mime :anychild ${tags} :contenttype "content-type" "${value}"`, ["index"]);
+
+  it("an explicit :index is not overridden by the first-field rule", () => {
+    expect(run(indexed(":index 2", "application/x-msdownload"), twoTypes).fileinto).toEqual(["Junk"]);
+    expect(run(indexed(":index 1 :last", "application/x-msdownload"), twoTypes).fileinto).toEqual(["Junk"]);
+    expect(run(indexed(":index 1", "application/x-msdownload"), twoTypes).fileinto).toEqual([]);
+  });
+
+  it("in each part, not across the parts in scope", () => {
+    // Across them, the second field would be the first part's text/plain.
+    expect(run(indexed(":index 2", "text/plain"), twoTypes).fileinto).toEqual([]);
+    expect(run(indexed(":index 3 :matches", "*"), twoTypes).fileinto).toEqual([]);
+  });
+
+  it("plain :mime honours it", () => {
+    const m = "From: a@x\r\nTo: b@y\r\nSubject: a\r\nSubject: b\r\n\r\nbody\r\n";
+    expect(run(junkIf('header :mime :index 1 "subject" "b"', ["index"]), m).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :index 2 "subject" "b"', ["index"]), m).fileinto).toEqual(["Junk"]);
+  });
+
+  it("a field in doubt is unknown where :index selects it, and only there", () => {
+    const exe = (index: string) => `not header :mime ${index} :contenttype "content-type" "application/x-msdownload"`;
+    // Added after the received text/plain: the second field.
+    expect(withDoubt('addheader :last "Content-Type"', 'header :mime :index 2 :matches :contenttype "content-type" "x*"')).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Content-Type"', exe(":index 2"))).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Content-Type"', exe(":index 1"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+    // Added before it: the first.
+    expect(withDoubt('addheader "Content-Type"', exe(":index 2"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+  });
+});
+
+describe("address :mime counts :index in each part's own header", () => {
+  // A part with two From fields: its own header, not the message's.
+  const twoFroms = withPart("Content-Type: text/plain\r\nFrom: one@x\r\nFrom: two@x");
+  const two = (tags: string) => junkIf(`address :mime :anychild ${tags} :all "from" "two@x"`, ["index"]);
+
+  it("selects among a part's fields, as the header test does", () => {
+    expect(run(two(":index 1"), twoFroms).fileinto).toEqual([]);
+    expect(run(junkIf('header :mime :anychild :index 1 "from" "two@x"', ["index"]), twoFroms).fileinto).toEqual([]);
+    expect(run(two(":index 2"), twoFroms).fileinto).toEqual(["Junk"]);
+    expect(run(two(":index 1 :last"), twoFroms).fileinto).toEqual(["Junk"]);
+    expect(run(two(":index 3"), twoFroms).fileinto).toEqual([]);
+  });
+
+  it("a field in doubt is unknown where :index selects it, and only there", () => {
+    const b = (index: string) => `not address :mime ${index} :domain "reply-to" "b.example"`;
+    // Added after the received one@a.example: the second field.
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 1"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 2"))).toMatchObject({ fileinto: [], indeterminate: true });
+    expect(withDoubt('addheader :last "Reply-To"', b(":index 1 :last"))).toMatchObject({ fileinto: [], indeterminate: true });
+    // Added before it: the first.
+    expect(withDoubt('addheader "Reply-To"', b(":index 2"))).toMatchObject({ fileinto: ["Hit"], indeterminate: false });
   });
 });

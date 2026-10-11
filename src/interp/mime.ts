@@ -306,6 +306,25 @@ export class MimeOpts {
     return { parts, open: this.anychild && cur.openBelow };
   }
 
+  /**
+   * Whether the test reads only the first of a part's `name` fields: under a
+   * MIMEOPT, Content-Type and Content-Disposition. A part has one media type
+   * and one disposition, its first field's: core's walker reads them so
+   * (go-message's Header.Get), and the client shows that one; the part tree
+   * and the body test read the first Content-Type too (parseMimeHeader).
+   * Reading every field, as Pigeonhole does, matched a second type the
+   * client never shows (#72).
+   * The root's first is the header's as the script's edits left it (RFC 5293:
+   * a test reads the edited header), while the tree and the body test read
+   * the message's structure as received: with no edit to the field, the same
+   * field. Plain :mime reads every field, as the header test does.
+   */
+  firstOnly(name: string): boolean {
+    if (this.opt === "") return false;
+    const field = name.toLowerCase();
+    return field === "content-type" || field === "content-disposition";
+  }
+
   /** The strings a header test matches for a field's raw values: decoded, or
    * the part of a Content-Type / Content-Disposition the MIMEOPT names. Each
    * value is decoded or parsed once per message and costs a step per read,
