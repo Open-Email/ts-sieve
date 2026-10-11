@@ -4,11 +4,13 @@
 // V8's search compares a long boundary over and over where a body holds
 // near-matches of it: a 4091-byte boundary over a 1 MB part of them took half
 // a second, once per split, and every body test splits again. RFC 2231
-// continuations build a boundary that long, and core takes it. The search is
-// linear now, and finds what indexOf found. The preamble's comparison of each
-// line with the boundary is linear now too: for a boundary with a line break
-// in it (percent-encoded, as RFC 2231 allows) it ran on past the line, over
-// the lines after it, and a 1 MB preamble took 2.3 s.
+// continuations build a boundary that long, and core takes it. The search
+// hands indexOf at most the first 200 bytes of the boundary now (a short one
+// whole, as before), compares the rest after each hit, and finds what indexOf
+// found, in linear time. The preamble's comparison of each line with the
+// boundary is linear now too: for a boundary with a line break in it
+// (percent-encoded, as RFC 2231 allows) it ran on past the line, over the
+// lines after it, and a 1 MB preamble took 2.3 s.
 
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -24,7 +26,12 @@ function rng(seed: number): (n: number) => number {
 }
 
 describe("the delimiter search", () => {
-  it("finds what indexOf finds, from anywhere", () => {
+  // It hands indexOf the first `head` bytes of the boundary (200 unless
+  // given): a smaller head takes these short boundaries down the paths a long
+  // one takes.
+  const HEADS = [0, 1, 3, undefined];
+
+  it("finds what indexOf finds, from anywhere, whatever the head", () => {
     const rnd = rng(68);
     const pick = <T>(xs: T[]): T => xs[rnd(xs.length)]!;
     const misses: string[] = [];
@@ -58,11 +65,12 @@ describe("the delimiter search", () => {
       let b = "";
       for (let i = rnd(24); i > 0; i--) b += pick(fragments)();
       const delimiter = `${nl}--${boundary}`;
+      const head = HEADS[(t >> 1) % HEADS.length];
       for (let from = 0; from <= b.length + 1; from++) {
         const want = b.indexOf(delimiter, from);
-        const got = indexOfDelimiter(b, nl, boundary, from);
+        const got = indexOfDelimiter(b, nl, boundary, from, head);
         if (got !== want) {
-          misses.push(`${JSON.stringify({ b, nl, boundary, from })}: ${got}, not ${want}`);
+          misses.push(`${JSON.stringify({ b, nl, boundary, from, head })}: ${got}, not ${want}`);
           break;
         }
         if (want !== -1) {
@@ -82,7 +90,7 @@ describe("the delimiter search", () => {
     // Random bodies almost never hold the shape on which a wrong fallback in
     // the search's table misses a delimiter (the shortest has a 7-byte
     // boundary, "\n\n--\n-\n"), so every boundary up to 7 bytes is searched
-    // for after each prefix of its delimiter.
+    // for after each prefix of its delimiter, with each head.
     const misses: string[] = [];
     let boundaries = [""];
     for (let len = 1; len <= 7; len++) {
@@ -91,8 +99,10 @@ describe("the delimiter search", () => {
         const delimiter = `\n--${boundary}`;
         for (let i = 0; i < delimiter.length; i++) {
           const b = delimiter.slice(0, i) + delimiter;
-          const got = indexOfDelimiter(b, "\n", boundary, 0);
-          if (got !== b.indexOf(delimiter)) misses.push(`${JSON.stringify({ b, boundary })}: ${got}`);
+          for (const head of HEADS) {
+            const got = indexOfDelimiter(b, "\n", boundary, 0, head);
+            if (got !== b.indexOf(delimiter)) misses.push(`${JSON.stringify({ b, boundary, head })}: ${got}`);
+          }
         }
       }
     }
@@ -223,11 +233,12 @@ describe("the splitter's results", () => {
 });
 
 // A regression fails in the bound and one more run (see repeatedWithin),
-// which took up to 12 s.
-vi.setConfig({ testTimeout: 60_000 });
+// which took up to a minute.
+vi.setConfig({ testTimeout: 120_000 });
 
-/** Each case below takes 30-150 ms, and under 200 ms with coverage; the old
- * code took 20-35 s for the same work, ten times this or more. */
+/** Each case below takes under 400 ms, setup included, with coverage and on
+ * a loaded machine too; what each guards against took 20-60 s for the same
+ * work, ten times this or more. */
 const BOUND = 2000;
 
 /** Runs `f` `times` times, stopping once `ms` has passed, and asserts that
@@ -239,6 +250,18 @@ function repeatedWithin(ms: number, times: number, f: () => void): void {
 }
 
 describe("the splitter's cost", () => {
+  it("is indexOf's for a short boundary, in a part of blank lines and dashes", () => {
+    // indexOf skips most of these 4 MB when it looks for the whole delimiter
+    // (0.1 ms a split), but stops at each CR when it looks for CRLF "--"
+    // alone (15 ms), and a part's bytes are split again at every level of
+    // nesting, by every body test.
+    const boundary = "0123456789abcdefghijklmnopqrstuv";
+    const part = "\r\n".repeat(3 << 19) + "\r\n--".repeat(1 << 18);
+    const body = `--${boundary}\r\n\r\n${part}\r\n--${boundary}--\r\n`;
+    expect(splitMultipart(body, boundary, false).parts.map((p) => p.body)).toEqual([part]);
+    repeatedWithin(BOUND, 1500, () => splitMultipart(body, boundary, false));
+  });
+
   it("is linear in a part full of near-matches of a long boundary", () => {
     // The issue's 4091-byte boundary: 0.5 s a split before the fix.
     const boundary = "q".repeat(4091);
@@ -272,18 +295,17 @@ describe("the delimiter search's cost", () => {
   // The splitter cannot reach the search with a boundary that holds a line
   // break (no line can hold a delimiter then), but the search is linear on
   // its own terms. Over half a megabyte of the first boundary's near-matches
-  // indexOf took 4 s; over the second's, a search for "\n--" that compares
-  // the boundary at each hit, where a comparison runs on over the hits after
-  // it, took 12 s.
-  const cases = ["\n".repeat(65_536), `${"q\n--".repeat(16_384)}q`].map((boundary) => {
-    const b = `\n--${boundary.slice(0, -1)}#`.repeat(8) + `\n--${boundary}`;
+  // indexOf took 9 s; over the second's, comparing the rest of the boundary
+  // after each hit of its head took 56 s, as a comparison runs on over the
+  // hits after it.
+  const cases = ["\n".repeat(131_072), `${"q\n--".repeat(32_768)}q`].map((boundary) => {
+    const b = `\n--${boundary.slice(0, -1)}#`.repeat(4) + `\n--${boundary}`;
     return { b, boundary, at: b.length - boundary.length - 3 };
   });
 
   it("is linear over near-matches of a long boundary with a line break in it", () => {
-    for (const { b, boundary, at } of cases) expect(indexOfDelimiter(b, "\n", boundary, 0)).toBe(at);
-    repeatedWithin(BOUND, 5, () => {
-      for (const { b, boundary } of cases) indexOfDelimiter(b, "\n", boundary, 0);
+    repeatedWithin(BOUND, 2, () => {
+      for (const { b, boundary, at } of cases) expect(indexOfDelimiter(b, "\n", boundary, 0)).toBe(at);
     });
   });
 });

@@ -941,25 +941,41 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, inputE
   }
 }
 
+/** How much of a boundary the delimiter search hands to indexOf (see
+ * indexOfDelimiter). */
+const DELIMITER_HEAD = 200;
+
 /**
  * Where nl "--" boundary first starts in `b` at or after `from`: where
  * b.indexOf(nl + "--" + boundary, from) finds it, in time linear in the bytes
- * it reads. indexOf compared a long boundary again at each near-match of it,
- * O(n·|boundary|) over a body full of them (#68).
+ * it reads.
  *
- * It looks for nl "--" and compares the boundary after each hit. Without a
- * line break in the boundary, a comparison stops at the next line break, so
- * before the next hit, and no byte is compared twice. A boundary can hold one
- * (percent-encoded, through RFC 2231), and then a comparison could run on
- * over the hits after it: that one is found by Knuth-Morris-Pratt. A call
- * costs |boundary| more, which the splitter's calls have read already: each
- * starts past a delimiter line or a hit.
+ * V8's indexOf finds a pattern of up to 250 bytes (what its Boyer-Moore
+ * tables cover) in linear time, mostly without reading every byte. Past that
+ * it compared a long boundary again at each near-match of it: O(n·|boundary|)
+ * over a body full of them (#68). So a boundary of up to `head` bytes is
+ * searched for whole, as before, and a longer one by its first `head` bytes,
+ * comparing the rest after each hit. Without a line break in the boundary a
+ * hit holds one LF, its line break's, so hits do not overlap, and a
+ * comparison stops at the next LF, before the next hit's: no byte is compared
+ * twice. A boundary can hold one (percent-encoded, through RFC 2231), and then
+ * a comparison could run on over the hits after it: that one is found by
+ * Knuth-Morris-Pratt. A call costs |boundary| more, which the splitter's
+ * calls have read already: each starts past a delimiter line or a hit.
+ *
+ * Searching for nl "--" alone would be linear too, but it reads every byte
+ * and stops at each line break: up to 250 times what indexOf costs on the
+ * whole delimiter, paid again at every level of nesting.
+ *
+ * `head`: smaller in tests, to take short boundaries down a long one's paths.
  */
-export function indexOfDelimiter(b: string, nl: string, boundary: string, from: number): number {
-  const anchor = `${nl}--`;
-  if (boundary.includes("\n")) return kmpIndexOf(b, anchor + boundary, from);
-  for (let i = b.indexOf(anchor, from); i !== -1; i = b.indexOf(anchor, i + 1)) {
-    if (b.startsWith(boundary, i + anchor.length)) return i;
+export function indexOfDelimiter(b: string, nl: string, boundary: string, from: number, head = DELIMITER_HEAD): number {
+  const needle = `${nl}--${boundary.slice(0, head)}`;
+  if (boundary.length <= head) return b.indexOf(needle, from);
+  if (boundary.includes("\n")) return kmpIndexOf(b, `${nl}--${boundary}`, from);
+  const rest = boundary.slice(head);
+  for (let i = b.indexOf(needle, from); i !== -1; i = b.indexOf(needle, i + 1)) {
+    if (b.startsWith(rest, i + needle.length)) return i;
   }
   return -1;
 }
