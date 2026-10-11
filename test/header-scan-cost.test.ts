@@ -16,9 +16,11 @@ const OLD_DATE = (s: string) => s.replace(/\s*\([^()]*\)\s*$/, "");
 /** Random strings over an alphabet of the characters that matter. */
 function* samples(alphabet: string[], count: number, maxLen: number): Generator<string> {
   let seed = 7;
+  // Math.imul keeps the product exact (a plain multiply passes 2^53 and loses
+  // the low bits), and the high bits are the random ones in this generator.
   const rnd = (n: number) => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed % n;
+    seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+    return (seed >>> 16) % n;
   };
   for (let t = 0; t < count; t++) {
     let s = "";
@@ -36,9 +38,12 @@ function within(ms: number, f: () => unknown): unknown {
 
 describe("address comment stripping", () => {
   it("gives the regex's output", () => {
+    const seen = new Set<string>();
     for (const s of samples(["(", ")", "a", "@", " ", "<", ">", "x"], 20_000, 14)) {
+      seen.add(s);
       expect(stripRFC2822Comments(s)).toBe(OLD_ADDRESS(s));
     }
+    expect(seen.size).toBeGreaterThan(10_000); // the samples really vary
   });
 
   it("is linear in the header", () => {
@@ -51,9 +56,12 @@ describe("address comment stripping", () => {
 
 describe("the trailing comment of a Date", () => {
   it("gives the regex's output", () => {
-    for (const s of samples(["(", ")", "a", " ", "\t", " ", "x"], 20_000, 14)) {
+    const seen = new Set<string>();
+    for (const s of samples(["(", ")", "a", " ", "\t", "\u00a0", "\ufeff", "\u2028", "x"], 20_000, 14)) {
+      seen.add(s);
       expect(stripTrailingComment(s)).toBe(OLD_DATE(s));
     }
+    expect(seen.size).toBeGreaterThan(10_000); // the samples really vary
   });
 
   it("is linear in the header", () => {
