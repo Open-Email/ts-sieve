@@ -77,7 +77,7 @@ executed, and a reject beside `keep`, `fileinto`, `redirect` or `vacation`
 
 | Interface | Purpose |
 | --- | --- |
-| `Message` | `headerGet(name)` (case-insensitive, values in order), `messageSize()`, `bodyRaw()` (`null` ⇒ `body` test never matches, and a multipart message's parts are unseen to `:mime`/`foreverypart`). Implement over your MIME source (e.g. `postal-mime`). |
+| `Message` | `headerGet(name)` (case-insensitive, values in order), `messageSize()`, `bodyRaw()` (`null` ⇒ `body` test never matches, and a multipart message's parts are unseen to `:mime`/`foreverypart`). Optional `mimeHeaderGet(name)` supplies root Content-Type and Content-Transfer-Encoding as binary strings, one code unit per original byte; `undefined` uses the existing UTF-8 text fallback, while `[]` means absent. `MessageStatic` accepts this lowercased header map as its fifth constructor argument. Implement over your MIME source (e.g. `postal-mime` plus a byte-preserving structural-header read). |
 | `Envelope` | SMTP `MAIL FROM`, `RCPT TO`, and the authenticated username. |
 | `PolicyReader` | `redirectAllowed(d, addr)` — gate/rate-limit/validate redirect targets. `DummyPolicy` allows everything. |
 | `MailboxChecker` (optional, `d.mailboxChecker`) | Backs `mailboxexists`; when absent the test is optimistic ("exists"). |

@@ -178,6 +178,12 @@ export interface Message {
    * the interpreter decodes, or return already-decoded values.
    */
   headerGet(key: string): string[];
+  /** Optional root MIME structure values as binary strings (one code unit
+   * per original byte), in field order. Used only for Content-Type and
+   * Content-Transfer-Encoding; ordinary header tests still use headerGet.
+   * Undefined means the host has no raw view, so decoded-text fallback is
+   * used. An empty array means the field is authoritatively absent. */
+  mimeHeaderGet?(key: string): string[] | undefined;
   messageSize(): number;
   /** Raw body bytes; null when unavailable (the `body` test then never matches).
    * The body test caches what it derives from it per Message object, for as
@@ -569,9 +575,13 @@ export class MessageStatic implements Message {
     private readonly headers: Map<string, string[]>,
     private readonly body: Uint8Array | null = null,
     private readonly truncated: boolean = false,
+    private readonly mimeHeaders?: Map<string, string[]>,
   ) {}
   headerGet(key: string): string[] {
     return this.headers.get(key.toLowerCase()) ?? [];
+  }
+  mimeHeaderGet(key: string): string[] | undefined {
+    return this.mimeHeaders === undefined ? undefined : this.mimeHeaders.get(key.toLowerCase()) ?? [];
   }
   messageSize(): number {
     return this.size;
