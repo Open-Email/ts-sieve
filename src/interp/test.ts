@@ -154,18 +154,28 @@ function chargeRead(d: RuntimeData, values: readonly string[], sized = inLoop(d)
   d.budget.consume(n);
 }
 
-/** RFC 2047 encoded words, as decodeHeaderValue finds them. */
-const ENCODED_WORD = /=\?[^?]+\?[bBqQ]\?[^?]*\?=/g;
+/** The RFC 2047 encoded words decodeHeaderValue may try: it resumes two
+ * characters into a word that does not decode, so each word is counted as if
+ * it did not. */
+function encodedWords(v: string): number {
+  const word = /=\?[^?]+\?[bBqQ]\?[^?]*\?=/g;
+  let n = 0;
+  for (let m = word.exec(v); m !== null; m = word.exec(v)) {
+    n++;
+    word.lastIndex = m.index + 2;
+  }
+  return n;
+}
 
 /** What decodeHeaderValue costs, charged in a loop (see inLoop): a scan of the
  * value (a step per 2 KiB); a step per 64 characters when it holds CR or LF
  * to strip, or "=?" for the decoder to search; and a step per encoded word it
- * decodes, each a callback and a decoder (some 0.6 us, however small). */
+ * tries, each a decoder (some 0.6 us, however small). */
 function decodeCost(v: string): number {
   let n = v.length >> 11;
   const searched = v.includes("=?");
   if (searched || /[\r\n]/.test(v)) n += v.length >> 6;
-  if (searched) n += v.match(ENCODED_WORD)?.length ?? 0;
+  if (searched) n += encodedWords(v);
   return n;
 }
 

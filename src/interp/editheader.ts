@@ -126,9 +126,10 @@ export function matchHeaderValue(d: RuntimeData, matcher: MatcherTest, value: st
 
 /** Whether a prefix of a raw value decodes to a prefix of the whole one
  * decoded: not where an encoded word may straddle the cut, which is anywhere
- * after an "=?", or right after a final "=" (the "?" may follow it); nor
- * where a final "=" and white space may be a "?=" whose white space the whole
- * drops before an "=?" past the cut. */
+ * after an "=?", or right after a final "=" (the "?" may follow it). A final
+ * "=" and white space is refused too, though the decoder now drops white
+ * space only between two decoded words, and a prefix with no "=?" holds none
+ * (#67): conservative, a refusal answers unknown. */
 function decodesAsPrefix(value: string): boolean {
   return !value.includes("=?") && !/=\s*$/.test(value);
 }

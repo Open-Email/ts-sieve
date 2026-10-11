@@ -364,7 +364,7 @@ describe("a test is charged per header name, and per value by its size", () => {
   });
 
   it("RFC 2047: a step per encoded word, and CR or LF decoded at its rate", () => {
-    // A word costs a callback and a decoder, some 0.6 us, whatever its size.
+    // A word costs a decoder, some 0.6 us, whatever its size.
     const words = "=?utf-8?q?a?=".repeat(1500);
     const crlf = "a\r\n".repeat(4000);
     const one = (subject: string) => {
@@ -378,6 +378,10 @@ describe("a test is charged per header name, and per value by its size", () => {
     };
     expect(one(words) - one("s")).toBeGreaterThanOrEqual(10 * 1500);
     expect(one(crlf) - one("s")).toBeGreaterThanOrEqual(10 * (crlf.length >> 6));
+    // The decoder resumes inside a word that does not decode (#67), so a
+    // chain of them, each one's closing "=" opening the next, is a word a link.
+    const chain = `${"=?x?b?!!!?".repeat(1500)}=`;
+    expect(one(chain) - one("s")).toBeGreaterThanOrEqual(10 * 1500);
   });
 
   it("body :content, per type per part", () => {
