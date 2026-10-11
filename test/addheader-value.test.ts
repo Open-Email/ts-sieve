@@ -68,10 +68,11 @@ describe("a value from the message", () => {
 
   it("folding is linear in the value", () => {
     // A run of line breaks before a word backtracked through a lookahead regex:
-    // 64,000 took seconds, and the step budget does not see it.
-    const value = `${"\n".repeat(200_000)}x${"\r\n".repeat(100_000)} y`;
+    // 64,000 took seconds, and the step budget does not see it. The run sits
+    // mid-value, where no leading-break shortcut reaches it.
+    const value = `a${"\n".repeat(50_000)}x${"\r\n".repeat(50_000)} y`;
     const t0 = performance.now();
-    expect(ledger("", value)).toEqual(["x y"]);
+    expect(ledger("", value)).toEqual(["a x y"]);
     expect(performance.now() - t0).toBeLessThan(500);
   });
 });
