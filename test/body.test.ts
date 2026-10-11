@@ -118,11 +118,13 @@ hello raw world
   });
 });
 
-// RFC 2046 §5.1: the multipart splitter. A delimiter is "--" boundary at the
-// start of a line, and it ends the line there (§5.1.1: only "--", transport
-// padding, or the line break may follow), so a boundary that is a prefix of
-// another boundary — or of a content line — does not split it. A part may have
-// no header fields at all, and real mail mixes LF and CRLF.
+// RFC 2046 §5.1: the multipart splitter, which reads parts as core's MIME
+// walker does (see mime-part-list-core.test.ts). A part ends where a line
+// starts with the boundary and then "-", padding or the line break, so a
+// content line that merely starts with the boundary does not end it, but a
+// nested boundary the outer one prefixes ("b-alt" under "b") does, and the
+// list goes on only at a delimiter line. A part may have no header fields at
+// all; the first delimiter line sets LF or CRLF for the multipart.
 describe("body multipart structure (RFC 2046 §5.1)", () => {
   const mp = (boundary: string, body: string) =>
     `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n${body}`;
@@ -144,14 +146,16 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
     expect(hit('body :text :contains "Content-Type"', eml)).toBe(false);
   });
 
-  it("a nested boundary that extends the outer one does not split the nested part", () => {
+  it("a nested boundary that extends the outer one with '-' ends the outer part", () => {
+    // "--b-alt" ends the nested part's body before it starts, so the nested
+    // multipart has only the empty text/plain child core synthesizes.
     const eml = mp(
       "b",
       '--b\r\nContent-Type: multipart/alternative; boundary="b-alt"\r\n\r\n' +
         "--b-alt\r\nContent-Type: text/plain\r\n\r\nplain\r\n--b-alt--\r\n--b--\r\n",
     );
-    expect(hit('body :content "text/plain" :is "plain"', eml)).toBe(true);
-    expect(hit('body :content "text/plain" :is ""', eml)).toBe(false);
+    expect(hit('body :content "text/plain" :is "plain"', eml)).toBe(false);
+    expect(hit('body :content "text/plain" :is ""', eml)).toBe(true);
   });
 
   it("a content line that starts with the delimiter but continues is content", () => {
@@ -166,21 +170,24 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
     expect(hit('body :content "multipart" :is "epilogue\r\n"', eml)).toBe(true);
   });
 
-  it("text after padding on a delimiter line makes it content, not a delimiter", () => {
+  it("text after padding on a delimiter line ends the part, and the list", () => {
     const eml = mp("sep", "--sep\r\nContent-Type: text/plain\r\n\r\nabove\r\n--sep is the separator\r\nbelow\r\n--sep--\r\n");
-    expect(hit('body :content "text/plain" :contains "below"', eml)).toBe(true);
+    expect(hit('body :content "text/plain" :is "above"', eml)).toBe(true);
+    expect(hit('body :content "text/plain" :contains "below"', eml)).toBe(false);
   });
 
-  it("'--' after the boundary closes only where the line ends", () => {
-    // Outer "b", nested "b--x": "--b--x" is the nested delimiter, not the outer close.
+  it("'--' after the boundary ends the part even where the line goes on", () => {
+    // Outer "b", nested "b--x": "--b--x" ends the outer part before the nested
+    // body starts, and is no close delimiter, so the outer list ends there.
     const eml = mp(
       "b",
       '--b\r\nContent-Type: multipart/alternative; boundary="b--x"\r\n\r\n' +
         "--b--x\r\nContent-Type: text/plain\r\n\r\ninner\r\n--b--x--\r\n" +
         "--b\r\nContent-Type: text/plain\r\n\r\nouter\r\n--b--\r\n",
     );
-    expect(hit('body :content "text/plain" :is "inner"', eml)).toBe(true);
-    expect(hit('body :content "text/plain" :is "outer"', eml)).toBe(true);
+    expect(hit('body :content "text/plain" :is "inner"', eml)).toBe(false);
+    expect(hit('body :content "text/plain" :is "outer"', eml)).toBe(false);
+    expect(hit('body :content "text/plain" :is ""', eml)).toBe(true);
   });
 
   it("a delimiter at the very end of a complete body ends the part", () => {
@@ -189,9 +196,12 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
     );
   });
 
-  it("a CR before the delimiter belongs to the delimiter, not the part", () => {
-    const eml = mp("b", "--b\nContent-Type: text/plain\n\nexact\r\n--b--\n");
-    expect(hit('body :content "text/plain" :is "exact"', eml)).toBe(true);
+  it("a CR before the delimiter belongs to the delimiter in CRLF mode, to the part in LF mode", () => {
+    const crlf = mp("b", "--b\r\nContent-Type: text/plain\n\nexact\r\n--b--\n");
+    expect(hit('body :content "text/plain" :is "exact"', crlf)).toBe(true);
+    const lf = mp("b", "--b\nContent-Type: text/plain\n\nexact\r\n--b--\n");
+    expect(hit('body :content "text/plain" :is "exact"', lf)).toBe(false);
+    expect(hit('body :content "text/plain" :matches "exact?"', lf)).toBe(true);
   });
 
   it("a header block ended by a mixed CRLF + LF blank line still separates", () => {
@@ -202,17 +212,17 @@ describe("body multipart structure (RFC 2046 §5.1)", () => {
     expect(hit('body :content "text/html" :contains "foo"', later)).toBe(true);
   });
 
-  it("the closing delimiter of a prefix-boundary nested part is not the outer close", () => {
+  it("a prefix-boundary nested part hides the outer parts after it too", () => {
     const eml = mp(
       "b",
       '--b\r\nContent-Type: multipart/alternative; boundary="b-alt"\r\n\r\n' +
         "--b-alt\r\nContent-Type: text/plain\r\n\r\none\r\n--b-alt--\r\n" +
         "--b\r\nContent-Type: text/plain\r\n\r\ntwo\r\n--b--\r\n",
     );
-    expect(hit('body :content "text/plain" :is "two"', eml)).toBe(true);
-    expect(hit('body :content "text/plain" :is "one"', eml)).toBe(true);
+    expect(hit('body :content "text/plain" :is "two"', eml)).toBe(false);
+    expect(hit('body :content "text/plain" :is "one"', eml)).toBe(false);
     expect(
-      run('require ["body","relational"]; if body :content "text/plain" :count "eq" "2" { keep; }', eml).keep,
+      run('require ["body","relational"]; if body :content "text/plain" :count "eq" "1" { keep; }', eml).keep,
     ).toBe(true);
   });
 });

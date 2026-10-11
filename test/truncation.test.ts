@@ -392,6 +392,7 @@ describe("multipart structure over a cut body", () => {
     `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary="b"\r\n\r\n${body}`;
   const unknown = R({ implicitKeep: true, indeterminate: true });
   const kept = R({ keep: true, implicitKeep: true });
+  const missed = R({ implicitKeep: true });
 
   it("a cut right after '\\r\\n--b' does not end the part there", () => {
     // Full: "--bye now" is content of the part, which is not "abc".
@@ -403,11 +404,14 @@ describe("multipart structure over a cut body", () => {
   });
 
   it("a partial delimiter at the cut is not content", () => {
-    // Full: "\r\n--b--" closes the part, whose content is just "abc".
+    // Full: "\r\n--b--" closes the part, whose content is just "abc". A "-"
+    // after the boundary ends the part in core's walker however the line goes
+    // on, and no delimiter line can follow: the part is decided, the cut is
+    // not in it.
     const cut = mp("--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-");
-    expect(run('require "body"; if body :content "text/plain" :contains "--b-" { keep; }', cut, CUT)).toEqual(unknown);
+    expect(run('require "body"; if body :content "text/plain" :contains "--b-" { keep; }', cut, CUT)).toEqual(missed);
     expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
-      unknown,
+      missed,
     );
     // What the prefix does prove still matches.
     expect(run('require "body"; if body :content "text/plain" :contains "abc" { keep; }', cut, CUT)).toEqual(kept);
@@ -420,9 +424,10 @@ describe("multipart structure over a cut body", () => {
     expect(run('require "body"; if body :content "text/plain" :contains "abc\r\n" { keep; }', cut, CUT)).toEqual(
       unknown,
     );
+    // After "--b--" the line is a close delimiter or ends the list anyway.
     const close = mp("pro\r\n--b\r\nContent-Type: text/plain\r\n\r\nabc\r\n--b-- \t");
     expect(run('require "body"; if body :content "text/plain" :contains "--b--" { keep; }', close, CUT)).toEqual(
-      unknown,
+      missed,
     );
   });
 

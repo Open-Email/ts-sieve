@@ -30,6 +30,11 @@ function chain(depth: number, leaves: number, bigLen: number): string {
 // These runs are heavy, and slower still under CI's coverage instrumentation.
 vi.setConfig({ testTimeout: 60_000 });
 
+/** The largest value a part's header can hold: core's walker refuses a part
+ * header over 1 MiB as Go charges it (a field's length and half again), and
+ * a refused part is no part at all. */
+const BIG = 600_000;
+
 /** The wall-clock bound for the cases that took 6–26 s before their fix:
  * loose enough for an instrumented CI run, far below the regression. Cheaper
  * defences are pinned by the steps they charge (stepsOf), not by time. */
@@ -52,7 +57,7 @@ function within(ms: number, f: () => unknown): void {
 }
 
 describe("loops over a deep tree with a huge header value", () => {
-  const big = chain(98, 1, 1_000_000);
+  const big = chain(98, 1, BIG);
   const req = 'require ["mime","foreverypart","fileinto"];';
 
   it("two nested loops, :anychild :contenttype", () => {
@@ -81,7 +86,7 @@ describe("each kind of work is charged on its own", () => {
     // A 1 MB RFC 2047 parameter value, read in nested loops.
     let body = "";
     for (let i = 1; i <= 98; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
-    body += `--b98\r\nContent-Type: text/plain; x="=?utf-8?Q?${"=41".repeat(330_000)}?="\r\n\r\nx\r\n`;
+    body += `--b98\r\nContent-Type: text/plain; x="=?utf-8?Q?${"=41".repeat(BIG / 3)}?="\r\n\r\nx\r\n`;
     for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
     const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
     within(SLOW, () =>
@@ -92,11 +97,11 @@ describe("each kind of work is charged on its own", () => {
   it("address :mime values are charged by size", () => {
     let body = "";
     for (let i = 1; i <= 98; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
-    body += `--b98\r\nContent-Type: text/plain\r\nX-Big: ${"a".repeat(1_000_000)}@b\r\n\r\nx\r\n`;
+    body += `--b98\r\nContent-Type: text/plain\r\nX-Big: ${"a".repeat(BIG)}@b\r\n\r\nx\r\n`;
     for (let i = 98; i >= 0; i--) body += `--b${i}--\r\n`;
     const eml = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
-    // One read of the 1 MB value: a step per 64 characters.
-    expect(stepsOf('require "mime"; if address :mime :anychild :is "x-big" "z@b" { keep; }', eml)).toBeGreaterThan(1_000_000 >> 6);
+    // One read of the big value: a step per 64 characters.
+    expect(stepsOf('require "mime"; if address :mime :anychild :is "x-big" "z@b" { keep; }', eml)).toBeGreaterThan(BIG >> 6);
   });
 });
 

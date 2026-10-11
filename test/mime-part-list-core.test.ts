@@ -1,0 +1,362 @@
+// A multipart's part list read as core reads it.
+//
+// Core's MIME walker (src/lib/mimewalk/multipart.ts, a port of go-message's
+// fork of Go's mime/multipart) is what the user's mail client is served, and
+// it ENDS a multipart's part list where the engine's splitter read on: at a
+// part whose header block its header reader refuses, at a line after a part
+// that is not a delimiter line ("--b junk", "--b-alt", "--b--junk"), at a
+// delimiter line in the other line-ending mode, and at a line longer than its
+// 4096-byte buffer. A part past that point is one the client does not show,
+// so a rule must not act on it: a hidden .exe could drive a message into Junk,
+// or into a discard. A multipart with no parts gets one text/plain child, and
+// an embedded message's header ends at a line the reader refuses; a rule must
+// see both as the client does. Issue #58.
+
+import { describe, expect, it } from "vitest";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { ALL_EXTENSIONS, R, type Result } from "./harness.js";
+
+const exe = 'Content-Type: application/x-msdownload\r\nContent-Disposition: attachment; filename="evil.exe"\r\n\r\nMZ\r\n';
+const text = "Content-Type: text/plain\r\n\r\nhello\r\n";
+const E9 = String.fromCharCode(0xe9);
+
+const anychild = 'require ["fileinto","mime"]; if header :mime :anychild :contenttype "content-type" "application/x-msdownload" { fileinto "Junk"; }';
+const loop = 'require ["mime","foreverypart"]; foreverypart { if header :mime :param "filename" :matches "content-disposition" "*.exe" { discard; stop; } }';
+const bodyExe = 'require ["fileinto","body"]; if body :content "application/x-msdownload" :contains "MZ" { fileinto "Junk"; }';
+
+/** Run over a message whose body is exactly these bytes (a binary string: a
+ * byte per character), its root Content-Type `rootCt`. */
+function runRaw(script: string, body: string, opts: { rootCt?: string; cut?: boolean } = {}): Result {
+  const s = load(script, { enabledExtensions: ALL_EXTENSIONS });
+  const headers = new Map([["content-type", [opts.rootCt ?? "multipart/mixed; boundary=b"]], ["from", ["a@x"]]]);
+  const bytes = Uint8Array.from(body, (c) => c.charCodeAt(0));
+  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(bytes.length, headers, bytes, opts.cut ?? false));
+  s.execute(d);
+  return { redirect: d.redirectAddr, fileinto: d.mailboxes, keep: d.keep, implicitKeep: d.implicitKeep, flags: d.flags, indeterminate: d.indeterminate };
+}
+
+/** Whether each kind of rule sees the exe part: :mime :anychild, a
+ * foreverypart filename rule, and the body test. Each answer is definite. */
+function seesExe(body: string, rootCt?: string): { mime: boolean; loop: boolean; body: boolean } {
+  const a = runRaw(anychild, body, { rootCt });
+  const l = runRaw(loop, body, { rootCt });
+  const b = runRaw(bodyExe, body, { rootCt });
+  for (const r of [a, l, b]) expect(r.indeterminate).toBe(false);
+  return { mime: a.fileinto.includes("Junk"), loop: !l.keep && !l.implicitKeep, body: b.fileinto.includes("Junk") };
+}
+const SEEN = { mime: true, loop: true, body: true };
+const UNSEEN = { mime: false, loop: false, body: false };
+
+/** What `if <test> { fileinto "Y"; }` does: YES, NO or UNKNOWN below. */
+function bodyTest(test: string, body: string, opts: { rootCt?: string; cut?: boolean } = {}): Result {
+  return runRaw(`require ["body","fileinto","relational","comparator-i;ascii-numeric"]; if ${test} { fileinto "Y"; }`, body, opts);
+}
+const YES = R({ fileinto: ["Y"] });
+const NO = R({ implicitKeep: true });
+const UNKNOWN = R({ implicitKeep: true, indeterminate: true });
+
+describe("a part whose header block core's reader refuses ends the list", () => {
+  /** The text part, then a part whose header block starts with `bad` and goes
+   * on as the exe part's, then a clean exe part. */
+  const afterBad = (bad: string) => `--b\r\n${text}--b\r\n${bad}${exe}--b\r\n${exe}--b--\r\n`;
+  const shapes: [string, string][] = [
+    // The three from the review of core #243.
+    ["a junk line (no colon)", "JUNKLINE\r\n"],
+    ["a leading-folded first line", " x\r\n"],
+    ["an 8-bit byte in a field name", `X-${E9}: y\r\n`],
+    // And the rest of the reader's refusals.
+    ["a junk line after a good field", "X-Ok: 1\r\nJUNKLINE\r\n"],
+    ["a space inside a field name", "X Bad: y\r\n"],
+    ["a control byte in a field name", `X-${String.fromCharCode(1)}: y\r\n`],
+    ["a field over the 1 MiB part-header budget", `X-Big: ${"a".repeat(700_000)}\r\n`],
+  ];
+  for (const [name, bad] of shapes) {
+    it(name, () => {
+      expect(seesExe(afterBad(bad))).toEqual(UNSEEN);
+      // The part before it is still seen.
+      expect(bodyTest('body :content "text/plain" :is "hello"', afterBad(bad))).toEqual(YES);
+    });
+  }
+
+  it("the control: a clean part header", () => {
+    expect(seesExe(afterBad("X-Ok: 1\r\n"))).toEqual(SEEN);
+  });
+
+  it("a field just inside the budget is kept", () => {
+    expect(seesExe(afterBad(`X-Big: ${"a".repeat(690_000)}\r\n`))).toEqual(SEEN);
+  });
+
+  it("a header block that runs into the close delimiter, with no blank line", () => {
+    const body = `--b\r\n${text}--b\r\nContent-Type: application/x-msdownload\r\n--b--\r\n`;
+    expect(runRaw(anychild, body)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("a header block that runs to the end of the body is a part: the reader stops at the end without an error", () => {
+    const body = `--b\r\n${text}--b\r\nContent-Type: application/x-msdownload`;
+    expect(runRaw(anychild, body)).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, `${body}\r\n`)).toEqual(R({ fileinto: ["Junk"] }));
+  });
+
+  it("in a nested multipart, only if the part holding it ended at a boundary", () => {
+    // A part that runs out with no boundary reads to an unexpected end of
+    // input (Go's io.ErrUnexpectedEOF), and a header block that meets that
+    // end is refused.
+    const nested = `--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n--c\r\n${text}--c\r\nContent-Type: application/x-msdownload`;
+    expect(runRaw(anychild, `${nested}\r\n--b--\r\n`)).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, `${nested}\r\n`)).toEqual(R({ implicitKeep: true }));
+    expect(runRaw(anychild, nested)).toEqual(R({ implicitKeep: true }));
+    expect(bodyTest('body :content "text/plain" :is "hello"', nested)).toEqual(YES);
+  });
+});
+
+describe("a line after a part that is not a delimiter line ends the list", () => {
+  /** The text part, then `line` where its delimiter would be, then two exe parts. */
+  const after = (line: string) => `--b\r\n${text}${line}\r\n${exe}--b\r\n${exe}--b--\r\n`;
+  for (const [name, line] of [
+    ['"--b junk"', "--b junk"],
+    ['"--b" and a tab, then text', "--b\tjunk"],
+    ['"--b-x": a "-" after the boundary ends the part', "--b-x"],
+    ['text after the close: "--b--junk"', "--b--junk"],
+    ['padding and text after the close: "--b-- x"', "--b-- x"],
+  ] as const) {
+    it(name, () => {
+      expect(seesExe(after(line))).toEqual(UNSEEN);
+      // The text part ends at that line.
+      expect(bodyTest('body :content "text/plain" :is "hello"', after(line))).toEqual(YES);
+    });
+  }
+
+  it("the control: a delimiter with transport padding continues it", () => {
+    expect(seesExe(after("--b \t"))).toEqual(SEEN);
+  });
+
+  it("a close delimiter ends it, whatever follows", () => {
+    expect(seesExe(`--b\r\n${text}--b--\r\n--b\r\n${exe}--b--\r\n`)).toEqual(UNSEEN);
+  });
+
+  it("a line that only starts with the boundary is the part's content", () => {
+    const body = `--b\r\n${text}--bx\r\nmore\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+    expect(bodyTest('body :content "text/plain" :contains "more"', body)).toEqual(YES);
+  });
+
+  it("a part with an empty body: the delimiter right after its header block", () => {
+    const body = `--b\r\nContent-Type: text/plain\r\n\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+    const junk = `--b\r\nContent-Type: text/plain\r\n\r\n--b junk\r\n${exe}--b--\r\n`;
+    expect(seesExe(junk)).toEqual(UNSEEN);
+  });
+});
+
+describe("a nested boundary the outer one prefixes", () => {
+  // "--b-alt" ends a part of the outer "b" multipart (a "-" follows the
+  // boundary), so the nested multipart's body is empty, its one child is the
+  // synthesized empty text/plain, and the outer list ends there.
+  const alt =
+    '--b\r\nContent-Type: multipart/alternative; boundary="b-alt"\r\n\r\n' +
+    `--b-alt\r\nContent-Type: text/plain\r\n\r\nplain\r\n--b-alt--\r\n--b\r\n${exe}--b--\r\n`;
+
+  it("the parts after it are not seen", () => {
+    expect(seesExe(alt)).toEqual(UNSEEN);
+  });
+
+  it("the nested text is not seen, the synthesized empty text/plain is", () => {
+    expect(bodyTest('body :content "text/plain" :contains "plain"', alt)).toEqual(NO);
+    expect(bodyTest('body :content "text/plain" :is ""', alt)).toEqual(YES);
+    expect(bodyTest('body :content "text/plain" :count "eq" "1"', alt)).toEqual(YES);
+  });
+
+  it("an earlier part is still seen", () => {
+    const body = `--b\r\n${exe}${alt}`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+});
+
+describe("line endings: the first delimiter line sets them for the whole multipart", () => {
+  const exeLF = exe.replaceAll("\r\n", "\n");
+
+  it("bare LF throughout is read", () => {
+    const body = `--b\nContent-Type: text/plain\n\nhello\n--b\n${exeLF}--b--\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+
+  it("transport padding before the LF of the first delimiter line still sets LF", () => {
+    const body = `--b \t\nContent-Type: text/plain\n\nhello\n--b\n${exeLF}--b--\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+
+  it("LF mode: a later CRLF delimiter line ends the list", () => {
+    const body = `--b\nContent-Type: text/plain\n\nhello\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+  });
+
+  it("LF mode: the CR before a delimiter's LF stays in the part", () => {
+    const body = "--b\nContent-Type: text/plain\n\nexact\r\n--b--\n";
+    expect(bodyTest('body :content "text/plain" :is "exact"', body)).toEqual(NO);
+    expect(bodyTest('body :content "text/plain" :matches "exact?"', body)).toEqual(YES);
+  });
+
+  it("CRLF mode: a bare-LF line before the boundary is the part's content", () => {
+    const body = `--b\r\nContent-Type: text/plain\r\n\r\nhello\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+    expect(bodyTest('body :content "text/plain" :contains "MZ"', body)).toEqual(YES);
+  });
+
+  it("CRLF mode: a later LF-terminated delimiter line ends the list", () => {
+    const body = `--b\r\n${text}--b\n${exe}--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+  });
+
+  it("CRLF mode: a part's header block may still end its lines with LF", () => {
+    const body = `--b\r\nContent-Type: text/plain\n\nhello\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+});
+
+describe("a multipart with no parts has one synthesized text/plain child", () => {
+  const twoParts = `--b\r\n${text}--b\r\n${exe}--b--\r\n`;
+  const iterations =
+    'require ["foreverypart","variables","fileinto"]; set "n" ""; foreverypart { set "n" "${n}x"; } if string :is "${n}" "xx" { fileinto "Two"; }';
+
+  for (const rootCt of ["multipart/mixed", 'multipart/mixed; boundary=""'] as const) {
+    it(`no boundary (${rootCt}): the child is the whole body`, () => {
+      expect(seesExe(twoParts, rootCt)).toEqual(UNSEEN);
+      expect(bodyTest('body :content "text/plain" :contains "MZ"', twoParts, { rootCt })).toEqual(YES);
+      expect(bodyTest('body :text :contains "hello"', twoParts, { rootCt })).toEqual(YES);
+      expect(runRaw(iterations, twoParts, { rootCt }).fileinto).toEqual(["Two"]);
+    });
+  }
+
+  it("extracttext reads the synthesized child", () => {
+    const script =
+      'require ["foreverypart","mime","extracttext","variables","fileinto"]; foreverypart { extracttext "t"; if string :contains "${t}" "MZ" { fileinto "Seen"; } }';
+    expect(runRaw(script, twoParts, { rootCt: "multipart/mixed" }).fileinto).toEqual(["Seen"]);
+  });
+
+  it("no delimiter line at all: the walker read the whole body, the child is empty", () => {
+    const rootCt = "multipart/mixed; boundary=zz";
+    expect(bodyTest('body :content "text/plain" :is ""', twoParts, { rootCt })).toEqual(YES);
+    expect(bodyTest('body :text :contains "hello"', twoParts, { rootCt })).toEqual(NO);
+    expect(runRaw(iterations, twoParts, { rootCt }).fileinto).toEqual(["Two"]);
+  });
+
+  it("a close delimiter before any part, at the end of the body: empty", () => {
+    expect(bodyTest('body :content "text/plain" :is ""', "preamble\r\n--b--\r\n")).toEqual(YES);
+  });
+
+  it("a nested multipart with no parts has the child too", () => {
+    const body = `--b\r\nContent-Type: multipart/alternative; boundary=c\r\n\r\nnothing here\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+    expect(bodyTest('body :content "text/plain" :is ""', body)).toEqual(YES);
+  });
+
+  it("a preamble line longer than the walker's 4096-byte buffer: the child is what the walker had not buffered", () => {
+    // The walker's buffered reader gives up on the line once 4096 bytes hold
+    // no line break, and the child is the body after those 4096 bytes.
+    const body = `${"p".repeat(5000)}\r\n--b\r\n${text}--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+    expect(bodyTest(`body :content "text/plain" :matches "${"p".repeat(904)}*"`, body)).toEqual(YES);
+    expect(bodyTest(`body :content "text/plain" :matches "${"p".repeat(905)}*"`, body)).toEqual(NO);
+    expect(bodyTest('body :content "text/plain" :contains "MZ"', body)).toEqual(YES);
+  });
+
+  it("a preamble line that just fits the buffer is skipped", () => {
+    const body = `${"p".repeat(4094)}\r\n--b\r\n${text}--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+
+  it("when what core's child holds depends on its reader's buffering, the child's text is unknown", () => {
+    // The first part's header is refused. Core's child is whatever its reader
+    // had not yet buffered, which depends on the size of the message's own
+    // header too: a miss over it is not proven, but the part is there.
+    const body = `--b\r\nJUNKLINE\r\n\r\nx\r\n--b\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+    expect(bodyTest('body :content "text/plain" :is ""', body)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "text/plain" :count "eq" "1"', body)).toEqual(YES);
+    // A close delimiter with an epilogue after it, the same.
+    expect(bodyTest('body :content "text/plain" :is ""', "preamble\r\n--b--\r\nepilogue\r\n")).toEqual(UNKNOWN);
+  });
+});
+
+describe("an embedded message's header block is read as core reads it", () => {
+  it("a CR-only line ends its fields; its body starts after that line", () => {
+    // core #258: the line is malformed, which core ignores in an embedded
+    // message, so the multipart's preamble and parts are not header lines.
+    const body =
+      "--b\r\nContent-Type: message/rfc822\r\n\r\n" +
+      `From: x@y\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\r\npre\r\n--c\r\n${exe}--c--\r\n--b--\r\n`;
+    expect(seesExe(body)).toEqual(SEEN);
+  });
+
+  it("a leading-folded first line: no fields, its body starts after that line", () => {
+    const body = `--b\r\nContent-Type: message/rfc822\r\n\r\n From: x@y\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+    expect(bodyTest('body :content "text/plain" :contains "x-msdownload"', body)).toEqual(YES);
+  });
+
+  it("an 8-bit byte in a field name: the fields before it, the body after it", () => {
+    const body = `--b\r\nContent-Type: message/rfc822\r\n\r\nFrom: x@y\r\nX-${E9}: z\r\n${exe}--b--\r\n`;
+    expect(seesExe(body)).toEqual(UNSEEN);
+  });
+});
+
+describe("the part cap", () => {
+  // The walkers stop at 1024 parts, and so does the splitter: a message of
+  // many tiny parts costs no more than its first 1025, per body test.
+  const many = `--b\r\n${text}${"--b\r\n\r\n".repeat(1100)}--b--\r\nzz\r\n`;
+
+  it("past it the list, and the epilogue after it, are unseen", () => {
+    expect(bodyTest('body :content "multipart" :contains "zz"', many)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "text/plain" :contains "hello"', many)).toEqual(YES);
+  });
+});
+
+describe("over a cut body, what the cut decides", () => {
+  const cut = { cut: true };
+
+  it("a refused part header before the cut ends the list: a miss is definite", () => {
+    const body = `--b\r\n${text}--b\r\nJUNKLINE\r\n${exe}--b\r\nContent-Type: applica`;
+    expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it('"--b-" after a part ends the list, though its line runs into the cut', () => {
+    expect(runRaw(anychild, `--b\r\n${text}--b-`, cut)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it('"--b" at the cut may still be a delimiter line', () => {
+    expect(runRaw(anychild, `--b\r\n${text}--b`, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    expect(runRaw(anychild, `--b\r\n${text}--b \t`, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+    expect(runRaw(anychild, `--b\r\n${text}--b \r`, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it("in LF mode, a CR after the boundary at the cut cannot make a delimiter line", () => {
+    const body = "--b\nContent-Type: text/plain\n\nhello\n--b\r";
+    expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("a part header block that reaches the cut is unknown, though complete it would be a part", () => {
+    const body = `--b\r\n${text}--b\r\nContent-Type: application/x-msdownload`;
+    expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true, indeterminate: true }));
+  });
+
+  it("a preamble that reaches the cut: no part yet, no synthesized child", () => {
+    expect(bodyTest('body :content "text/plain" :is ""', "preamble text\r\n", cut)).toEqual(UNKNOWN);
+  });
+
+  it("no boundary: the synthesized child is a prefix of the body", () => {
+    const opts = { rootCt: "multipart/mixed", cut: true };
+    expect(bodyTest('body :content "text/plain" :contains "hello"', `--b\r\n${text}`, opts)).toEqual(YES);
+    expect(bodyTest('body :content "text/plain" :contains "absent"', `--b\r\n${text}`, opts)).toEqual(UNKNOWN);
+  });
+
+  it("a long preamble line before the cut ends the list there: a miss is definite", () => {
+    const body = `${"p".repeat(5000)}\r\n--b\r\n${exe}--b\r\nContent-Type: te`;
+    expect(runRaw(anychild, body, cut)).toEqual(R({ implicitKeep: true }));
+    expect(bodyTest('body :content "text/plain" :contains "MZ"', body, cut)).toEqual(YES);
+  });
+
+  it("a child whose text depends on core's buffering stays unknown", () => {
+    const body = `--b\r\nJUNKLINE\r\n\r\nx`;
+    expect(bodyTest('body :content "text/plain" :is ""', body, cut)).toEqual(UNKNOWN);
+  });
+});
