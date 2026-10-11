@@ -8,7 +8,7 @@
 
 import { htmlToText } from "./htmltext.js";
 import { MatcherTest } from "./matcher.js";
-import type { RuntimeData, Test, Tri } from "./runtime.js";
+import type { Message, RuntimeData, Test, Tri } from "./runtime.js";
 
 // -------- byte/binary-string helpers --------
 
@@ -27,33 +27,41 @@ function binaryToBytes(s: string): Uint8Array {
 
 // -------- transfer-encoding decode --------
 
-function qpDecode(bytes: Uint8Array): Uint8Array {
+/** `cut`: the bytes are a prefix of the encoded part, so an escape (or soft
+ * break) the cut split is dropped: its meaning lies past the cut, and kept as
+ * text it would be content the part does not have. */
+function qpDecode(bytes: Uint8Array, cut: boolean): Uint8Array {
   const out: number[] = [];
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i]!;
     if (b === 0x3d /* = */) {
+      if (cut && i + 2 >= bytes.length) break;
       const h1 = bytes[i + 1];
       const h2 = bytes[i + 2];
       if (h1 === 0x0d && h2 === 0x0a) {
         i += 2; // soft break =\r\n
       } else if (h1 === 0x0a) {
         i += 1; // soft break =\n
-      } else if (h1 !== undefined && h2 !== undefined) {
-        const v = Number.parseInt(String.fromCharCode(h1, h2), 16);
-        if (!Number.isNaN(v)) {
-          out.push(v);
-          i += 2;
-        } else {
-          out.push(b);
-        }
+      } else if (h1 !== undefined && h2 !== undefined && hexValue(h1) >= 0 && hexValue(h2) >= 0) {
+        out.push(hexValue(h1) * 16 + hexValue(h2));
+        i += 2;
       } else {
-        out.push(b);
+        out.push(b); // not an escape ("=4x", "= 4"): text, as in Pigeonhole
       }
     } else {
       out.push(b);
     }
   }
   return Uint8Array.from(out);
+}
+
+/** A hex digit's value, or -1. Number.parseInt took "4x" as 4, " 4" as 4 and
+ * "-1" as -1, decoding text into stray bytes. */
+function hexValue(c: number): number {
+  if (c >= 0x30 && c <= 0x39) return c - 0x30;
+  if (c >= 0x41 && c <= 0x46) return c - 0x37;
+  if (c >= 0x61 && c <= 0x66) return c - 0x57;
+  return -1;
 }
 
 const B64_PAD = -2;
@@ -111,21 +119,25 @@ function base64Decode(bytes: Uint8Array): Uint8Array {
   return out.subarray(0, o);
 }
 
-/** Returns transfer-decoded bytes, or null on an unknown encoding (skip part). */
-function cteDecode(bytes: Uint8Array, cte: string): Uint8Array | null {
+/** Returns transfer-decoded bytes, or null on an unknown encoding (skip part).
+ * `cut`: the bytes are a prefix of the part, and decode to a prefix of it. */
+function cteDecode(bytes: Uint8Array, cte: string, cut: boolean): Uint8Array | null {
   const e = cte.toLowerCase().trim();
   if (e === "" || e === "7bit" || e === "8bit" || e === "binary") return bytes;
   if (e === "base64") return base64Decode(bytes);
-  if (e === "quoted-printable") return qpDecode(bytes);
+  if (e === "quoted-printable") return qpDecode(bytes, cut);
   return null;
 }
 
 // -------- charset decode --------
 
-function charsetDecode(bytes: Uint8Array, charset: string): string {
+/** `cut`: the bytes are a prefix of the part, so a character the cut split is
+ * dropped (a streaming decode holds it back) rather than decoded as U+FFFD,
+ * which would be content the part does not have. */
+function charsetDecode(bytes: Uint8Array, charset: string, cut: boolean): string {
   const cs = charset.toLowerCase().trim();
   if (cs === "" || cs === "utf-8" || cs === "utf8" || cs === "us-ascii" || cs === "ascii") {
-    return new TextDecoder("utf-8").decode(bytes);
+    return new TextDecoder("utf-8").decode(bytes, { stream: cut });
   }
   if (cs === "iso-8859-1" || cs === "latin1" || cs === "iso8859-1") {
     // True Latin-1 (byte → code point). TextDecoder maps this label to cp1252.
@@ -134,7 +146,7 @@ function charsetDecode(bytes: Uint8Array, charset: string): string {
     return s;
   }
   try {
-    return new TextDecoder(cs, { fatal: false }).decode(bytes);
+    return new TextDecoder(cs, { fatal: false }).decode(bytes, { stream: cut });
   } catch {
     return bytesToBinary(bytes); // unknown charset ⇒ keep raw (tolerate unknown charsets)
   }
@@ -213,9 +225,37 @@ function splitHeaderBody(b: string): { header: string; headerRaw: string; body: 
  * Depth is Dovecot's message-parser limit (100, added for CVE-2020-12100);
  * nesting is cheap in steps. Parts stay at 1024, not Dovecot's 10000: every
  * body test charges every part, so 10000 tiny parts under a handful of body
- * rules exhaust a host's step budget, and that throws.
+ * rules exhaust a host's step budget, and its later tests go unknown.
  */
 const MAX_MIME_DEPTH = 100;
+
+/**
+ * Each leaf's text, per Message object: decoded, and reduced from HTML for
+ * :text ("t") or not ("c"), keyed by mode and the leaf's place in the MIME
+ * tree. Every body test walks the same tree, and decoding and HTML reduction
+ * are linear in the part, so a script with many body tests redid them once per
+ * test. null: a transfer encoding not decoded, so the part is skipped. The
+ * cache lives as long as the Message object, so it also assumes the object's
+ * top-level Content-Type and transfer encoding and bodyTruncated() do not
+ * change: a host that reuses one object for a changed message gets stale text.
+ */
+const leafTexts = new WeakMap<Message, Map<string, string | null>>();
+
+function leafCache(msg: Message): Map<string, string | null> {
+  let m = leafTexts.get(msg);
+  if (m === undefined) leafTexts.set(msg, (m = new Map()));
+  return m;
+}
+
+/** The raw body as a binary string, per message: converting it costs about as
+ * much as the rest of a body test, and every body test started with it. */
+const rawBinaries = new WeakMap<Message, string>();
+
+function rawBinary(msg: Message, raw: Uint8Array): string {
+  let s = rawBinaries.get(msg);
+  if (s === undefined) rawBinaries.set(msg, (s = bytesToBinary(raw)));
+  return s;
+}
 const MAX_MIME_PARTS = 1024;
 
 export class TestBody implements Test {
@@ -249,14 +289,14 @@ export class TestBody implements Test {
       if (this.raw) {
         // :raw is ONE part by definition, so its count is exact even when cut.
         if (this.matcher.isCount()) return this.matcher.countMatches(d, 1);
-        return this.matcher.tryMatch(d, bytesToBinary(raw), this.matchOpts(d), bodyCut);
+        return this.matcher.tryMatch(d, rawBinary(d.msg, raw), this.matchOpts(d), bodyCut);
       }
 
       const topCt = d.msg.headerGet("content-type")[0] ?? "text/plain; charset=us-ascii";
       const topCte = d.msg.headerGet("content-transfer-encoding")[0] ?? "";
       const counter = { count: 0, parts: 0 };
       const flags = { unknown: false };
-      const matched = this.walk(d, topCt, topCte, bytesToBinary(raw), counter, bodyCut, flags, 0);
+      const matched = this.walk(d, topCt, topCte, rawBinary(d.msg, raw), counter, bodyCut, flags, 0, "");
       if (matched) return true;
       if (this.matcher.isCount()) {
         const res = this.matcher.countMatches(d, counter.count);
@@ -326,6 +366,7 @@ export class TestBody implements Test {
     cut: boolean,
     flags: { unknown: boolean },
     depth: number,
+    path: string,
   ): boolean {
     d.budget.consume(1);
     // Structure past the caps is not examined, so a miss there is not proven:
@@ -402,6 +443,7 @@ export class TestBody implements Test {
             partCut,
             flags,
             depth + 1,
+            `${path}.${i}`,
           )
         ) {
           return true;
@@ -432,25 +474,43 @@ export class TestBody implements Test {
         cut,
         flags,
         depth + 1,
+        `${path}.m`,
       );
     }
 
     // leaf
     if (!process) return false;
-    // Decoding never throws (see base64Decode): a cut leaf decodes to a prefix
-    // of its content, which matchOrCount then reads under prefix semantics.
-    const decoded = cteDecode(binaryToBytes(b), cteHeader);
-    if (decoded === null) return false; // unknown transfer-encoding → skip
+    const cache = leafCache(d.msg);
+    const key = `${this.text ? "t" : "c"}${path}`;
+    let text = cache.get(key);
+    if (text === undefined) {
+      // Charged by size once; later body tests read the cached text.
+      d.budget.consume(b.length >> 10);
+      text = this.leafText(b, cteHeader, mediaType, params, cut);
+      cache.set(key, text);
+    }
+    if (text === null) return false; // unknown transfer-encoding → skip
+    return this.matchOrCount(d, text, counter, cut, flags);
+  }
+
+  /** The text a leaf's body `b` reads as, or null for a transfer encoding not
+   * decoded. Decoding never throws (see base64Decode). A cut leaf decodes to a
+   * prefix of its content, which matchOrCount then reads under prefix
+   * semantics, so every step drops what the cut left open instead of guessing
+   * it. */
+  private leafText(b: string, cteHeader: string, mediaType: string, params: Record<string, string>, cut: boolean): string | null {
+    const decoded = cteDecode(binaryToBytes(b), cteHeader, cut);
+    if (decoded === null) return null;
     let text: string;
     if (mediaType.startsWith("text/")) {
-      text = charsetDecode(decoded, params["charset"] ?? "us-ascii");
+      text = charsetDecode(decoded, params["charset"] ?? "us-ascii", cut);
     } else {
       text = bytesToBinary(decoded); // non-text leaf: raw transfer-decoded octets
     }
     if (this.text && (mediaType === "text/html" || mediaType === "application/xhtml+xml")) {
-      text = htmlToText(text);
+      text = htmlToText(text, cut);
     }
-    return this.matchOrCount(d, text, counter, cut, flags);
+    return text;
   }
 }
 
