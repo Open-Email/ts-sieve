@@ -120,8 +120,8 @@ export class Script {
     }
     // A testsuite script checks each `test` block instead, so a conflict is
     // reported against the block it happens in.
-    // (A reject outside every test block is then checked by none: the DSL
-    // reads no implicit keep, so only the next block's check sees it.)
+    // (A reject outside every test block is checked by no block of its own;
+    // the next block's check sees it. The DSL reads no implicit keep.)
     if (!this.requiresExtension("vnd.dovecot.testsuite")) checkRejectConflicts(d);
   }
 }

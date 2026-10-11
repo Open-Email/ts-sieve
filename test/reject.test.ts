@@ -137,6 +137,14 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
     }
   });
 
+  it("names the first of keep, fileinto, redirect, vacation", () => {
+    const all = 'fileinto "X"; redirect "a@b.example"; vacation "v"; reject "a";';
+    const req = 'require ["reject","fileinto","vacation"];';
+    expect(exec(`${req} keep; ${all}`).rejectConflict).toBe("keep");
+    expect(exec(`${req} ${all}`).rejectConflict).toBe("fileinto");
+    expect(exec(`${req} redirect "a@b.example"; vacation "v"; reject "a";`).rejectConflict).toBe("redirect");
+  });
+
   it("flags stand beside a conflict too", () => {
     const d = exec('require ["reject","fileinto","imap4flags"]; addflag "\\\\Seen"; fileinto "X"; reject "a";');
     expect([d.flags, d.mailboxes, d.rejectConflict]).toEqual([["\\seen"], ["X"], "fileinto"]);
