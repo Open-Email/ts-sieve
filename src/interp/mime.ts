@@ -49,8 +49,8 @@ export interface MimePart {
   /** extracttext's reading of it, for one decode limit. */
   text: { limit: number; text: string; complete: boolean } | null;
   /** The Content-Type and Content-Transfer-Encoding its content is read by:
-   * the fields the body test reads (the message's own first ones at the top,
-   * the last of each in a part), not header edits. */
+   * the fields the body test reads (the first of each, at the top as in a
+   * part), not header edits. */
   contentType: string;
   cte: string;
 }

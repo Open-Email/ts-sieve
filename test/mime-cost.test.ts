@@ -31,8 +31,9 @@ function chain(depth: number, leaves: number, bigLen: number): string {
 vi.setConfig({ testTimeout: 60_000 });
 
 /** The largest value a part's header can hold: core's walker refuses a part
- * header over 1 MiB as Go charges it (a field's length and half again), and
- * a refused part is no part at all. */
+ * header over 1 MiB as its port of go-message charges it (a field's length
+ * and half again, never less than Go charges), and a refused part is no part
+ * at all. */
 const BIG = 600_000;
 
 /** The wall-clock bound for the cases that took 6–26 s before their fix:

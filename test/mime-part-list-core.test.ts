@@ -313,6 +313,123 @@ describe("an embedded message's header block is read as core reads it", () => {
   });
 });
 
+/** `prefix`, then "a" up to `len` bytes, with each [offset, text] mark
+ * written at that offset. */
+function filled(prefix: string, len: number, marks: [number, string][] = []): string {
+  const chars = (prefix + "a".repeat(len - prefix.length)).split("");
+  for (const [at, t] of marks) for (let i = 0; i < t.length; i++) chars[at + i] = t[i]!;
+  return chars.join("");
+}
+
+describe("a first part whose header runs over the budget: where core's reader stopped", () => {
+  // Core's reader charges a long line by the 4096-byte pieces Go's ReadLine
+  // returns, and stops at the piece that runs the budget out: with its buffer
+  // full, it has read exactly to that piece's end, and the synthesized child
+  // is the rest of the body.
+  // "X-A: a…" from offset 5: 257 pieces of 4096 run out 1 MiB, so the child
+  // starts at 5 + 257 × 4096.
+  const at = 5 + 257 * 4096;
+  const marks: [number, string][] = [
+    [at - 100, "EARLY"],
+    [at, "START"],
+    [at + 50_000, "LATE"],
+  ];
+  const child = (body: string, test: string) => bodyTest(`body :content "text/plain" ${test}`, body);
+  const exact = (body: string) => {
+    expect(child(body, ':matches "START*"')).toEqual(YES);
+    expect(child(body, ':contains "LATE"')).toEqual(YES);
+    expect(child(body, ':contains "EARLY"')).toEqual(NO);
+  };
+
+  it("a field line that runs out the budget", () => {
+    const body = filled("--b\r\nX-A: ", 1_250_000, marks);
+    exact(body);
+    exact(`${body}\r\n`);
+    expect(runRaw(anychild, body)).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("a folded first line that runs out the budget", () => {
+    exact(filled("--b\r\n X: ", 1_250_000, marks));
+  });
+
+  it("a continuation line that runs out the budget", () => {
+    // The first line costs 8, so 256 pieces of the second run it out.
+    const at2 = 13 + 256 * 4096;
+    const body = filled("--b\r\nX-A: 1\r\n X: ", 1_250_000, [[at2 - 100, "EARLY"], [at2, "START"], [at2 + 50_000, "LATE"]]);
+    exact(body);
+  });
+
+  it("a CR at a piece's end is read again with the next piece", () => {
+    // The first piece ends in CR: Go puts it back, the piece is 4095 bytes,
+    // and every later piece starts a byte earlier.
+    const body = filled("--b\r\nX-A: ", 1_250_000, [[5 + 4095, "\r"], [at - 1, "START"]]);
+    expect(child(body, ':matches "START*"')).toEqual(YES);
+  });
+
+  it("short lines: where the reader stopped hangs on its buffering, so the child's text is unknown", () => {
+    let body = "--b\r\nX-Pad: 1\r\n";
+    while (body.length < 1_150_000) body += ` ${"a".repeat(70)}\r\n`;
+    body += " Buy cheap pills now\r\n";
+    expect(bodyTest('body :text :contains "pills"', body)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "text/plain" :is ""', body)).toEqual(UNKNOWN);
+    expect(bodyTest('body :content "text/plain" :count "eq" "1"', body)).toEqual(YES);
+  });
+});
+
+describe("a field's first line that ends on a 4096-byte piece at the end of the body", () => {
+  // Go's ReadLine then reads one more, empty, piece and returns io.EOF with
+  // it, which go-message's reader takes as an error on a field's first line.
+  const head = `--b\r\n${text}--b\r\nContent-Type: application/x-msdownload\r\n`;
+  const pad = (n: number) => `X-Pad: ${"a".repeat(n - 7)}`;
+
+  it("refuses the part", () => {
+    expect(runRaw(anychild, head + pad(4096))).toEqual(R({ implicitKeep: true }));
+    expect(runRaw(anychild, head + pad(8192))).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("but not a line of another length, one ending in a line break, or a continuation line", () => {
+    expect(runRaw(anychild, head + pad(4095))).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, head + pad(4097))).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, `${head + pad(4096)}\r\n`)).toEqual(R({ fileinto: ["Junk"] }));
+    expect(runRaw(anychild, `${head}X-A: 1\r\n ${"a".repeat(4095)}`)).toEqual(R({ fileinto: ["Junk"] }));
+    // A CR at the end of the first piece is read again: the line ends inside
+    // a second piece.
+    expect(runRaw(anychild, `${head + pad(4095)}\r`)).toEqual(R({ fileinto: ["Junk"] }));
+  });
+});
+
+describe("a boundary whose line break and dashes fill the walker's 4096-byte buffer", () => {
+  // Then the walker cannot see the byte after "\r\n--" boundary, and takes
+  // any byte there as ending the part.
+  const shape = (len: number, nl: string) => {
+    const q = "q".repeat(len);
+    const body =
+      `--${q}${nl}Content-Type: text/plain${nl}${nl}hello${nl}--${q}X more${nl}` +
+      `--${q}${nl}Content-Type: application/x-msdownload${nl}${nl}MZ${nl}--${q}--${nl}`;
+    return { body, rootCt: `multipart/mixed; boundary="${q}"`, cutAt: body.indexOf(`${nl}--${q}X`) + nl.length + 2 + len };
+  };
+
+  for (const [len, nl] of [
+    [4092, "\r\n"],
+    [4093, "\n"],
+  ] as const) {
+    it(`${len} bytes with ${nl === "\n" ? "LF" : "CRLF"}: the part ends there, and the list with it`, () => {
+      const { body, rootCt, cutAt } = shape(len, nl);
+      expect(runRaw(anychild, body, { rootCt })).toEqual(R({ implicitKeep: true }));
+      expect(bodyTest('body :content "text/plain" :is "hello"', body, { rootCt })).toEqual(YES);
+      // Over a cut right after the boundary, that is decided already.
+      expect(bodyTest('body :content "text/plain" :is "hello"', body.slice(0, cutAt), { rootCt, cut: true })).toEqual(YES);
+    });
+  }
+
+  it("one byte shorter, the byte after it is read", () => {
+    const { body, rootCt, cutAt } = shape(4091, "\r\n");
+    expect(runRaw(anychild, body, { rootCt })).toEqual(R({ fileinto: ["Junk"] }));
+    expect(bodyTest('body :content "text/plain" :contains "X more"', body, { rootCt })).toEqual(YES);
+    expect(bodyTest('body :content "text/plain" :is "hello"', body.slice(0, cutAt), { rootCt, cut: true })).toEqual(UNKNOWN);
+  });
+});
+
 describe("the part cap", () => {
   // The walkers stop at 1024 parts, and so does the splitter: a message of
   // many tiny parts costs no more than its first 1025, per body test.

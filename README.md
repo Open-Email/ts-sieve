@@ -220,20 +220,27 @@ on them and this one follows the RFC strictly:
   go-message) does, so a part the user's mail client shows is one a rule
   sees, and a part it does not show is not: the first delimiter line sets LF
   or CRLF for the multipart; a part ends where a line starts with the
-  boundary and then `-`, padding or the line break; and the list ends at the
-  close delimiter, at any other line where a delimiter line should be
-  (`--b-alt` under boundary `b`, `--b junk`, `--b--junk`, the other line
-  ending), at a part whose header block core's reader refuses (a folded first
-  line, a line with no colon, a field name byte outside printable ASCII, over
-  1 MiB as Go charges it, or the end of a part that ran out with no
-  boundary), or at a line between parts over 4096 bytes. A multipart with no
-  part has core's synthesized `text/plain` child: the whole body without a
-  boundary, empty once the preamble runs out, and of unknown text where core
-  fills it from what its reader had buffered (after a close delimiter or a
-  refused first part), which hinges on the size of the message's header. An
-  embedded message's header ends at the line the reader refuses, and its body
-  starts after that line. A part's Content-Type is read as core's walker
-  reads it, so a part the client shows is one an attachment rule sees: the
+  boundary and then `-`, padding or the line break (or anything, for a
+  boundary of 4092 bytes, 4093 with LF, which with its line break and dashes
+  fills core's 4096-byte buffer); and the list ends at the close delimiter,
+  at any other line where a delimiter line should be (`--b-alt` under
+  boundary `b`, `--b junk`, `--b--junk`, the other line ending), at a part
+  whose header block core's reader refuses (a folded first line, a line with
+  no colon, a field name byte outside printable ASCII, over 1 MiB as core's
+  port charges it, which is never less than Go charges, a field whose first
+  line ends at the end of the input on a 4096-byte boundary, or the end of a
+  part that ran out with no boundary), or at a line between parts over 4096
+  bytes. A multipart with no part has core's synthesized `text/plain` child,
+  of what core's reader had not read: the whole body without a boundary,
+  empty once the preamble runs out, the body past the first 4096 bytes of a
+  preamble line longer than that, and the body past the 4096-byte piece of a
+  first part's header line on which its budget ran out. Its text is unknown
+  where it hinges on how much the reader had buffered, which depends on the
+  size of the message's header: after a close delimiter, or a first part
+  refused anywhere else. An embedded message's header ends at the line the
+  reader refuses, and its body starts after that line. A part's Content-Type
+  is read as core's walker reads it, so a part the client shows is one an
+  attachment rule sees: the
   first of a repeated field, Go's media-type parser
   (quoted-pairs, RFC 2231 continuations, RFC 2047 encoded parameters), a
   bare `multipart`, and `message/global` descended like `message/rfc822`. It descends at most 100 levels (Dovecot's

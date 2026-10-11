@@ -216,34 +216,47 @@ function trimSpHt(s: string): string {
 export interface HeaderBlock {
   /** The fields the reader accepted, without the last one's line break. */
   fields: string;
-  /** Where the header's bytes end: before the blank line, or after the line
-   * the reader refused. */
+  /** Where the header's bytes end: before the blank line, or where the reader
+   * stopped on a line it refused. */
   head: number;
-  /** Where the entity's body starts: after the blank line, or after the line
-   * the reader refused, or the end of the input. */
+  /** Where the entity's body starts: after the blank line, where the reader
+   * stopped on a line it refused, or the end of the input. */
   end: number;
   /** The reader refused a line. A multipart part whose header it refuses is
    * dropped with every part after it; an embedded message keeps the fields
    * before that line and its body starts after it. */
   err: boolean;
   /** The outcome rests on bytes past the read-window cut: with `err`, only
-   * `head` and `end` do (the refusal is decided). */
+   * where the reader stopped does (the refusal is decided). */
   open: boolean;
+  /** On a refusal, how far the walker's buffered reader had read from its
+   * input: `end`, plus whatever it held buffered past it. `restExact`: that
+   * is known, because its buffer was empty there or it had read everything;
+   * otherwise it hinges on how the input reached it (see splitMultipart). */
+  rest: number;
+  restExact: boolean;
 }
 
 /** go-message's defaultMaxHeaderBytes, under which core's walker reads a
  * part's header block (an embedded message's has no limit). */
 export const PART_HEADER_MAX = 1 << 20;
 
+/** The buffer of Go's bufio reader under core's walker: a line is read in
+ * pieces of at most this many bytes, and one the walker reads between parts
+ * must fit in it. */
+const LINE_MAX = 4096;
+
 /**
  * The header block at `pos`, read as core's walker reads it (src/lib/mimewalk
  * textproto.ts, a port of go-message's textproto.ReadHeader). It ends at the
- * first blank line, or at the end of a bounded input without an error. It refuses
- * a block whose first line starts with a space or tab, a field with no colon
- * on its first line (one on a continuation line puts the line break in the
- * name), a field name with a byte outside printable ASCII, and a block over
- * `max`, charged as the reader charges it: each line's length plus 2, and
- * each field's buffer slack (see appendSlack).
+ * first blank line, or at the end of a bounded input without an error. It
+ * refuses a block whose first line starts with a space or tab, a field with no
+ * colon on its first line (one on a continuation line puts the line break in
+ * the name), a field name with a byte outside printable ASCII, a field whose
+ * first line ends at the end of the input on a LINE_MAX boundary (see
+ * readLine), and a block over `max`, charged as core's port charges it: each
+ * line's pieces, 2 more at its end, and each field's buffer slack (see
+ * appendSlack).
  *
  * `bounded`: the input is a whole body, or a part's that ended at a
  * boundary. A part that ran out with no boundary ends in what Go reads as an
@@ -253,58 +266,126 @@ export const PART_HEADER_MAX = 1 << 20;
  * whether a continuation line follows the last one seen, are past it.
  */
 export function readHeaderBlock(b: string, pos: number, max: number, cut: boolean, bounded = true): HeaderBlock {
-  const at = (head: number, end: number, err: boolean): HeaderBlock => ({
-    fields: b.slice(pos, withoutLineBreak(b, pos, head)),
-    head,
+  const fields = (end: number) => b.slice(pos, withoutLineBreak(b, pos, end));
+  const done = (blank: number, end: number, err: boolean): HeaderBlock => ({
+    fields: fields(blank),
+    head: blank,
     end,
     err,
     open: false,
+    rest: end,
+    restExact: end >= b.length,
   });
-  const open = (err: boolean): HeaderBlock => ({ fields: "", head: b.length, end: b.length, err, open: true });
+  /** The reader stopped at `stop` on a refused line; the fields end at `from`. */
+  const refused = (from: number, stop: number, rest = stop, restExact = stop >= b.length): HeaderBlock => ({
+    fields: fields(from),
+    head: stop,
+    end: stop,
+    err: true,
+    open: false,
+    rest,
+    restExact,
+  });
+  const open = (err: boolean): HeaderBlock => ({ fields: "", head: b.length, end: b.length, err, open: true, rest: b.length, restExact: false });
+  const budget = { n: max };
   if (pos < b.length && isSpHt(b.charCodeAt(pos))) {
     // The reader takes that line and refuses the block.
-    const nl = b.indexOf("\n", pos);
-    if (nl === -1) return cut ? open(true) : { ...at(pos, b.length, true), head: b.length };
-    return { ...at(pos, nl + 1, true), head: nl + 1 };
+    const line = readLine(b, pos, budget, cut);
+    if (line === null) return open(true);
+    return line.over ? refused(pos, line.rest, line.rest, line.exact) : refused(pos, line.next);
   }
-  let budget = max;
   let p = pos;
   for (;;) {
     if (p >= b.length) {
       // The end of the input ends the block, charged as an empty line.
-      return cut ? open(false) : at(p, p, (budget -= 2) < 0 || !bounded);
+      if (cut) return open(false);
+      budget.n -= 2;
+      return done(p, p, budget.n < 0 || !bounded);
     }
-    const nl = b.indexOf("\n", p);
-    if (nl === -1 && cut) return open(false);
-    const lineEnd = nl === -1 ? b.length : contentEnd(b, p, nl);
-    let next = nl === -1 ? b.length : nl + 1;
-    budget -= lineEnd - p + 2;
-    if (lineEnd === p) return at(p, next, budget < 0);
+    const first = readLine(b, p, budget, cut);
+    if (first === null) return open(false);
+    if (first.over) return refused(p, first.rest, first.rest, first.exact);
+    if (first.empty) return done(p, first.next, false);
+    if (first.eof) return refused(p, b.length);
     // A field: this line, then each line that starts with a space or tab.
-    const refused = !fieldNameOk(b, p, lineEnd);
-    let size = lineEnd - p + 2;
-    while (nl !== -1) {
+    const bad = !fieldNameOk(b, p, first.contentEnd);
+    let size = first.contentEnd - p + 2;
+    let next = first.next;
+    // A line that ran to the end of the input has none after it.
+    while (first.next > first.contentEnd) {
       if (next >= b.length) {
-        if (cut) return open(refused);
+        if (cut) return open(bad);
         break;
       }
       if (!isSpHt(b.charCodeAt(next))) break;
-      const cnl = b.indexOf("\n", next);
-      if (cnl === -1 && cut) return open(refused);
-      const cEnd = cnl === -1 ? b.length : contentEnd(b, next, cnl);
-      budget -= cEnd - next + 2;
-      size += cEnd - next + 2;
-      next = cnl === -1 ? b.length : cnl + 1;
+      const cont = readLine(b, next, budget, cut);
+      if (cont === null) return open(bad);
+      if (cont.over) return refused(p, cont.rest, cont.rest, cont.exact);
+      // A continuation that ends on a LINE_MAX boundary at the end of the
+      // input ends the field, without its line break.
+      size += cont.contentEnd - next + (cont.eof ? 0 : 2);
+      next = cont.next;
     }
-    budget -= appendSlack(size);
-    if (refused || budget < 0) return { ...at(p, next, true), head: next };
+    budget.n -= appendSlack(size);
+    if (bad || budget.n < 0) return refused(p, next);
     p = next;
   }
 }
 
-/** The end of a line's content: before its LF, and a CR right before that. */
-function contentEnd(b: string, start: number, nl: number): number {
-  return nl > start && b.charCodeAt(nl - 1) === 13 /* \r */ ? nl - 1 : nl;
+/** One line as go-message's readLineSlice reads it through Go's ReadLine. */
+interface Line {
+  /** Where the next line starts. */
+  next: number;
+  /** Where its content ends: before its line break, or at the end. */
+  contentEnd: number;
+  /** A blank line. */
+  empty: boolean;
+  /** It ended at the end of the input on a LINE_MAX boundary: Go's ReadLine
+   * then returns its last, empty, piece with the end-of-input error. */
+  eof: boolean;
+  /** The budget ran out on it: the reader stopped there, having read to
+   * `rest`, which is `exact` when its buffer was then empty. */
+  over: boolean;
+  rest: number;
+  exact: boolean;
+}
+
+/**
+ * The line at `start`, charged to `budget` as the reader charges it: in the
+ * pieces Go's ReadLine returns. A line with no line break within LINE_MAX
+ * bytes comes in a full buffer's worth (less a CR at its end, which is read
+ * again with the next piece), and is charged its length; the last piece is
+ * charged its length plus 2. The reader stops at the piece that runs the
+ * budget out. After a full piece its buffer is empty, so it has read exactly
+ * to that piece's buffer end; after a last piece its buffer may hold more.
+ * null: the cut leaves the line open.
+ */
+function readLine(b: string, start: number, budget: { n: number }, cut: boolean): Line | null {
+  const lf = b.indexOf("\n", start);
+  const over = (rest: number, exact: boolean): Line => ({ next: rest, contentEnd: rest, empty: false, eof: false, over: true, rest, exact });
+  let s = start;
+  let full = false;
+  for (;;) {
+    if (lf !== -1 && lf - s < LINE_MAX) {
+      const end = lf > s && b.charCodeAt(lf - 1) === 13 /* \r */ ? lf - 1 : lf;
+      budget.n -= end - s + 2;
+      if (budget.n < 0) return over(lf + 1, lf + 1 >= b.length);
+      return { next: lf + 1, contentEnd: end, empty: !full && end === s, eof: false, over: false, rest: lf + 1, exact: false };
+    }
+    if (b.length - s >= LINE_MAX) {
+      const len = b.charCodeAt(s + LINE_MAX - 1) === 13 /* \r */ ? LINE_MAX - 1 : LINE_MAX;
+      budget.n -= len;
+      if (budget.n < 0) return over(s + LINE_MAX, true);
+      s += len;
+      full = true;
+      continue;
+    }
+    if (cut) return null;
+    // The end of the input, with no line break.
+    budget.n -= b.length - s + 2;
+    if (budget.n < 0) return over(b.length, true);
+    return { next: b.length, contentEnd: b.length, empty: false, eof: full && s === b.length, over: false, rest: b.length, exact: true };
+  }
 }
 
 /** `end`, less the line break that ends the text before it. */
@@ -643,10 +724,6 @@ export interface Multipart {
   open: boolean;
 }
 
-/** core's walker reads the lines between parts through Go's 4096-byte bufio
- * buffer: one with no line break within it ends the list. */
-const LINE_MAX = 4096;
-
 /** The child core synthesizes for a multipart with no part (RFC 3501's
  * BODYSTRUCTURE needs one). */
 const SYNTHESIZED = "text/plain; charset=utf-8";
@@ -664,7 +741,8 @@ const SYNTHESIZED = "text/plain; charset=utf-8";
  * part's header block is read as readHeaderBlock reads it; a refused one
  * drops the part and every one after it. Its body ends before the line break
  * of the first line that starts with the boundary and then "-", a space, a
- * tab, CR or LF (or at the end of the input), and the list goes on only if
+ * tab, CR or LF (or anything, when the line break, "--" and the boundary fill
+ * LINE_MAX), or at the end of the input, and the list goes on only if
  * that line is a delimiter line. Anything else ends it: a close delimiter,
  * but also "--b-alt" (a nested boundary that "b" prefixes), "--b junk",
  * "--b--junk", or a delimiter in the other line-break form. So does a line
@@ -675,10 +753,11 @@ const SYNTHESIZED = "text/plain; charset=utf-8";
  * A multipart with no part gets one text/plain child holding what core's
  * reader has left: the whole body for an empty boundary (it reads nothing),
  * nothing once the preamble ran to the end, the body past LINE_MAX bytes of
- * an over-long preamble line. After a close delimiter, or a first part whose
- * header was refused, its reader has read ahead by an amount that hinges on
- * the size of the message's own header, so the child is "" read as a prefix:
- * only what any content would match is definite.
+ * an over-long preamble line, the body past the full buffer on which a first
+ * part's header ran out its budget. After a close delimiter, or a first part
+ * whose header was refused anywhere else, its reader has read ahead by an
+ * amount that hinges on the size of the message's own header, so the child
+ * is "" read as a prefix: only what any content would match is definite.
  *
  * It stops after MAX_MIME_PARTS + 1 parts, open, as the walkers stop there.
  *
@@ -746,7 +825,10 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, bounde
       return { end: s, cut, eof: !cut };
     }
     for (let i = b.indexOf(nlDash, from); i !== -1; i = b.indexOf(nlDash, from)) {
-      const m = afterBoundary(i + nlDash.length);
+      // A delimiter that fills the reader's buffer leaves it no room to look
+      // at the byte after it, and it takes the boundary as found. (A longer
+      // one has no delimiter line that fits, so no part to end.)
+      const m = nlDash.length >= LINE_MAX ? 1 : afterBoundary(i + nlDash.length);
       if (m !== -1) return { end: i, cut: m === 0, eof: false };
       from = i + nlDash.length;
     }
@@ -797,7 +879,7 @@ export function splitMultipart(b: string, boundary: string, cut: boolean, bounde
       if (lineIs(pos, lineEnd, dash, nl)) {
         if (first === -1) first = pos;
         const h = readHeaderBlock(b, lineEnd, PART_HEADER_MAX, cut, bounded);
-        if (h.err) return finish(0, pos, h.end, false);
+        if (h.err) return finish(0, pos, h.rest, h.restExact);
         if (h.open) return open();
         const body = bodyEnd(h.end);
         const fields = parseMimeHeader(h.fields);
