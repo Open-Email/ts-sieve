@@ -65,6 +65,25 @@ function regexSoundOnPrefix(pattern: string): boolean {
   return !pattern.includes("$");
 }
 
+/**
+ * A value's fold, computed once per execution and charged by size: inside a
+ * foreverypart loop the same header value is compared on every iteration, and
+ * folding a large one is real work. Values under 1 KiB are folded each time
+ * (uncharged before, and cheap).
+ */
+function foldOnce(d: RuntimeData, kind: string, source: string, fold: (s: string) => string): string {
+  if (source.length < 1024) return fold(source);
+  let cache = d.foldCache.get(kind);
+  if (cache === undefined) d.foldCache.set(kind, (cache = new Map()));
+  let folded = cache.get(source);
+  if (folded === undefined) {
+    d.budget.consume(source.length >> 10);
+    folded = fold(source);
+    cache.set(source, folded);
+  }
+  return folded;
+}
+
 export class MatcherTest {
   comparator: Comparator = DefaultComparator;
   match: Match = "is";
@@ -329,12 +348,9 @@ export class MatcherTest {
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
-            // Folded once per comparison, as for :is/:contains below.
+            // Folded once, as for :is/:contains below.
             const fold = this.comparator === "i;octet" ? (x: string) => x : toLowerASCII;
-            if (valueFolded === undefined) {
-              d.budget.consume(source.length >> 10);
-              valueFolded = fold(source);
-            }
+            valueFolded ??= this.comparator === "i;octet" ? source : foldOnce(d, "ascii", source, toLowerASCII);
             if (compareString(this.relational, valueFolded, fold(k))) return true;
           }
         }
@@ -349,10 +365,10 @@ export class MatcherTest {
         if (this.comparator === "i;ascii-numeric") {
           r = sourceTruncated ? testStringPrefix(this.comparator, this.match, source, k) : testString(this.comparator, this.match, source, k, opts);
         } else {
-          if (foldedSource === undefined) {
-            d.budget.consume(source.length >> 10);
-            foldedSource = comparatorFold(this.comparator)(source);
-          }
+          foldedSource ??=
+            this.comparator === "i;octet"
+              ? source
+              : foldOnce(d, this.comparator === "i;unicode-casemap" ? "unicode" : "ascii", source, comparatorFold(this.comparator));
           r = compareFolded(this.match, foldedSource, comparatorFold(this.comparator)(k), sourceTruncated);
         }
         if (r === true) return true;

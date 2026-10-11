@@ -18,6 +18,27 @@ describe("Pigeonhole extensions/mime/foreverypart.svtest", () => {
   });
 });
 
+describe(":param and RFC 2231", () => {
+  const param = (name: string, value: string, ct: string) =>
+    run(
+      `require ["mime","fileinto"]; if header :mime :param "${name}" "content-type" "${value}" { fileinto "P"; }`,
+      `From: a@x\r\nTo: b@y\r\nContent-Type: ${ct}\r\n\r\nx\r\n`,
+    );
+
+  it("an extended value whose name ends in a digit", () => {
+    expect(param("name2", "€.pdf", "application/pdf; name2*=utf-8''%E2%82%AC.pdf")).toEqual(R({ fileinto: ["P"] }));
+  });
+
+  it("the charset of section 0 applies to every encoded section", () => {
+    // "€" (E2 82 AC) split across two sections.
+    expect(param("name", "€x", "application/pdf; name*0*=utf-8''%E2%82; name*1*=%ACx")).toEqual(R({ fileinto: ["P"] }));
+  });
+
+  it("plain and quoted sections join", () => {
+    expect(param("name", "a long name", 'application/pdf; name*0="a long"; name*1=" name"')).toEqual(R({ fileinto: ["P"] }));
+  });
+});
+
 describe("a message whose body the host did not read", () => {
   // A host may pass no body (bodyRaw() null) when the script needs none; core
   // reads it only for some scripts. A multipart root then has parts nobody

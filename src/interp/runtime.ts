@@ -247,6 +247,10 @@ export class RuntimeData {
   /** Match variables ${0..N}: [0] = whole match, [1..] = capture groups. */
   matchVariables: string[] = [];
 
+  /** Folds of large values, per fold kind, for this execution (matcher.ts
+   * foldOnce). */
+  foldCache: Map<string, Map<string, string>> = new Map();
+
   /** RFC 5703: the part each running foreverypart has reached, innermost last. */
   partStack: MimePart[] = [];
 
