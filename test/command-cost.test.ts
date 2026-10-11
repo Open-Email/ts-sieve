@@ -78,14 +78,14 @@ describe("a value cut to the variable size limit is disclosed", () => {
   });
 
   it("the limit is in bytes: exactly maxVariableLen is exact, a byte more is disclosed", () => {
-    const set = (tail: string) => `require ["variables"]; set "p" "${"é".repeat(2000)}"; set "s" "\${p}${tail}";`;
+    const set = (tail: string) => `require ["variables"]; set "p" "${"é".repeat(2000)}"; set "s" "\${p}${tail}"; if string :contains "\${s}" "~never~" { stop; }`;
     expect(run(set("")).indeterminate).toBe(false);
     expect(run(set("x")).indeterminate).toBe(true);
   });
 
   it("set :quotewildcard, cut back to the limit", () => {
     // 2,500 "*" quote to 5,000 bytes.
-    expect(run(`require ["variables"]; set "p" "${"*".repeat(2500)}"; set :quotewildcard "u" "\${p}";`).indeterminate).toBe(true);
+    expect(run(`require ["variables"]; set "p" "${"*".repeat(2500)}"; set :quotewildcard "u" "\${p}"; if string :contains "\${u}" "~never~" { stop; }`).indeterminate).toBe(true);
   });
 
   it("not a literal's cut: it is the same on every message, so nothing is guessed", () => {
@@ -109,9 +109,14 @@ describe("a value cut to the variable size limit is disclosed", () => {
   });
 
   it("a flag variable", () => {
+    // Stored from the message and cut: a rule that reads it cannot decide.
     const words = Array.from({ length: 1000 }, (_, i) => `f${i}`).join(" ");
-    expect(run(`require ["variables","imap4flags"]; setflag "f" "${words}";`).indeterminate).toBe(true);
-    expect(run(`require ["variables","imap4flags"]; setflag "f" "a b"; addflag "f" "c";`).indeterminate).toBe(false);
+    const read = 'if hasflag :contains "f" "~never~" { stop; }';
+    const fromMessage = `require ["variables","imap4flags"]; if header :matches "x-w" "*" { setflag "f" "\${1}"; } ${read}`;
+    expect(run(fromMessage, `From: a@x\r\nX-W: ${words}\r\n\r\nb\r\n`).indeterminate).toBe(true);
+    // A literal list is the script's own value, cut the same way every time.
+    expect(run(`require ["variables","imap4flags"]; setflag "f" "${words}"; ${read}`).indeterminate).toBe(false);
+    expect(run(`require ["variables","imap4flags"]; setflag "f" "a b"; addflag "f" "c"; ${read}`).indeterminate).toBe(false);
   });
 });
 

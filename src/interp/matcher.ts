@@ -28,7 +28,7 @@ import {
 import { doubtCaptures, markCutCaptures, markStaleCaptures, type RuntimeData, type Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 import type { Spec, SpecTag } from "./spec.js";
-import { expandVars } from "./variables.js";
+import { expandMarked, expandVars } from "./variables.js";
 
 /**
  * Whether a `:matches` glob ends with an UNESCAPED `*`. Over a prefix of the
@@ -245,7 +245,10 @@ export class MatcherTest {
     const key = this.key[i]!;
     const re = this.compiledKeys[i];
     if (re) return { re, pattern: key };
-    const pattern = expandVars(d, key);
+    const { value: pattern, mark } = expandMarked(d, key);
+    // A pattern built from a marked value is not the whole input's pattern:
+    // no compile, and the comparison is unknown (see Mark).
+    if (mark !== "") return { re: null, pattern };
     // A test matches every value of a field (or every body part) against the
     // same keys, and the expansion only changes when variables do: compile
     // once per expansion, per execution. The compile is charged, a step per
@@ -318,7 +321,7 @@ export class MatcherTest {
         if (caps !== null) {
           if (!truncated || (this.soundKeys[i] ?? globEndsWithStar(pattern))) {
             if (d.captureDoubt || unknown) markStaleCaptures(caps);
-            else if (truncated) markCutCaptures(caps);
+            else if (truncated) markCutCaptures(caps, "matches");
             d.matchVariables = caps;
             return true;
           }
@@ -354,7 +357,7 @@ export class MatcherTest {
           // Before the cut they see the same characters in both inputs.
           if (!truncated || !info.atEnd) {
             if (d.captureDoubt || unknown) markStaleCaptures(caps);
-            else if (truncated) markCutCaptures(caps);
+            else if (truncated) markCutCaptures(caps, "regex");
             d.matchVariables = caps;
             return true;
           }
@@ -368,7 +371,11 @@ export class MatcherTest {
           // sort on either side of it.
           unknown = true;
         } else {
-          const k = expandVars(d, key);
+          const { value: k, mark } = expandMarked(d, key);
+          if (mark !== "") {
+            unknown = true; // a key built from a marked value (see Mark)
+            continue;
+          }
           if (this.comparator === "i;ascii-numeric") {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
@@ -383,7 +390,11 @@ export class MatcherTest {
         // key (1,000 keys over a 1 MiB body took seconds, charged a step each),
         // and charged by the value's size, a step per KiB: once for the fold,
         // and for :contains once per key searched through it.
-        const k = expandVars(d, key);
+        const { value: k, mark } = expandMarked(d, key);
+        if (mark !== "") {
+          unknown = true; // a key built from a marked value (see Mark)
+          continue;
+        }
         let r: Tri;
         if (this.match === "contains") d.budget.consume(source.length >> 10);
         if (this.comparator === "i;ascii-numeric") {

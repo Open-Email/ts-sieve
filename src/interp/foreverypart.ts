@@ -63,11 +63,11 @@ export class CmdForEveryPart implements Cmd {
 /**
  * RFC 5703 §7: store the current part's text in a variable. At most as many
  * octets are decoded as the engine matches (maxMatchInputLength, or its
- * default). A variable carries no "this is a prefix" mark, so a value the cut
- * or that limit left incomplete would be read as fact by every later test: it
- * is disclosed as indeterminate, unless :first asked for no more characters
- * than were read (a cut part's text is a prefix of the real one). The same
- * holds for a value the variable's own size limit (maxVariableLen) cuts.
+ * default). A text the cut or that limit left incomplete is stored marked as
+ * a prefix of the real one (see Mark), unless :first asked for no more
+ * characters than were read; a later test that reads it answers what the
+ * prefix proves. The same holds for a value the variable's own size limit
+ * (maxVariableLen) cuts.
  * Each call is charged by the text's size: the modifiers and the variable
  * store are linear in it, and loops repeat the call.
  */
@@ -94,9 +94,10 @@ export class CmdExtractText implements Cmd {
         }
       }
     }
-    if (!exact) d.indeterminate = true;
-    // Each discloses its own cut to the variable size limit.
-    setVar(d, this.name, applySetModifiers(d, this.modifiers, value));
+    // Text a cut left incomplete is a prefix of the real text (see Mark), and
+    // so is a value the variable's size limit cuts.
+    const marked = applySetModifiers(d, this.modifiers, value, exact ? "" : "prefix");
+    setVar(d, this.name, marked.value, marked.mark);
   }
 }
 

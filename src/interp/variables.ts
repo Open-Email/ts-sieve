@@ -7,7 +7,7 @@
 
 import { SieveError } from "../errors.js";
 import { MatcherTest } from "./matcher.js";
-import type { Cmd, RuntimeData, Test, Tri } from "./runtime.js";
+import type { Cmd, Mark, RuntimeData, Test, Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 
 const VAR_NAME_MAX_SCAN = 300; // bound the } search — real names are ≤ 32 chars
@@ -18,6 +18,16 @@ const IDENT = /^([a-zA-Z_][a-zA-Z0-9_]*\.)*([a-zA-Z_][a-zA-Z0-9_]*|[0-9]+)$/;
 /** RFC 5229 variable-ref grammar: (namespace.)?(identifier | digits). Linear. */
 function isValidVarName(name: string): boolean {
   return name.length > 0 && name.length <= 128 && IDENT.test(name);
+}
+
+/** A variable's mark (see Mark): a match variable's, or a user variable's. */
+function markOf(d: RuntimeData, name: string): Mark {
+  if (/^[0-9]+$/.test(name)) {
+    const n = Number.parseInt(name, 10);
+    return Number.isSafeInteger(n) && n >= 0 ? d.captureMark(n) : "";
+  }
+  const lower = name.toLowerCase();
+  return lower.includes(".") ? "" : (d.varMarks.get(lower) ?? "");
 }
 
 function resolveVar(d: RuntimeData, name: string): string {
@@ -75,11 +85,34 @@ function nextClose(s: string, from: number, close: number): number {
  * fail the script.
  */
 export function expandVars(d: RuntimeData, s: string): string {
-  if (!d.script.requiresExtension("variables") || !s.includes("${")) return s;
+  const { value, mark } = expandMarked(d, s);
+  // Read where its mark is not weighed: a test that did so cannot answer for
+  // the whole input (see SharedTest). A command's use of it decides nothing.
+  if (mark !== "") d.testDoubt = true;
+  return value;
+}
+
+/**
+ * expandVars, with the mark the expansion carries (see Mark): a prefix when
+ * the last thing in it is a prefix-marked value, held whole before it; in
+ * doubt when anything follows a marked value, or a value in doubt is in it.
+ */
+export function expandMarked(d: RuntimeData, s: string): { value: string; mark: Mark } {
+  if (!d.script.requiresExtension("variables") || !s.includes("${")) return { value: s, mark: "" };
   const charge = d.budget.shares > 0;
   if (charge) d.budget.consume(1 + (s.length >> 6));
   let charged = 0;
   let out = "";
+  // The mark of the last marked value, while nothing has followed it; doubt
+  // once anything has.
+  let last: Mark = "";
+  let doubt = false;
+  const append = (text: string, mark: Mark) => {
+    if (text === "" && mark === "") return;
+    if (last !== "") doubt = true;
+    last = mark;
+    out += text;
+  };
   let i = 0;
   let close = -2;
   const n = s.length;
@@ -88,7 +121,7 @@ export function expandVars(d: RuntimeData, s: string): string {
       close = nextClose(s, i + 2, close);
       const name = varRefName(s, i, close);
       if (name !== null) {
-        out += resolveVar(d, name);
+        append(resolveVar(d, name), markOf(d, name));
         i = close + 1;
         if (charge && out.length >> 7 > charged) {
           d.budget.consume((out.length >> 7) - charged);
@@ -97,11 +130,11 @@ export function expandVars(d: RuntimeData, s: string): string {
         continue;
       }
     }
-    out += s[i];
+    append(s[i]!, "");
     i++;
   }
   if (charge && out.length >> 7 > charged) d.budget.consume((out.length >> 7) - charged);
-  return out;
+  return { value: out, mark: doubt ? "doubt" : last };
 }
 
 /**
@@ -151,12 +184,14 @@ function overLimit(s: string, maxLen: number): Uint8Array | null {
 
 /**
  * Store a user variable, truncating the value to maxVariableLen bytes (backing
- * off a split UTF-8 sequence). A cut value is a prefix with no mark saying so,
- * and a rule testing it would stand on a guess: the cut is disclosed as
- * indeterminate. Under a share it is charged for what it stores, a step per
- * 128 characters (a literal has no expansion to pay for it).
+ * off a split UTF-8 sequence), with the mark it carries (see Mark): a cut
+ * value is a prefix of the real one, so a test that reads it answers for
+ * what the prefix proves. `markCut` false: the value is the script's own
+ * literal, cut the same way on every message, not a guess. Under a share it
+ * is charged for what it stores, a step per 128 characters (a literal has no
+ * expansion to pay for it).
  */
-export function setVar(d: RuntimeData, name: string, value: string): void {
+export function setVar(d: RuntimeData, name: string, value: string, mark: Mark = "", markCut = true): void {
   const maxLen = d.script.opts.maxVariableLen;
   if (name.length > d.script.opts.maxVariableNameLen) {
     throw new SieveError(`variable name too long: ${name}`);
@@ -168,12 +203,14 @@ export function setVar(d: RuntimeData, name: string, value: string): void {
     let end = maxLen;
     while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--; // in a continuation byte
     v = new TextDecoder().decode(bytes.subarray(0, end));
-    d.indeterminate = true;
+    if (markCut && mark === "") mark = "prefix";
   }
   const lower = name.toLowerCase();
   const dot = lower.indexOf(".");
   if (dot !== -1) throw new SieveError(`cannot set namespaced variable: ${name}`);
   d.variables.set(lower, v);
+  if (mark === "") d.varMarks.delete(lower);
+  else d.varMarks.set(lower, mark);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +224,20 @@ function firstChar(s: string, f: (c: string) => string): string {
   if (s === "") return s;
   const w = s.codePointAt(0)! > 0xffff ? 2 : 1;
   return f(s.slice(0, w)) + s.slice(w);
+}
+
+/**
+ * :lower over a prefix of the value. Lowering maps each character alone but
+ * for a capital sigma, which lowers to final ς at the end of a word and to σ
+ * elsewhere (Final_Sigma): one the cut left at the end is either. The result
+ * is cut back to where the two readings agree, which is a prefix of the whole
+ * value lowered.
+ */
+function lowerPrefix(s: string): string {
+  const lowered = s.toLowerCase();
+  const inWord = (s + "a").toLowerCase();
+  for (let i = 0; i < lowered.length; i++) if (lowered.charCodeAt(i) !== inWord.charCodeAt(i)) return lowered.slice(0, i);
+  return lowered;
 }
 
 export const SET_MODIFIERS: Record<string, Modifier> = {
@@ -225,25 +276,27 @@ export class CmdSet implements Cmd {
 
   execute(d: RuntimeData): void {
     // A literal (no reference) is cut the same way on every message: that is
-    // the script's own value, not a guess, and disclosing it would refuse
-    // every discard of a script holding a long template.
-    const before = d.indeterminate;
-    setVar(d, this.name, applySetModifiers(d, this.modifiers, expandVars(d, this.value)));
-    if (!this.value.includes("${")) d.indeterminate = before;
+    // the script's own value, not a guess, so its cut is no mark.
+    const literal = !this.value.includes("${");
+    const expanded = expandMarked(d, this.value);
+    const { value, mark } = applySetModifiers(d, this.modifiers, expanded.value, expanded.mark, !literal);
+    setVar(d, this.name, value, mark, !literal);
   }
 }
 
 /**
  * Apply set modifiers (RFC 5229 §4.1), highest precedence first; shared by set
- * and extracttext. A value :quotewildcard's truncation cuts is disclosed as
- * indeterminate, as setVar discloses its own cut.
+ * and extracttext, with the value's mark (see Mark): the case and escaping
+ * modifiers keep a prefix a prefix, :length of a marked value is in doubt,
+ * and :quotewildcard's truncation marks what it cuts (unless `markCut` is
+ * false: a literal, as for setVar).
  *
  * Under a share of the budget (in a foreverypart loop) each modifier is
  * charged by the value it walks, a step per 128 characters, and
  * :quotewildcard by the escapes it added, a step per 16: an escape costs some
  * 15 ns, a hundred times a character of the case modifiers.
  */
-export function applySetModifiers(d: RuntimeData, modifiers: string[], value: string): string {
+export function applySetModifiers(d: RuntimeData, modifiers: string[], value: string, mark: Mark = "", markCut = true): { value: string; mark: Mark } {
   let v = value;
   const ordered = [...modifiers].sort((a, b) => (SET_MODIFIERS[b]?.precedence ?? 0) - (SET_MODIFIERS[a]?.precedence ?? 0));
   const charge = d.budget.shares > 0;
@@ -251,16 +304,17 @@ export function applySetModifiers(d: RuntimeData, modifiers: string[], value: st
   for (const m of ordered) {
     if (charge) d.budget.consume(v.length >> 7);
     const before = v.length;
-    v = SET_MODIFIERS[m]!.apply(v);
+    v = m === "lower" && mark === "prefix" ? lowerPrefix(v) : SET_MODIFIERS[m]!.apply(v);
+    if (m === "length" && mark !== "") mark = "doubt";
     if (charge && m === "quotewildcard") d.budget.consume((v.length - before) >> 4);
     lastPrec = SET_MODIFIERS[m]!.precedence;
   }
   if (lastPrec === SET_MODIFIERS.quotewildcard!.precedence) {
     const quoted = truncateQuoted(v, d.script.opts.maxVariableLen);
-    if (quoted.length !== v.length) d.indeterminate = true;
+    if (quoted.length !== v.length && markCut && mark === "") mark = "prefix";
     v = quoted;
   }
-  return v;
+  return { value: v, mark };
 }
 
 // ---------------------------------------------------------------------------
@@ -275,13 +329,26 @@ export class TestString implements Test {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     if (this.matcher.isCount()) {
       let n = 0;
+      let doubt = false;
       d.budget.consume(this.source.length); // a step a source, as matching costs one a key
-      for (const src of this.source) if (expandVars(d, src) !== "") n++;
-      return this.matcher.countMatches(d, n);
+      for (const src of this.source) {
+        const { value, mark } = expandMarked(d, src);
+        // A non-empty prefix is a non-empty value; an empty one may not be.
+        if (mark === "doubt" || (mark === "prefix" && value === "")) doubt = true;
+        else if (value !== "") n++;
+      }
+      return doubt ? "unknown" : this.matcher.countMatches(d, n);
     }
     let unknown = false;
     for (const src of this.source) {
-      const r = this.matcher.tryMatch(d, expandVars(d, src), opts);
+      // A source that is a prefix of the real value is matched as a cut
+      // header is: a definite answer only where the prefix proves it.
+      const { value, mark } = expandMarked(d, src);
+      if (mark === "doubt") {
+        unknown = true;
+        continue;
+      }
+      const r = this.matcher.tryMatch(d, value, opts, mark === "prefix");
       if (r === true) return true;
       if (r === "unknown") unknown = true;
     }

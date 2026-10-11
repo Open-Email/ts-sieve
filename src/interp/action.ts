@@ -3,7 +3,7 @@
 // (expandVars is identity when the script does not require `variables`).
 
 import { type Cmd, type RuntimeData, StopSignal } from "./runtime.js";
-import { expandVars, expandVarsList, setVar } from "./variables.js";
+import { expandMarked, expandVars, setVar } from "./variables.js";
 
 /**
  * Normalise a flag list: split space-delimited flags, apply aliases, lowercase
@@ -135,10 +135,10 @@ export class CmdFileInto implements Cmd {
     }
     // Expanded and charged before anything changes: in a loop a charge may
     // run out of the loop's share, and the command must then have done nothing.
-    let flags: string[] | null = null;
+    let flags: { flags: string[]; doubt: boolean } | null = null;
     if (this.flags !== null) {
-      flags = expandVarsList(d, this.flags);
-      chargeFlags(d, flags);
+      flags = flagsMarked(d, this.flags);
+      chargeFlags(d, flags.flags);
     }
     if (!held) append(names, d.mailboxes, mailbox, mailbox);
     if (!this.copy) d.implicitKeep = false;
@@ -146,7 +146,7 @@ export class CmdFileInto implements Cmd {
       const created = memberSet(d.mailboxesCreate, same);
       if (!created.keys.has(mailbox)) append(created, d.mailboxesCreate, mailbox, mailbox);
     }
-    if (flags !== null) d.flags = canonicalFlags(flags, null, d.flagAliases);
+    if (flags !== null) setInternalFlags(d, flags.flags, flags.doubt);
   }
 }
 
@@ -172,7 +172,14 @@ export class CmdRedirect implements Cmd {
   private literalKey: string | null = null;
 
   execute(d: RuntimeData): void {
-    const addr = expandVars(d, this.addr);
+    const { value: addr, mark } = expandMarked(d, this.addr);
+    // An address built from a value the engine could not hold whole is not
+    // the whole input's address, and a forward cannot be recalled: dropped,
+    // and disclosed (see Mark).
+    if (mark !== "") {
+      d.indeterminate = true;
+      return;
+    }
     // An address is redirected to once (as in Pigeonhole), and a repeat is no
     // new target: a loop redirecting once per matching part is not limited by
     // how many match. The host's policy is not asked again for an address it
@@ -202,12 +209,10 @@ export class CmdKeep implements Cmd {
 
   execute(d: RuntimeData): void {
     // Expanded and charged first, as for fileinto.
-    const flags = this.flags === null ? null : expandVarsList(d, this.flags);
-    if (flags !== null) chargeFlags(d, flags);
+    const flags = this.flags === null ? null : flagsMarked(d, this.flags);
+    if (flags !== null) chargeFlags(d, flags.flags);
     d.keep = true; // keep does NOT cancel implicit keep
-    if (flags !== null) {
-      d.flags = canonicalFlags(flags, null, d.flagAliases);
-    }
+    if (flags !== null) setInternalFlags(d, flags.flags, flags.doubt);
   }
 }
 
@@ -215,7 +220,29 @@ export class CmdDiscard implements Cmd {
   execute(d: RuntimeData): void {
     d.implicitKeep = false;
     d.flags = [];
+    d.flagsMarked = false;
   }
+}
+
+/** The flags a command names, expanded, and whether any came from a marked
+ * value (see Mark): a canonical list rebuilt from one may differ anywhere, so
+ * a flag variable or the internal set built from it is in doubt. */
+function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: boolean; literal: boolean } {
+  let doubt = false;
+  const literal = list.every((f) => !f.includes("${"));
+  const flags = list.map((f) => {
+    const { value, mark } = expandMarked(d, f);
+    if (mark !== "") doubt = true;
+    return value;
+  });
+  return { flags, doubt, literal };
+}
+
+/** Replace the internal flag set, and its doubt with the list's (see
+ * RuntimeData.flagsMarked): setflag, and the :flags of keep and fileinto. */
+function setInternalFlags(d: RuntimeData, flags: string[], doubt: boolean): void {
+  d.flags = canonicalFlags(flags, null, d.flagAliases);
+  d.flagsMarked = doubt;
 }
 
 /** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
@@ -244,12 +271,13 @@ export class CmdSetFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     chargeFlags(d, flags);
     if (this.variableName !== null) {
-      setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "));
+      // A literal list is the script's own value: its cut is no mark (as set's).
+      setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "), doubt ? "doubt" : "", !literal);
     } else {
-      d.flags = canonicalFlags(flags, null, d.flagAliases);
+      setInternalFlags(d, flags, doubt);
     }
   }
 }
@@ -259,13 +287,17 @@ export class CmdAddFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     if (this.variableName !== null) {
       chargeFlags(d, flagVar(d, this.variableName), flags);
-      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "));
+      const held = d.varMarks.has(this.variableName.toLowerCase());
+      // Its cut is always marked: even a literal list is joined onto a held
+      // value, which may be the message's.
+      setVar(d, this.variableName, canonicalFlagsOrdered([...flagVar(d, this.variableName), ...flags], null, d.flagAliases).join(" "), doubt || held ? "doubt" : "", true);
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags([...d.flags, ...flags], null, d.flagAliases);
+      d.flagsMarked ||= doubt;
     }
   }
 }
@@ -275,13 +307,15 @@ export class CmdRemoveFlag implements Cmd {
   flags: string[] | null = null;
   execute(d: RuntimeData): void {
     if (this.flags === null) return;
-    const flags = expandVarsList(d, this.flags);
+    const { flags, doubt, literal } = flagsMarked(d, this.flags);
     if (this.variableName !== null) {
       chargeFlags(d, flagVar(d, this.variableName), flags);
-      setVar(d, this.variableName, canonicalFlagsOrdered(flagVar(d, this.variableName), flags, d.flagAliases).join(" "));
+      const held = d.varMarks.has(this.variableName.toLowerCase());
+      setVar(d, this.variableName, canonicalFlagsOrdered(flagVar(d, this.variableName), flags, d.flagAliases).join(" "), doubt || held ? "doubt" : "", !literal || held);
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags(d.flags, flags, d.flagAliases);
+      d.flagsMarked ||= doubt;
     }
   }
 }

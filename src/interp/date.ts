@@ -7,6 +7,7 @@
 // "local"/default ⇒ offset 0 (UTC, as on Workers) — deterministic, no Intl.
 
 import { SieveError } from "../errors.js";
+import { valueMarks } from "./editheader.js";
 import { getHeader } from "./header.js";
 import { MatcherTest } from "./matcher.js";
 import type { RuntimeData, Test, Tri } from "./runtime.js";
@@ -229,25 +230,28 @@ export class DateTest implements Test {
     // RAW header values (no RFC 2047 decode), but seen through the RFC 5293
     // editheader ledger so date tests observe addheader/deleteheader edits.
     const values = getHeader(d, expandVars(d, this.header));
+    // A value an addheader built from a marked one (see valueMarks) may be a
+    // date only whole, or another one: unknown.
+    const marks = valueMarks(values);
 
     if (this.matcher.isCount()) {
       let n = 0;
-      for (const v of values) if (parseHeaderDate(v) !== null) n++;
+      for (let i = 0; i < values.length; i++) {
+        if ((marks?.[i] ?? "") !== "") return "unknown";
+        if (parseHeaderDate(values[i]!) !== null) n++;
+      }
       return this.matcher.countMatches(d, n);
     }
 
     if (values.length === 0) return false;
-    let value: string;
+    let idx = 0;
     if (this.index > 0) {
-      let idx = this.index - 1;
-      if (this.last) idx = values.length - this.index;
+      idx = this.last ? values.length - this.index : this.index - 1;
       if (idx < 0 || idx >= values.length) return false;
-      value = values[idx]!;
-    } else {
-      value = values[0]!;
     }
+    if ((marks?.[idx] ?? "") !== "") return "unknown";
 
-    const parsed = parseHeaderDate(value);
+    const parsed = parseHeaderDate(values[idx]!);
     if (parsed === null) return false; // unparseable ⇒ no match (not an error)
     const zt = this.applyZone(parsed);
     return this.matcher.tryMatch(d, extractDatePart(zt, this.datePart), matchOpts(d));

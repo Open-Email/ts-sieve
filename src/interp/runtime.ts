@@ -13,23 +13,37 @@ import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
 /**
- * Captures a match took from an input the engine cut (matcher.ts): they may
- * differ from what the whole input gives. Keyed by the array, so code that
+ * What a value the engine could not hold whole is to the tests that read it
+ * (ts-sieve #57): "prefix", a prefix of the real value (a variable cut to its
+ * size limit, the last capture of a :matches over a cut input); "doubt",
+ * possibly anything else (text after such a prefix, its :length, a :regex
+ * capture from a cut input, a capture an unknown may have changed); "" for a
+ * value held whole. The mark is on the value, not the run: only a test that
+ * reads it answers "unknown" for it, and only that unknown deciding a branch
+ * is disclosed.
+ */
+export type Mark = "" | "prefix" | "doubt";
+
+/**
+ * Captures a match took from an input the engine cut (matcher.ts), and the
+ * match type that took them: a :matches with a sound trailing "*" proves its
+ * inner captures, and its last one and ${0} are prefixes of the whole input's;
+ * a :regex capture can differ in any group. Keyed by the array, so code that
  * saves and restores RuntimeData.matchVariables restores the mark too.
  */
-const cutCaptures = new WeakSet<string[]>();
+const cutCaptures = new WeakMap<string[], "matches" | "regex">();
 
-/** Mark captures as taken from a cut input (see matchVariable). */
-export function markCutCaptures(caps: string[]): void {
-  cutCaptures.add(caps);
+/** Mark captures as taken from a cut input (see captureMark). */
+export function markCutCaptures(caps: string[], kind: "matches" | "regex"): void {
+  cutCaptures.set(caps, kind);
 }
 
 /**
  * Captures an "unknown" may have changed. Evaluation goes on past an unknown
  * member of anyof/allof, or an unknown key or value: over the whole input it
  * could have set its own captures, or ended the test before a later member set
- * these. Any read of them discloses, an out-of-range one too (the group count
- * may differ).
+ * these. Each of them is in doubt (see captureMark), an out-of-range one too
+ * (the group count may differ): a test over one answers unknown.
  */
 const staleCaptures = new WeakSet<string[]>();
 
@@ -138,7 +152,16 @@ export class SharedTest implements Test {
     return (this.test as { setsCaptures?: boolean }).setsCaptures;
   }
   check(d: RuntimeData): Tri {
-    return withShare(d, this.index, () => this.test.check(d));
+    const outer = d.testDoubt;
+    d.testDoubt = false;
+    try {
+      const r = withShare(d, this.index, () => this.test.check(d));
+      // A marked value read where the test could not weigh it: its definite
+      // answer may not be the whole input's.
+      return d.testDoubt ? "unknown" : r;
+    } finally {
+      d.testDoubt = outer;
+    }
   }
 }
 
@@ -256,9 +279,11 @@ export class RuntimeData {
    * (discard, redirect-without-keep, reject) and let the recoverable ones
    * stand.
    * Unknowns a definite value absorbed inside allof/anyof never set this.
-   * Also set when a variable's value was cut to its size limit, when a
-   * fileinto or redirect past its limit was dropped, and when a reject stood
-   * beside a delivering action (see rejectConflict).
+   * A value the engine could not hold whole is marked, not the run (see
+   * Mark): this is set only where a command cannot weigh the mark and drops
+   * what it would have done (a redirect to one, or a header name built from
+   * one). Also set when a fileinto or redirect past its limit was dropped, and
+   * when a reject stood beside a delivering action (see rejectConflict).
    */
   indeterminate = false;
 
@@ -279,6 +304,11 @@ export class RuntimeData {
   mailboxes: string[] = [];
   mailboxesCreate: string[] = []; // RFC 5490 :create
   flags: string[] = [];
+  /** The internal flag set was built from a value the engine could not hold
+   * whole (see Mark): hasflag over it cannot answer for the whole input. A
+   * setflag, or the :flags of keep or fileinto, of values held whole replaces
+   * it, and a discard clears it. */
+  flagsMarked = false;
   keep = false;
   implicitKeep = true;
 
@@ -337,17 +367,30 @@ export class RuntimeData {
   /** FS that `test_script_compile` reads sub-scripts from. */
   namespace: Namespace | null = null;
 
-  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). A capture from a cut input
-   * may differ from what the whole input gives (for :matches, ${0} and the
-   * last "*"; for :regex, any group), with nothing to say so: reading it sets
-   * indeterminate, as a variable cut to its size limit does. So does reading a capture an
-   * "unknown" may have changed (see doubtCaptures), in range or not. */
+  /** Read ${i}; out-of-range ⇒ "" (RFC 5229). */
   matchVariable(i: number): string {
-    if (staleCaptures.has(this.matchVariables)) this.indeterminate = true;
-    if (i < 0 || i >= this.matchVariables.length) return "";
-    if (cutCaptures.has(this.matchVariables)) this.indeterminate = true;
-    return this.matchVariables[i]!;
+    return i >= 0 && i < this.matchVariables.length ? this.matchVariables[i]! : "";
   }
+
+  /** The mark on ${i} (see Mark): a capture an unknown may have changed is in
+   * doubt, out of range too (the group count may differ); one from a cut
+   * input is a prefix (a :matches' ${0} and last capture), exact (its inner
+   * ones), or in doubt (any :regex group). */
+  captureMark(i: number): Mark {
+    if (staleCaptures.has(this.matchVariables)) return "doubt";
+    if (i < 0 || i >= this.matchVariables.length) return "";
+    const cut = cutCaptures.get(this.matchVariables);
+    if (cut === undefined) return "";
+    if (cut === "regex") return "doubt";
+    return i === 0 || i === this.matchVariables.length - 1 ? "prefix" : "";
+  }
+
+  /** User variables whose value is marked (see Mark), by lowercased name. */
+  varMarks: Map<string, "prefix" | "doubt"> = new Map();
+
+  /** A test read a marked value where it cannot weigh the mark itself (a
+   * header name, a :count key): SharedTest then answers "unknown". */
+  testDoubt = false;
 
   /** An "unknown" was met in the test being evaluated (see doubtCaptures);
    * cleared after each if/elsif test. (deleteheader, the one other matcher,
@@ -384,6 +427,7 @@ export class RuntimeData {
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];
     c.flags = [...this.flags];
+    c.flagsMarked = this.flagsMarked;
     c.keep = this.keep;
     c.implicitKeep = this.implicitKeep;
     c.rejected = this.rejected;
@@ -397,7 +441,9 @@ export class RuntimeData {
     c.headerEditBytes = this.headerEditBytes;
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
-    if (cutCaptures.has(this.matchVariables)) cutCaptures.add(c.matchVariables);
+    const cut = cutCaptures.get(this.matchVariables);
+    if (cut !== undefined) cutCaptures.set(c.matchVariables, cut);
+    c.varMarks = new Map(this.varMarks);
     if (staleCaptures.has(this.matchVariables)) staleCaptures.add(c.matchVariables);
     c.partStack = [...this.partStack];
     c.vacationResponses = new Map(this.vacationResponses);
