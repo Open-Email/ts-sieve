@@ -110,6 +110,7 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `subaddress` | 5233 | `:user`/`:detail` (separator `+`) |
 | `date` | 5260 | `date`/`currentdate`, all date-parts, `:zone`/`:originalzone`; `Received:` headers extract the date after the final `;` |
 | `index` | 5260 | `:index`/`:last` on `header`, `address`, and `date` |
+| `mime` / `foreverypart` | 5703 | `:mime` and `:anychild` on `header`, `address` and `exists`; `:type`, `:subtype`, `:contenttype` and `:param` (RFC 2231 continuations and charsets) on `header`; `foreverypart [:name]` (nested up to four deep, as in Pigeonhole) and `break [:name]`. The part tree is built once per message by the `body` test's MIME walker, under the same caps. Over a cut body, every part past the cut comes after every part before it, so an `:anychild` miss that may continue past the cut is "unknown", and a loop that reaches the end of a part list that may continue sets `indeterminate`. Loop iterations spend a share of `maxExecSteps`: a loop that runs out stops, disclosed the same way. `extracttext`, `replace` and `enclose` are not implemented |
 | `editheader` | 5293 | virtual: edits go to the `headerEdits` ledger and are replayed on every header read; protected headers (`Received`, `Auto-Submitted`) are immune |
 | `mailbox` | 5490 | `mailboxexists`, `fileinto :create` |
 | `regex` | draft-murchison-sieve-regex | on the linear engine: classes, alternation, bounded `{n,m}`, anchors, `\b`, inline `(?ism)` flags; **no** backreferences or lookaround (rejected at load) |

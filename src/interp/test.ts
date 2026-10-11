@@ -17,6 +17,7 @@ import { getHeader, decodeHeaderValue } from "./header.js";
 import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
+import { type MimeOpts, partHeader } from "./mime.js";
 import type { RuntimeData, Test, Tri } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
@@ -127,6 +128,8 @@ function testAddress(
 export class AddressTest implements Test {
   index = 0; // RFC 5260 :index (0 = all fields)
   last = false;
+  /** RFC 5703 §4.2 :mime / :anychild; null without :mime. */
+  mime: MimeOpts | null = null;
 
   constructor(
     readonly matcher: MatcherTest,
@@ -135,59 +138,71 @@ export class AddressTest implements Test {
   ) {}
 
   check(d: RuntimeData): Tri {
-    let entryCount = 0;
-    let unknown = false;
-    // Header values are complete, so unknowns here come only from the engine's
-    // match-input cap on an oversized value. "unknown" is truthy as a string —
-    // never `if (tryMatch(...))` a Tri; accumulate through this probe instead.
-    const probe = (address: string): boolean => {
-      const r = testAddress(d, this.matcher, this.addressPart, address);
-      if (r === "unknown") unknown = true;
-      return r === true;
-    };
+    const state = { entryCount: 0, unknown: false };
+    if (this.mime?.enabled) {
+      // RFC 5703 §4.2: any header of the parts in scope is read as an address
+      // header, so the address-header allow-list does not apply.
+      const { parts, open } = this.mime.scope(d);
+      for (const part of parts) {
+        for (const hdr of this.header) {
+          if (this.matchValues(d, partHeader(d, part, expandVars(d, hdr)), state)) return true;
+        }
+      }
+      if (this.matcher.isCount()) return countOver(d, this.matcher, state.entryCount, open);
+      return state.unknown || open ? "unknown" : false;
+    }
     for (let hdr of this.header) {
       hdr = expandVars(d, hdr).toLowerCase();
       if (!allowedAddrHeaders.has(hdr)) continue;
+      if (this.matchValues(d, selectIndexed(getHeader(d, hdr), this.index, this.last), state)) return true;
+    }
+    if (this.matcher.isCount()) return this.matcher.countMatches(d, state.entryCount);
+    return state.unknown ? "unknown" : false;
+  }
 
-      const values = selectIndexed(getHeader(d, hdr), this.index, this.last);
-      if (values.length === 0) {
+  /** One header's values: true on a definite match. Counts addresses into
+   * `state.entryCount` under :count; an unknown lands in `state.unknown`.
+   * Header values are complete, so unknowns here come only from the engine's
+   * match-input cap on an oversized value. */
+  private matchValues(d: RuntimeData, values: string[], state: { entryCount: number; unknown: boolean }): boolean {
+    // "unknown" is truthy as a string — never `if (tryMatch(...))` a Tri;
+    // accumulate through this probe instead.
+    const probe = (address: string): boolean => {
+      const r = testAddress(d, this.matcher, this.addressPart, address);
+      if (r === "unknown") state.unknown = true;
+      return r === true;
+    };
+    if (values.length === 0) return !this.matcher.isCount() && probe("");
+    for (const value of values) {
+      const cleanValue = stripRFC2822Comments(value);
+
+      // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
+      // §3.4: name-addr = [display-name] angle-addr), and a non-ASCII local
+      // part is accepted in it as in every other form (RFC 6532).
+      let addrList: { address: string }[];
+      try {
+        addrList = parseAddressList(cleanValue);
+      } catch {
+        if (this.matcher.isCount()) continue;
+        if (probe(cleanValue)) return true;
+        continue;
+      }
+
+      if (addrList.length === 0) {
         if (this.matcher.isCount()) continue;
         if (probe("")) return true;
         continue;
       }
 
-      for (const value of values) {
-        const cleanValue = stripRFC2822Comments(value);
-
-        // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
-        // §3.4: name-addr = [display-name] angle-addr), and a non-ASCII local
-        // part is accepted in it as in every other form (RFC 6532).
-        let addrList: { address: string }[];
-        try {
-          addrList = parseAddressList(cleanValue);
-        } catch {
-          if (this.matcher.isCount()) continue;
-          if (probe(cleanValue)) return true;
+      for (const addr of addrList) {
+        if (this.matcher.isCount()) {
+          state.entryCount++;
           continue;
         }
-
-        if (addrList.length === 0) {
-          if (this.matcher.isCount()) continue;
-          if (probe("")) return true;
-          continue;
-        }
-
-        for (const addr of addrList) {
-          if (this.matcher.isCount()) {
-            entryCount++;
-            continue;
-          }
-          if (probe(addr.address)) return true;
-        }
+        if (probe(addr.address)) return true;
       }
     }
-    if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
-    return unknown ? "unknown" : false;
+    return false;
   }
 }
 
@@ -241,8 +256,24 @@ export class EnvelopeTest implements Test {
 }
 
 export class ExistsTest implements Test {
+  /** RFC 5703 §4.3 :mime / :anychild; null without :mime. */
+  mime: MimeOpts | null = null;
+
   constructor(public fields: string[]) {}
-  check(d: RuntimeData): boolean {
+  check(d: RuntimeData): Tri {
+    if (this.mime?.enabled) {
+      // Each field in some part in scope (Pigeonhole: not all in one part).
+      // Missing from a scope that may go on past the cut, it is unknown.
+      const { parts, open } = this.mime.scope(d);
+      let unknown = false;
+      for (const field of this.fields) {
+        const name = expandVars(d, field);
+        if (parts.some((p) => partHeader(d, p, name).length > 0)) continue;
+        if (!open) return false;
+        unknown = true;
+      }
+      return unknown ? "unknown" : true;
+    }
     for (const field of this.fields) {
       if (getHeader(d, expandVars(d, field)).length === 0) return false;
     }
@@ -266,12 +297,16 @@ export class HeaderTest implements Test {
   index = 0; // RFC 5260 :index (0 = all fields)
   last = false;
 
+  /** RFC 5703 §4.1 :mime and its options; null without :mime. */
+  mime: MimeOpts | null = null;
+
   constructor(
     readonly matcher: MatcherTest,
     public header: string[],
   ) {}
 
   check(d: RuntimeData): Tri {
+    if (this.mime?.enabled) return this.checkMime(d, this.mime);
     let entryCount = 0;
     let unknown = false;
     for (const hdr of this.header) {
@@ -289,6 +324,40 @@ export class HeaderTest implements Test {
     if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
     return unknown ? "unknown" : false;
   }
+
+  /** The fields of every part in scope, through the MIMEOPT. Over a scope that
+   * may go on past the read-window cut, a miss is unknown. */
+  private checkMime(d: RuntimeData, mime: MimeOpts): Tri {
+    const { parts, open } = mime.scope(d);
+    const params = mime.params.map((p) => expandVars(d, p));
+    let entryCount = 0;
+    let unknown = false;
+    for (const part of parts) {
+      for (const hdr of this.header) {
+        const name = expandVars(d, hdr);
+        const values = mime.values(name, partHeader(d, part, name), params);
+        if (this.matcher.isCount()) {
+          entryCount += values.length;
+          continue;
+        }
+        for (const value of values) {
+          const r = this.matcher.tryMatch(d, value, matchOpts(d));
+          if (r === true) return true;
+          if (r === "unknown") unknown = true;
+        }
+      }
+    }
+    if (this.matcher.isCount()) return countOver(d, this.matcher, entryCount, open);
+    return unknown || open ? "unknown" : false;
+  }
+}
+
+/** A :count over a scope that may go on past the cut is a lower bound:
+ * "ge"/"gt" proven stay proven, anything else is unknown. */
+function countOver(d: RuntimeData, matcher: MatcherTest, count: number, open: boolean): Tri {
+  const res = matcher.countMatches(d, count);
+  if (!open) return res;
+  return res && (matcher.relational === "ge" || matcher.relational === "gt") ? true : "unknown";
 }
 
 // Kleene logic (RFC 5228 booleans widened by "unknown" — see runtime.ts's Tri):

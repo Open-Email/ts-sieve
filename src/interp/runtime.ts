@@ -8,6 +8,7 @@
 import { SieveError } from "../errors.js";
 import type { Position } from "../parser/command.js";
 import type { HeaderEdit } from "./editheader.js";
+import type { MimePart } from "./mime.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
@@ -242,6 +243,9 @@ export class RuntimeData {
   /** Match variables ${0..N}: [0] = whole match, [1..] = capture groups. */
   matchVariables: string[] = [];
 
+  /** RFC 5703: the part each running foreverypart has reached, innermost last. */
+  partStack: MimePart[] = [];
+
   /**
    * RFC 5230 vacation intents, keyed by envelope-from sender. The library only
    * records intent; the host reads this after execute() and applies the send +
@@ -310,6 +314,7 @@ export class RuntimeData {
     c.headerEdits = [...this.headerEdits];
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
+    c.partStack = [...this.partStack];
     c.vacationResponses = new Map(this.vacationResponses);
     c.testName = this.testName;
     c.testFailMessage = this.testFailMessage;
