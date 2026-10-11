@@ -18,6 +18,10 @@ const MAX_INPUT_LENGTH = 256 * 1024;
 // even for nested repeats.
 const MAX_REPEAT_COUNT = 1000;
 const MAX_PROGRAM_SIZE = 10_000;
+// The parser and compiler recurse once per level of nesting (a group, or a
+// quantifier applied to a quantified node). Capped well inside the call stack:
+// an overflow is a RangeError, which no caller expects.
+const MAX_NESTING = 250;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -46,6 +50,7 @@ type Node =
 class Parser {
   private pos = 0;
   private capCount = 0;
+  private depth = 0;
   constructor(private readonly src: string, private flags: Flags) {}
 
   parse(): { ast: Node; ncaps: number } {
@@ -81,8 +86,11 @@ class Parser {
 
   private parseRepeat(): Node {
     let node = this.parseAtom();
-    for (;;) {
+    for (let wraps = 1; ; wraps++) {
       const c = this.peek();
+      if ((c === "*" || c === "+" || c === "?" || c === "{") && this.depth + wraps > MAX_NESTING) {
+        throw new SieveError("regex: nested too deeply");
+      }
       if (c === "*" || c === "+" || c === "?") {
         this.pos++;
         const lazy = this.peek() === "?";
@@ -163,6 +171,13 @@ class Parser {
   }
 
   private parseGroup(): Node {
+    if (++this.depth > MAX_NESTING) throw new SieveError("regex: nested too deeply");
+    const node = this.parseGroupBody();
+    this.depth--;
+    return node;
+  }
+
+  private parseGroupBody(): Node {
     this.pos++; // (
     if (this.peek() === "?") {
       this.pos++;
@@ -538,30 +553,39 @@ class Program implements CompiledRegex {
     };
 
     type Thread = { pc: number; caps: number[] };
-    const addThread = (list: Thread[], visited: Set<number>, pc: number, sp: number, caps: number[]): void => {
-      if (visited.has(pc)) return;
-      visited.add(pc);
-      budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
-      const inst = this.prog[pc]!;
-      switch (inst.op) {
-        case "jmp":
-          addThread(list, visited, inst.x, sp, caps);
-          return;
-        case "split":
-          addThread(list, visited, inst.x, sp, caps);
-          addThread(list, visited, inst.y, sp, caps);
-          return;
-        case "save": {
-          const c = caps.slice();
-          c[inst.slot] = sp;
-          addThread(list, visited, pc + 1, sp, c);
-          return;
+    // Follow the epsilon instructions (jmp, split, save, assert) from pc and
+    // add the threads they reach to `list`, in priority order: a depth-first
+    // walk with an explicit stack, `split`'s preferred branch on top. It
+    // recursed once per instruction, and the program-size cap allows epsilon
+    // chains longer than the call stack ("(?:^{1000}){9}").
+    const pending: Thread[] = [];
+    const addThread = (list: Thread[], visited: Set<number>, pc0: number, sp: number, caps0: number[]): void => {
+      pending.push({ pc: pc0, caps: caps0 });
+      while (pending.length > 0) {
+        const { pc, caps } = pending.pop()!;
+        if (visited.has(pc)) continue;
+        visited.add(pc);
+        budget?.consume(1); // bound VM work: at most program × input (pc,sp) visits
+        const inst = this.prog[pc]!;
+        switch (inst.op) {
+          case "jmp":
+            pending.push({ pc: inst.x, caps });
+            break;
+          case "split":
+            pending.push({ pc: inst.y, caps }, { pc: inst.x, caps });
+            break;
+          case "save": {
+            const c = caps.slice();
+            c[inst.slot] = sp;
+            pending.push({ pc: pc + 1, caps: c });
+            break;
+          }
+          case "assert":
+            if (checkAssert(inst.kind, sp)) pending.push({ pc: pc + 1, caps });
+            break;
+          default:
+            list.push({ pc, caps });
         }
-        case "assert":
-          if (checkAssert(inst.kind, sp)) addThread(list, visited, pc + 1, sp, caps);
-          return;
-        default:
-          list.push({ pc, caps });
       }
     };
 
