@@ -579,27 +579,19 @@ interface StepBudget {
 export interface CompiledRegex {
   /** Compile calls it took (see MAX_COMPILE_WORK). */
   readonly compileWork: number;
-  /** Whether the pattern holds an assertion decided by what follows the
-   * matched text (`$`, `\z`, `\b`, `\B`): at the end of a cut input nothing
-   * follows, though the whole input goes on. */
-  readonly endSensitive: boolean;
-  /** `info.atEnd`, when given, is set to whether the match ends at the end of
-   * the input matched (after maxInputLength's cut). */
+  /** `info.atEnd`, when given, is set to whether the match relied on an
+   * assertion decided by what follows the matched text (`$`, `\z`, `\b`,
+   * `\B`) at the end of the input matched (after maxInputLength's cut): at the
+   * end of a cut input nothing follows, though the whole input goes on. */
   findSubmatch(input: string, opts?: { maxInputLength?: number; budget?: StepBudget; info?: { atEnd: boolean } }): string[] | null;
 }
 
 class Program implements CompiledRegex {
-  readonly endSensitive: boolean;
-
   constructor(
     private readonly prog: Inst[],
     private readonly ncaps: number,
     readonly compileWork: number,
-  ) {
-    this.endSensitive = prog.some(
-      (i) => i.op === "assert" && (i.kind === "eot" || i.kind === "eol" || i.kind === "wordb" || i.kind === "nwordb"),
-    );
-  }
+  ) {}
 
   findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget; info?: { atEnd: boolean } }): string[] | null {
     const maxInput = opts?.maxInputLength ?? MAX_INPUT_LENGTH;
@@ -609,6 +601,10 @@ class Program implements CompiledRegex {
     if (byteLen(s) > maxInput) s = truncateToBytes(s, maxInput);
     const input = Array.from(s, (ch) => ch.codePointAt(0)!);
     const nslots = 2 * this.ncaps + 2;
+    // One more slot per thread: 1 once it passed an assertion that looks at
+    // what follows ($, \z, \b, \B) at the end of the input (see info.atEnd).
+    // bol and bot only look back.
+    const endSlot = nslots;
 
     const checkAssert = (kind: string, sp: number): boolean => {
       switch (kind) {
@@ -662,6 +658,10 @@ class Program implements CompiledRegex {
             pc++;
           } else if (inst.op === "assert") {
             if (!checkAssert(inst.kind, sp)) break;
+            if (sp === input.length && inst.kind !== "bol" && inst.kind !== "bot" && caps[endSlot] !== 1) {
+              caps = caps.slice();
+              caps[endSlot] = 1;
+            }
             pc++;
           } else {
             list.push({ pc, caps });
@@ -673,7 +673,7 @@ class Program implements CompiledRegex {
 
     let clist: Thread[] = [];
     let cvisited = new Set<number>();
-    addThread(clist, cvisited, 0, 0, new Array(nslots).fill(-1));
+    addThread(clist, cvisited, 0, 0, new Array(nslots + 1).fill(-1));
     let matched: number[] | null = null;
 
     for (let sp = 0; sp <= input.length; sp++) {
@@ -700,7 +700,7 @@ class Program implements CompiledRegex {
       // Unanchored leftmost search: seed a fresh start thread at the next
       // position (lowest priority) until a match is found.
       if (matched === null && sp < input.length) {
-        const startCaps = new Array(nslots).fill(-1);
+        const startCaps = new Array(nslots + 1).fill(-1);
         startCaps[0] = sp + 1;
         addThread(nlist, nvisited, 0, sp + 1, startCaps);
       }
@@ -718,7 +718,7 @@ class Program implements CompiledRegex {
     }
 
     if (matched === null) return null;
-    if (opts?.info) opts.info.atEnd = matched[1] === input.length;
+    if (opts?.info) opts.info.atEnd = matched[endSlot] === 1;
     const out: string[] = [];
     for (let i = 0; i < nslots; i += 2) {
       const a = matched[i]!;

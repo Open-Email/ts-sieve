@@ -54,6 +54,36 @@ describe("a match that ends before the cut is definite, its assertions seeing wh
     expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
   });
 
+  it("a match running into the cut with only a start anchor: ^ looks back", () => {
+    const r = run(rule('header :regex "subject" "^x+"'), subject("x".repeat(20_000)), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
+  });
+
+  it("a \\b one character before the cut", () => {
+    const r = run(rule(`header :regex "subject" "${lit(`${B}bfree${B}b`)}"`), subject(atCut(" free ", "dom")), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
+  });
+
+  it("a match that ran into the cut after its \\b was decided at the start", () => {
+    // What decides is whether the match relied on such an assertion AT the
+    // cut, not whether the pattern has one somewhere.
+    const r = run(rule(`header :regex "subject" "${lit(`${B}bfree.*`)}"`), subject(`free ${"x".repeat(20_000)}`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
+  });
+
+  it("a multiline ^ at the cut, right after a line's end: ^ looks back", () => {
+    const body = `${"y".repeat(16 * 1024 - 4)}abc\nmore\n`;
+    const r = run(rule(`body :raw :regex "${lit(`(?m)abc${B}n^`)}"`), `From: a@x\r\nSubject: s\r\n\r\n${body}`, CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
+  });
+
+  it("an assertion at the cut in a branch that did not win", () => {
+    // "$" passes at the cut in the first alternative, which then needs a "z";
+    // the empty one wins, having asserted nothing.
+    const r = run(rule('header :regex "subject" "x+(?:$z|)"'), subject("x".repeat(20_000)), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([false, false]);
+  });
+
   it("a multiline $ at a line's end", () => {
     // LF: a multiline $ asserts before "\n", not "\r".
     const body = `abc\n${"y".repeat(20_000)}\n`;

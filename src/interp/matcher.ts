@@ -94,7 +94,7 @@ export class MatcherTest {
   /** Per `:matches` key: does a MATCH over a truncated input prove a match
    * over the real value? (A trailing unescaped `*`.) null = variable-bearing
    * key, decide per-run from the expanded pattern. A `:regex` match decides it
-   * at run time: see CompiledRegex.endSensitive. */
+   * at run time: see findSubmatch's info.atEnd. */
   private soundKeys: (boolean | null)[] = [];
 
   /** Register the comparator/match-type/relational tags onto a test's spec. */
@@ -352,7 +352,7 @@ export class MatcherTest {
           // unless an assertion decided it at the cut ($, \z, \b, \B look at
           // what follows, and nothing does there though the whole goes on).
           // Before the cut they see the same characters in both inputs.
-          if (!truncated || !(re.endSensitive && info.atEnd)) {
+          if (!truncated || !info.atEnd) {
             if (d.captureDoubt || unknown) markStaleCaptures(caps);
             else if (truncated) markCutCaptures(caps);
             d.matchVariables = caps;
