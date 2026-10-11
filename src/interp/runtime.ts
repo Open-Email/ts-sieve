@@ -340,7 +340,7 @@ export class RuntimeData {
   /** Read ${i}; out-of-range ⇒ "" (RFC 5229). A capture from a cut input
    * may differ from what the whole input gives (for :matches, ${0} and the
    * last "*"; for :regex, any group), with nothing to say so: reading it sets
-   * indeterminate, as extracttext's cut does. So does reading a capture an
+   * indeterminate, as a variable cut to its size limit does. So does reading a capture an
    * "unknown" may have changed (see doubtCaptures), in range or not. */
   matchVariable(i: number): string {
     if (staleCaptures.has(this.matchVariables)) this.indeterminate = true;

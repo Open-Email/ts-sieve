@@ -176,6 +176,18 @@ describe("captures an absorbed unknown leaves behind", () => {
     expect(run(script, msg(`From: a@spam.example\r\n${cutSubject}`), CORE).indeterminate).toBe(true);
   });
 
+  it("a definite member restores the doubt an earlier member raised, not clears it", () => {
+    const script = `require ["variables"];
+      if anyof (header :matches "subject" "*(*)", header :is "x-none" "z", header :matches "from" "*@*") { if string :is "\${2}" "spam.example" { discard; } }`;
+    expect(run(script, msg(`From: a@spam.example\r\n${cutSubject}`), CORE).indeterminate).toBe(true);
+  });
+
+  it("a member that answered false after an inner unknown doubts nothing after it", () => {
+    const script = `require ["variables","body"];
+      if anyof (allof (body :raw :matches "*NOPE", false), header :matches "from" "*@*") { if string :is "\${2}" "spam.example" { discard; } }`;
+    expect(run(script, `From: a@spam.example\r\nSubject: s\r\n\r\n${"y".repeat(18_000)}\r\n`, CORE).indeterminate).toBe(false);
+  });
+
   it("nothing is disclosed when nothing reads them, or a later rule matches afresh", () => {
     const absorbed = 'if allof (header :matches "subject" "*(*)", header :is "x-none" "z") { }';
     expect(run(`require ["variables","fileinto"]; ${absorbed} fileinto "X";`, msg(cutSubject), CORE).indeterminate).toBe(false);
