@@ -2,7 +2,7 @@
 // String arguments are expanded through RFC 5229 variables at execution time
 // (expandVars is identity when the script does not require `variables`).
 
-import { type Cmd, type RuntimeData, StopSignal } from "./runtime.js";
+import { type Cmd, onGuess, type RuntimeData, StopSignal } from "./runtime.js";
 import { expandMarked, expandVars, setVar } from "./variables.js";
 
 /**
@@ -165,6 +165,14 @@ function redirectKey(addr: string): string {
   return at === -1 ? a : a.slice(0, at) + a.slice(at).toLowerCase();
 }
 
+/** The redirect targets held only on a guess (see onGuess): no redirect to
+ * them ran outside one. A forward cannot be recalled, so a host withholds
+ * these and sends the rest. */
+export function redirectsOnGuess(d: RuntimeData): string[] {
+  if (d.redirectGuessed.size === 0) return [];
+  return d.redirectAddr.filter((a) => d.redirectGuessed.has(redirectKey(a)));
+}
+
 export class CmdRedirect implements Cmd {
   addr = "";
   copy = false; // RFC 3894 :copy
@@ -178,6 +186,9 @@ export class CmdRedirect implements Cmd {
     // and disclosed (see Mark).
     if (mark !== "") {
       d.indeterminate = true;
+      // Whole, it may have taken a slot under maxRedirects that a later
+      // redirect takes here.
+      if (d.script.redirectsMayCap) d.guessAfter = true;
       return;
     }
     // An address is redirected to once (as in Pigeonhole), and a repeat is no
@@ -188,6 +199,8 @@ export class CmdRedirect implements Cmd {
     const key = addr === this.addr ? (this.literalKey ??= redirectKey(addr)) : redirectKey(addr);
     if (memberSet(d.redirectAddr, redirectKey).keys.has(key)) {
       if (!this.copy) d.implicitKeep = false;
+      // A repeat outside a guess makes the target no guess.
+      if (d.redirectGuessed.size > 0 && !onGuess(d)) d.redirectGuessed.delete(key);
       return;
     }
     if (d.redirectAddr.length >= d.script.opts.maxRedirects) {
@@ -199,7 +212,10 @@ export class CmdRedirect implements Cmd {
     if (!d.policy.redirectAllowed(d, addr)) return;
     // Read again: the policy may have appended to the list.
     const held = memberSet(d.redirectAddr, redirectKey);
-    if (!held.keys.has(key)) append(held, d.redirectAddr, addr, key);
+    if (!held.keys.has(key)) {
+      append(held, d.redirectAddr, addr, key);
+      if (onGuess(d)) d.redirectGuessed.add(key);
+    }
     if (!this.copy) d.implicitKeep = false;
   }
 }

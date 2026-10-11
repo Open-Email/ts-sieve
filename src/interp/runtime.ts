@@ -319,6 +319,22 @@ export class RuntimeData {
   rejectExtended = false;
   /** A vacation action ran, whether or not it recorded a response. */
   vacationRan = false;
+  /** The vacation response recorded was recorded only on a guess (see
+   * onGuess): no vacation recorded it outside one. */
+  vacationOnGuess = false;
+  /** The redirect targets (by redirectKey) every redirect to which so far
+   * ran on a guess (see onGuess, redirectsOnGuess). Empty in a run that
+   * never guessed, so a redirect then costs no lookup in it. */
+  redirectGuessed: Set<string> = new Set();
+  /** Arms being run that an unknown chose (see control.ts). */
+  guessDepth = 0;
+  /** An unknown decided an arm, a loop or a header edit that could change
+   * what runs after it: everything after is on a guess (see control.ts). */
+  guessAfter = false;
+  /** An unknown decided a condition earlier in this if/elsif chain, so the
+   * arm that runs may not be the one the whole input would choose. Threaded
+   * like ifResult. */
+  chainGuessed = false;
 
   flagAliases: Map<string, string> = new Map();
 
@@ -435,6 +451,11 @@ export class RuntimeData {
     c.rejectExtended = this.rejectExtended;
     c.rejectConflict = this.rejectConflict;
     c.vacationRan = this.vacationRan;
+    c.vacationOnGuess = this.vacationOnGuess;
+    c.redirectGuessed = new Set(this.redirectGuessed);
+    c.guessDepth = this.guessDepth;
+    c.guessAfter = this.guessAfter;
+    c.chainGuessed = this.chainGuessed;
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
@@ -455,6 +476,17 @@ export class RuntimeData {
     c.namespace = this.namespace;
     return c;
   }
+}
+
+/**
+ * Whether an action running now is on a guess: an "unknown" chose the arm it
+ * runs in, or decided earlier an arm, a loop or a header edit that could
+ * change what runs after it. A forward or an auto-reply cannot be recalled,
+ * so a host withholds the ones a guess decided; the rest of the run is as the
+ * whole input would have it.
+ */
+export function onGuess(d: RuntimeData): boolean {
+  return d.guessDepth > 0 || d.guessAfter;
 }
 
 export function newRuntimeData(

@@ -9,56 +9,85 @@
 // fails the whole script open, so one undecidable body glob would stop every
 // unrelated rule from applying. The host reads d.indeterminate to bound what
 // an execution that guessed may do (refuse its irreversible outcomes).
+//
+// It also reads which actions the guess decided (see runtime.ts's onGuess):
+// the arm that runs after an unknown condition in its chain may not be the
+// one the whole input would choose, and an unknown-decided arm that could
+// change what runs after it (mayAffectLater, see guess.ts) puts the rest of
+// the run on a guess. An arm that only files changes nothing after it.
 
 import type { Cmd, RuntimeData, Test } from "./runtime.js";
+
+/** Run an arm, on a guess when an unknown decided the chain before it. One
+ * that could change what runs after it puts the rest of the run on a guess. */
+function runArm(d: RuntimeData, block: Cmd[], guessed: boolean, mayAffectLater: boolean): void {
+  if (guessed) {
+    if (mayAffectLater) d.guessAfter = true;
+    d.guessDepth++;
+  }
+  try {
+    for (const c of block) {
+      d.budget.consume(1);
+      c.execute(d);
+    }
+  } finally {
+    if (guessed) d.guessDepth--;
+  }
+}
 
 export class CmdIf implements Cmd {
   test!: Test;
   block: Cmd[] = [];
+  /** The block could change what runs after it (see guess.ts). */
+  mayAffectLater = true;
 
   execute(d: RuntimeData): void {
     const res = this.test.check(d);
     // Doubt about captures lasts one test's evaluation (see doubtCaptures).
     d.captureDoubt = false;
-    if (res === "unknown") d.indeterminate = true;
-    if (res === true) {
-      for (const c of this.block) {
-        d.budget.consume(1);
-        c.execute(d);
-      }
+    if (res === "unknown") {
+      d.indeterminate = true;
+      // The block not run may be the one the whole input runs.
+      if (this.mayAffectLater) d.guessAfter = true;
     }
+    if (res === true) runArm(d, this.block, false, this.mayAffectLater);
     d.ifResult = res === true;
+    d.chainGuessed = res === "unknown";
   }
 }
 
 export class CmdElsif implements Cmd {
   test!: Test;
   block: Cmd[] = [];
+  /** The block could change what runs after it (see guess.ts). */
+  mayAffectLater = true;
 
   execute(d: RuntimeData): void {
     if (d.ifResult) return;
+    const prior = d.chainGuessed;
+    // Whole, the chain may have ended before this test: the captures it sets
+    // are then a guess too.
+    if (prior && d.script.requiresExtension("variables")) d.guessAfter = true;
     const res = this.test.check(d);
     // Doubt about captures lasts one test's evaluation (see doubtCaptures).
     d.captureDoubt = false;
-    if (res === "unknown") d.indeterminate = true;
-    if (res === true) {
-      for (const c of this.block) {
-        d.budget.consume(1);
-        c.execute(d);
-      }
+    if (res === "unknown") {
+      d.indeterminate = true;
+      if (this.mayAffectLater) d.guessAfter = true;
     }
+    if (res === true) runArm(d, this.block, prior, this.mayAffectLater);
     d.ifResult = res === true;
+    d.chainGuessed = prior || res === "unknown";
   }
 }
 
 export class CmdElse implements Cmd {
   block: Cmd[] = [];
+  /** The block could change what runs after it (see guess.ts). */
+  mayAffectLater = true;
 
   execute(d: RuntimeData): void {
     if (d.ifResult) return;
-    for (const c of this.block) {
-      d.budget.consume(1);
-      c.execute(d);
-    }
+    runArm(d, this.block, d.chainGuessed, this.mayAffectLater);
   }
 }

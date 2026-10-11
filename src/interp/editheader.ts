@@ -32,10 +32,17 @@ const PROTECTED_HEADERS = new Set(["received", "auto-submitted"]);
 const MAX_HEADER_EDITS = 1024;
 const MAX_HEADER_EDIT_BYTES = 1024 * 1024;
 
+/** An edit not made, or not made on proof: later header reads may differ
+ * from the whole input's, so what runs after it is on a guess (see onGuess). */
+function disclose(d: RuntimeData): void {
+  d.indeterminate = true;
+  d.guessAfter = true;
+}
+
 /** Whether one more edit (adding `bytes`) fits; if not, disclose the drop. */
 function editFits(d: RuntimeData, bytes: number): boolean {
   if (d.headerEdits.length < MAX_HEADER_EDITS && d.headerEditBytes + bytes <= MAX_HEADER_EDIT_BYTES) return true;
-  d.indeterminate = true;
+  disclose(d);
   return false;
 }
 
@@ -206,7 +213,7 @@ export class CmdAddHeader implements Cmd {
     // script's: nothing is added under it, and the guess is disclosed (as
     // deleteheader's).
     if (nameMark !== "") {
-      d.indeterminate = true;
+      disclose(d);
       return;
     }
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
@@ -240,7 +247,7 @@ export class CmdDeleteHeader implements Cmd {
     // A name built from a value the engine could not hold whole is not the
     // whole input's: nothing is deleted on it, and the guess is disclosed.
     if (mark !== "") {
-      d.indeterminate = true;
+      disclose(d);
       return;
     }
     if (!isValidHeaderName(fieldName)) return;
@@ -279,7 +286,7 @@ export class CmdDeleteHeader implements Cmd {
     });
     if (r === "unknown") {
       d.matchVariables = savedVars; // a match before the share ran out proves nothing
-      d.indeterminate = true;
+      disclose(d);
       return;
     }
     for (const e of edits) if (editFits(d, 0)) d.headerEdits.push(e);
@@ -297,7 +304,7 @@ export class CmdDeleteHeader implements Cmd {
     if (mark === "" || (mark === "prefix" && decodesAsPrefix(value))) {
       r = this.matcher.tryMatch(d, decodeHeaderValue(value).trim(), opts, mark === "prefix");
     }
-    if (r === "unknown") d.indeterminate = true;
+    if (r === "unknown") disclose(d);
     return r === true;
   }
 }

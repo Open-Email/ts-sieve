@@ -29,6 +29,8 @@ export class CmdForEveryPart implements Cmd {
   block: Cmd[] = [];
   /** This loop's number among the script's budgeted work (see withShare). */
   shareIndex = 0;
+  /** The block could change what runs after the loop (see guess.ts). */
+  mayAffectLater = true;
 
   execute(d: RuntimeData): void {
     const cur = currentPart(d);
@@ -56,7 +58,11 @@ export class CmdForEveryPart implements Cmd {
       }
       return true;
     });
-    if (r === "unknown" || (!broke && top.openBelow)) d.indeterminate = true;
+    if (r === "unknown" || (!broke && top.openBelow)) {
+      d.indeterminate = true;
+      // The iterations it missed may have changed what runs after it.
+      if (this.mayAffectLater) d.guessAfter = true;
+    }
   }
 }
 

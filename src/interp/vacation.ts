@@ -13,7 +13,7 @@
 // RFC 5230 §5.4 wants "Auto: <original subject>", and the original subject is a
 // header only the host has.
 
-import type { Cmd, RuntimeData } from "./runtime.js";
+import { type Cmd, onGuess, type RuntimeData } from "./runtime.js";
 import { expandVars, expandVarsList } from "./variables.js";
 
 export interface VacationResponse {
@@ -76,6 +76,8 @@ export class CmdVacation implements Cmd {
 
     // Record intent (last-write-wins). The host applies the actual send + dedup.
     // vacation does NOT cancel the implicit keep (RFC 5230 §4).
+    // On a guess only while every vacation that recorded one ran on a guess.
+    d.vacationOnGuess = (d.vacationResponses.size === 0 || d.vacationOnGuess) && onGuess(d);
     d.vacationResponses.set(sender, {
       from,
       subject,
