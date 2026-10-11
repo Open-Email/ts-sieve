@@ -287,3 +287,39 @@ describe("the flag set after a discard", () => {
     expect(r).toMatchObject({ fileinto: ["F"], indeterminate: false });
   });
 });
+
+describe("re-review of #60", () => {
+  it("deleteheader deletes a marked value the prefix proves it matches", () => {
+    const script = `require ["variables","editheader"]; ${STORE} addheader "X-S" "\${s}"; deleteheader :contains "x-s" "foo"; if exists "x-s" { discard; }`;
+    const r = run(script, msg(`From: a@x\r\nSubject: foo ${"x".repeat(4500)}`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, false]);
+    // Two of them, the same text: both go.
+    const twice = `require ["variables","editheader"]; ${STORE} addheader "X-S" "\${s}"; addheader "X-S" "\${s}"; deleteheader :contains "x-s" "foo"; if exists "x-s" { discard; }`;
+    const r2 = run(twice, msg(`From: a@x\r\nSubject: foo ${"x".repeat(4500)}`), CORE);
+    expect([r2.implicitKeep, r2.indeterminate]).toEqual([true, false]);
+  });
+
+  it("fileinto :flags and keep :flags carry the mark into the flag set", () => {
+    const KW = 'if header :matches "x-kw" "*" { set "kw" "${1}"; }';
+    const m = msg(`From: a@x\r\nX-Kw: ${"x".repeat(4000)} important`);
+    const filed = run(`require ["variables","imap4flags","fileinto","copy"]; ${KW} fileinto :copy :flags "\${kw}" "Archive"; if not hasflag "important" { discard; }`, m, CORE);
+    expect([filed.implicitKeep, filed.indeterminate]).toEqual([true, true]);
+    const kept = run(`require ["variables","imap4flags"]; ${KW} keep :flags "\${kw}"; if not hasflag "important" { redirect "triage@example.com"; }`, m, CORE);
+    expect([kept.redirect, kept.indeterminate]).toEqual([[], true]);
+  });
+
+  it("a literal flag list on keep replaces the set, and its doubt", () => {
+    const BS = String.fromCharCode(92);
+    const script = `require ["variables","imap4flags","fileinto"]; if header :matches "x-kw" "*" { set "kw" "\${1}"; } addflag "\${kw}"; keep :flags "${BS}${BS}Seen"; if hasflag "${BS}${BS}seen" { fileinto "Seen"; }`;
+    const r = run(script, msg(`From: a@x\r\nX-Kw: ${"x".repeat(4000)} important`), CORE);
+    expect(r).toMatchObject({ fileinto: ["Seen"], indeterminate: false });
+  });
+
+  it("a prefix the cut ended at an '=' is in doubt: the whole may hold an encoded word there", () => {
+    // X-Raw decodes to "<3,999 x>=?utf-8?q?Z?=", cut after the "=". Whole,
+    // the added field decodes again, to "<3,999 x>Z".
+    const script = 'require ["variables","editheader"]; if header :matches "x-raw" "*" { set "s" "${1}"; } addheader "X-S" "${s}"; if header :contains "x-s" "x=" { discard; }';
+    const r = run(script, msg(`From: a@x\r\nX-Raw: ${"x".repeat(3999)}=?utf-8?b?PT91dGYtOD9xP1o/PQ==?=`), CORE);
+    expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
+  });
+});

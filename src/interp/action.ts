@@ -3,7 +3,7 @@
 // (expandVars is identity when the script does not require `variables`).
 
 import { type Cmd, type RuntimeData, StopSignal } from "./runtime.js";
-import { expandMarked, expandVars, expandVarsList, setVar } from "./variables.js";
+import { expandMarked, expandVars, setVar } from "./variables.js";
 
 /**
  * Normalise a flag list: split space-delimited flags, apply aliases, lowercase
@@ -135,10 +135,10 @@ export class CmdFileInto implements Cmd {
     }
     // Expanded and charged before anything changes: in a loop a charge may
     // run out of the loop's share, and the command must then have done nothing.
-    let flags: string[] | null = null;
+    let flags: { flags: string[]; doubt: boolean } | null = null;
     if (this.flags !== null) {
-      flags = expandVarsList(d, this.flags);
-      chargeFlags(d, flags);
+      flags = flagsMarked(d, this.flags);
+      chargeFlags(d, flags.flags);
     }
     if (!held) append(names, d.mailboxes, mailbox, mailbox);
     if (!this.copy) d.implicitKeep = false;
@@ -146,7 +146,7 @@ export class CmdFileInto implements Cmd {
       const created = memberSet(d.mailboxesCreate, same);
       if (!created.keys.has(mailbox)) append(created, d.mailboxesCreate, mailbox, mailbox);
     }
-    if (flags !== null) d.flags = canonicalFlags(flags, null, d.flagAliases);
+    if (flags !== null) setInternalFlags(d, flags.flags, flags.doubt);
   }
 }
 
@@ -209,12 +209,10 @@ export class CmdKeep implements Cmd {
 
   execute(d: RuntimeData): void {
     // Expanded and charged first, as for fileinto.
-    const flags = this.flags === null ? null : expandVarsList(d, this.flags);
-    if (flags !== null) chargeFlags(d, flags);
+    const flags = this.flags === null ? null : flagsMarked(d, this.flags);
+    if (flags !== null) chargeFlags(d, flags.flags);
     d.keep = true; // keep does NOT cancel implicit keep
-    if (flags !== null) {
-      d.flags = canonicalFlags(flags, null, d.flagAliases);
-    }
+    if (flags !== null) setInternalFlags(d, flags.flags, flags.doubt);
   }
 }
 
@@ -238,6 +236,13 @@ function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: 
     return value;
   });
   return { flags, doubt, literal };
+}
+
+/** Replace the internal flag set, and its doubt with the list's (see
+ * RuntimeData.flagsMarked): setflag, and the :flags of keep and fileinto. */
+function setInternalFlags(d: RuntimeData, flags: string[], doubt: boolean): void {
+  d.flags = canonicalFlags(flags, null, d.flagAliases);
+  d.flagsMarked = doubt;
 }
 
 /** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
@@ -272,8 +277,7 @@ export class CmdSetFlag implements Cmd {
       // A literal list is the script's own value: its cut is no mark (as set's).
       setVar(d, this.variableName, canonicalFlagsOrdered(flags, null, d.flagAliases).join(" "), doubt ? "doubt" : "", !literal);
     } else {
-      d.flags = canonicalFlags(flags, null, d.flagAliases);
-      d.flagsMarked = doubt;
+      setInternalFlags(d, flags, doubt);
     }
   }
 }

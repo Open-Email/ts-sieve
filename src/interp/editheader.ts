@@ -18,7 +18,8 @@ export interface HeaderEdit {
   last: boolean; // add: append vs prepend; delete: count :index from the end
   index: number; // delete: 1-based specific occurrence (0 = all)
   /** add: the value was built from one the engine could not hold whole (see
-   * Mark). Absent for a value held whole. */
+   * Mark); delete by value: the mark of the value it matched. Absent for a
+   * value held whole. */
   mark?: Mark;
 }
 
@@ -107,13 +108,20 @@ export function valueMarks(values: string[]): readonly Mark[] | undefined {
 /**
  * Match a header value at `mark`: whole, after decoding; a prefix, as a cut
  * header is matched (a definite answer only where the prefix proves it); in
- * doubt, unknown. A prefix that holds an encoded word is in doubt too: the
- * whole may decode where the prefix does not, or drop the white space between
- * two encoded words the prefix ends between.
+ * doubt, unknown. A prefix an encoded word may straddle is in doubt too (see
+ * decodesAsPrefix): the whole may decode where the prefix does not, or drop
+ * the white space between two encoded words the prefix ends between.
  */
 export function matchHeaderValue(d: RuntimeData, matcher: MatcherTest, value: string, mark: Mark, opts: MatchOptions): Tri {
-  if (mark === "doubt" || (mark === "prefix" && value.includes("=?"))) return "unknown";
+  if (mark === "doubt" || (mark === "prefix" && !decodesAsPrefix(value))) return "unknown";
   return matcher.tryMatch(d, decodeHeaderValue(value), opts, mark === "prefix");
+}
+
+/** Whether a prefix of a raw value decodes to a prefix of the whole one
+ * decoded: not where an encoded word may straddle the cut, which is anywhere
+ * after an "=?", or right after a final "=" (the "?" may follow it). */
+function decodesAsPrefix(value: string): boolean {
+  return !value.includes("=?") && !value.endsWith("=");
 }
 
 /**
@@ -168,10 +176,11 @@ function replayInto(result: string[], marks: Mark[] | null, edits: HeaderEdit[],
         marks?.splice(idx, 1);
       }
     } else if (edit.value !== "") {
-      // The value deleteheader matched, which is never a marked one (see
-      // CmdDeleteHeader): a marked one of the same text is not it.
+      // The value deleteheader matched: its text and its mark, so a value of
+      // the same text with another mark is not it.
+      const mark = edit.mark ?? "";
       let idx = result.indexOf(edit.value);
-      while (marks !== null && idx !== -1 && marks[idx] !== "") idx = result.indexOf(edit.value, idx + 1);
+      while (idx !== -1 && (marks?.[idx] ?? "") !== mark) idx = result.indexOf(edit.value, idx + 1);
       if (idx !== -1) {
         result.splice(idx, 1);
         marks?.splice(idx, 1);
@@ -261,7 +270,8 @@ export class CmdDeleteHeader implements Cmd {
       }
       for (let i = 0; i < values.length; i++) {
         const val = values[i]!;
-        if (this.valueMatchesPatterns(d, val, marks?.[i] ?? "")) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false });
+        const mark = marks?.[i] ?? "";
+        if (this.valueMatchesPatterns(d, val, mark)) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false, ...(mark !== "" ? { mark } : {}) });
       }
       return true;
     });
@@ -282,7 +292,7 @@ export class CmdDeleteHeader implements Cmd {
     // it a prefix of the trimmed whole.
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     let r: Tri = "unknown";
-    if (mark === "" || (mark === "prefix" && !value.includes("=?"))) {
+    if (mark === "" || (mark === "prefix" && decodesAsPrefix(value))) {
       r = this.matcher.tryMatch(d, decodeHeaderValue(value).trim(), opts, mark === "prefix");
     }
     if (r === "unknown") d.indeterminate = true;

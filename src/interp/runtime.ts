@@ -306,7 +306,8 @@ export class RuntimeData {
   flags: string[] = [];
   /** The internal flag set was built from a value the engine could not hold
    * whole (see Mark): hasflag over it cannot answer for the whole input. A
-   * setflag of values held whole, or a discard, clears it. */
+   * setflag, or the :flags of keep or fileinto, of values held whole replaces
+   * it, and a discard clears it. */
   flagsMarked = false;
   keep = false;
   implicitKeep = true;
