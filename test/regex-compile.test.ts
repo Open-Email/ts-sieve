@@ -71,6 +71,32 @@ describe("a key from the message is compiled once per test, not per value", () =
   });
 });
 
+describe("a key whose expansion changes from value to value", () => {
+  // deleteheader sets match variables on each match and goes on to the next
+  // value, so a key built from ${1} can change between values.
+  const script = `require ["editheader","variables","regex","fileinto"];
+    if header :matches "x-key" "*" { deleteheader :regex "x-t" "\${1}"; }
+    if exists "x-t" { fileinto "Left"; }`;
+
+  it("is compiled again when its text changes", () => {
+    // "^a(x)" deletes "ax" and captures "x", the key for the next value.
+    expect(run(script, "X-Key: ^a(x)\r\nX-T: ax\r\nX-T: x\r\n\r\nbody\r\n")).toEqual(R({ implicitKeep: true }));
+  });
+
+  it("each compile is charged, so recompiling every value runs out of budget", () => {
+    // Each value captures the other near-cap key: ~98,000 calls per value.
+    const a = "(?:(?:){48}){1000}(.+)";
+    const b = "(?:(?:){47}){1000}(.+)";
+    const fields = Array.from({ length: 2000 }, (_, i) => `X-T: ${i % 2 ? a : b}`).join("\r\n");
+    const { headers, size, body } = parseEml(`X-Key: ${a}\r\n${fields}\r\n\r\nbody\r\n`);
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect(d.budgetExhausted).toBe(true);
+    expect(d.indeterminate).toBe(true);
+  });
+});
+
 describe("what still compiles", () => {
   it("a repeat of an empty group that stays small", () => {
     const script = 'require ["regex","fileinto"]; if header :regex "subject" "a(?:){1000}b" { fileinto "X"; }';
