@@ -52,8 +52,9 @@ d.redirectAddr;  // []
 `load()` throws a `SieveError` (with `line`/`col` when known) on any lex, parse,
 or load failure — including a `require` for an extension you did not enable —
 so a user uploading a script learns exactly what won't run *before* mail
-arrives. `execute()` throws `SieveError` on runtime errors (conflicting
-reject actions, a `maxExecSteps` smaller than the script's own commands, …); treat
+arrives. `execute()` throws `SieveError` on runtime errors (a `maxExecSteps`
+smaller than the script's own commands, conflicting reject actions under
+`strictReject`, …); treat
 that as "script failed, fall back to implicit keep". Because a throw skips every
 rule, message content must not cause one: the `body` test does not throw on
 malformed MIME (broken transfer encodings decode leniently, and structure past
@@ -64,11 +65,12 @@ runs; if the expanded text does not compile, or is past the pattern-length
 cap, the comparison is "unknown" rather than an error. An `envelope`
 envelope-part built from a variable that names no part the test reads has no
 value, like a missing header. No other value from the message is known to
-reach a throw; the runtime errors left (conflicting reject actions, a
-`maxExecSteps` below the commands a run dispatches) are the script's own,
-reached by the branches a message picks, except that inside a `foreverypart`
-loop a message decides how many rejects run (#49). Past `maxRedirects` or
-`maxFileintos` a target is dropped and disclosed, not thrown.
+reach a throw; the runtime error left (a `maxExecSteps` below the commands a
+run dispatches) is the script's own. Past `maxRedirects` or `maxFileintos` a
+target is dropped and disclosed, not thrown; a second reject is not executed,
+and a reject beside `keep`, `fileinto`, `redirect` or `vacation` (RFC 5429
+§2.4) is disclosed, not thrown, unless `strictReject` asks for Pigeonhole's
+error.
 
 ### What the host implements
 
@@ -140,6 +142,7 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `maxVariableCount` / `maxVariableNameLen` / `maxVariableLen` | 128 / 63 / 4000 | RFC 5229 limits; a value past the length limit is cut at a character boundary and sets `indeterminate`, a name past it fails at load |
 | `maxMatchInputLength` | 0 (engine default, 256 KiB) | truncate values before `:matches`/`:regex`; a comparison over a cut value is three-valued. Also the octets `extracttext` decodes per part |
 | `maxExecSteps` | 0 (off) | cooperative CPU budget ticked in command dispatch, match loops, and the regex VM inner loop — **set this in a Worker**. Each test (and `deleteheader`'s matching) spends a share: everything left except one step per command and a reserve for each test after it (1/1024 of the budget, at most half of what is left). A test out of its share is "unknown" and the script runs on; one expensive test cannot starve the rest, but many in a row leave less for each test after them. A `foreverypart` loop spends a share the same way, and inside it a command is charged by the size of its work: the `${…}` templates it scans and what they expand to, `set`'s modifiers and the value it stores, the value `addheader` folds, and the flags an imap4flags command handles. A test is charged a step per field it names and per value it finds; inside a loop, and for a part's header read with `:mime`, also the size of each value it decodes or parses as addresses. At top level a test runs once, and a size charge there would let a large header, with a body test that spends the budget, cost the rules after it their reserve. A top-level command is charged one step: it runs once. |
+| `strictReject` | `false` | RFC 5429 §2.4 conflicts throw, as in Pigeonhole: a second `reject`/`ereject`, or one beside `keep`, `fileinto`, `redirect` or `vacation`. Off, a second reject is not executed (the first stands) and a conflict sets `indeterminate`. A throw fails the whole script, the message picks the branches that reach a conflict, and inside a `foreverypart` loop it decides how many rejects run |
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,

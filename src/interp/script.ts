@@ -33,6 +33,13 @@ export interface Options {
    * octets extracttext decodes from a part. */
   maxMatchInputLength?: number;
   /**
+   * RFC 5429 §2.4 conflicts (a second reject, a reject beside keep, fileinto,
+   * redirect or vacation) throw, as in Pigeonhole (default false: a second
+   * reject is not executed, and a conflict sets indeterminate). A throw fails
+   * the whole script, and the message picks the branches that reach one.
+   */
+  strictReject?: boolean;
+  /**
    * Cooperative CPU budget: total interpreter "steps" (command dispatch, match
    * keys, regex-VM inner-loop units) before execution aborts with an error.
    * 0 = unlimited. Set a finite value in constrained runtimes (Cloudflare
@@ -61,6 +68,7 @@ export function defaultOptions(): Required<Options> {
     maxTestNesting: 15,
     maxRedirects: 5,
     maxFileintos: 32,
+    strictReject: false,
     maxVariableCount: 128,
     maxVariableNameLen: 63, // Pigeonhole's limit; RFC 5229 asks for at least 32
     maxVariableLen: 4000,

@@ -14,9 +14,9 @@ import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 const EXT = ALL_EXTENSIONS;
 const MSG = "From: stephan@example.org\r\nTo: nico@frop.example.org\r\nSubject: Test\r\n\r\nTest.\r\n";
 
-function exec(script: string, message = MSG, from = "sirius@example.org"): RuntimeData {
+function exec(script: string, message = MSG, from = "sirius@example.org", strictReject = false): RuntimeData {
   const { headers, size, body } = parseEml(message);
-  const s = load(script, { enabledExtensions: EXT });
+  const s = load(script, { enabledExtensions: EXT, strictReject });
   const env = new EnvelopeStatic(from, "timo@example.net");
   const d = newRuntimeData(s, new DummyPolicy(), env, new MessageStatic(size, headers, body));
   s.execute(d);
@@ -78,9 +78,13 @@ describe("ereject", () => {
 });
 
 describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
+  // A throw fails the whole script, and a host that fails open turns that into
+  // every rule skipped; the message picks the branches that reach a conflict,
+  // and inside a foreverypart loop how many rejects run. So a second reject
+  // adds nothing, and a reject beside a delivering action is disclosed as
+  // indeterminate (a host then refuses the reject, as it would a discard).
+  // strictReject throws instead, as Pigeonhole does.
   const conflicts: [string, string, RegExp][] = [
-    ["a second reject", 'require "reject"; reject "a"; reject "b";', /more than one reject/],
-    ["reject then ereject", 'require ["reject","ereject"]; reject "a"; ereject "b";', /more than one reject/],
     ["keep after", 'require "reject"; reject "a"; keep;', /conflicts with the keep action/],
     ["keep before", 'require "reject"; keep; reject "a";', /conflicts with the keep action/],
     ["fileinto", 'require ["reject","fileinto"]; fileinto "X"; reject "a";', /conflicts with the fileinto action/],
@@ -88,45 +92,62 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
     ["redirect", 'require "reject"; redirect "a@b.example"; reject "a";', /conflicts with the redirect action/],
     ["redirect :copy", 'require ["reject","copy"]; reject "a"; redirect :copy "a@b.example";', /conflicts with the redirect action/],
     ["vacation", 'require ["reject","vacation"]; vacation "away"; reject "a";', /conflicts with the vacation action/],
+    ["reject then vacation", 'require ["reject","vacation"]; reject "a"; vacation "away";', /conflicts with the vacation action/],
+    ["ereject and fileinto", 'require ["ereject","fileinto"]; ereject "a"; fileinto "X";', /conflicts with the fileinto action/],
+    ["after stop", 'require "reject"; keep; reject "a"; stop;', /conflicts with the keep action/],
   ];
   for (const [name, script, err] of conflicts) {
-    it(`refuses ${name}`, () => {
-      expect(() => exec(script)).toThrow(err);
+    it(`discloses ${name}, and strictReject refuses it`, () => {
+      const d = exec(script);
+      expect([d.rejected, d.indeterminate]).toEqual([true, true]);
+      expect(() => exec(script, MSG, "sirius@example.org", true)).toThrow(err);
     });
   }
 
-  it("discard is not a conflict", () => {
-    const d = exec('require "reject"; discard; reject "a";');
-    expect(d.rejected).toBe(true);
-  });
-
-  it("flags are not a conflict", () => {
-    const d = exec('require ["reject","imap4flags"]; addflag "\\\\Seen"; reject "a";');
-    expect(d.rejected).toBe(true);
-    expect(d.flags).toEqual(["\\seen"]);
-  });
-
-  it("reject then vacation conflicts too", () => {
-    expect(() => exec('require ["reject","vacation"]; reject "a"; vacation "away";')).toThrow(
-      /conflicts with the vacation action/,
-    );
+  it("the delivering actions stand beside a disclosed reject", () => {
+    const d = exec('require ["reject","fileinto"]; fileinto "X"; reject "a"; fileinto "Y";');
+    expect([d.mailboxes, d.indeterminate]).toEqual([["X", "Y"], true]);
   });
 
   it("vacation conflicts even when it records no response", () => {
     // A null envelope sender gets no auto-reply, but the action still ran.
-    expect(() => exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "")).toThrow(
+    expect(exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "").indeterminate).toBe(true);
+    expect(() => exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "", true)).toThrow(
       /conflicts with the vacation action/,
     );
   });
 
-  it("ereject conflicts with delivering actions as reject does", () => {
-    expect(() => exec('require ["ereject","fileinto"]; ereject "a"; fileinto "X";')).toThrow(
-      /conflicts with the fileinto action/,
-    );
+  for (const [name, script] of [
+    ["a second reject", 'require "reject"; reject "a"; reject "b";'],
+    ["reject then ereject", 'require ["reject","ereject"]; reject "a"; ereject "b";'],
+  ]) {
+    it(`${name}: the first stands, and strictReject refuses the second`, () => {
+      const d = exec(script!);
+      expect([d.rejected, d.rejectReason, d.rejectExtended, d.indeterminate]).toEqual([true, "a", false, false]);
+      expect(() => exec(script!, MSG, "sirius@example.org", true)).toThrow(/more than one reject/);
+    });
+  }
+
+  it("a loop rejecting once per matching part rejects once", () => {
+    const two = [
+      "From: a@x.example\r\nTo: b@y.example\r\nSubject: s\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n",
+      "--b\r\nContent-Type: application/x-a\r\n\r\nx\r\n",
+      "--b\r\nContent-Type: application/x-b\r\n\r\ny\r\n--b--\r\n",
+    ].join("");
+    const script = 'require ["reject","mime","foreverypart","variables"]; foreverypart { if header :mime :type "content-type" "application" { reject "no executables"; } }';
+    const d = exec(script, two);
+    expect([d.rejected, d.rejectReason, d.indeterminate]).toEqual([true, "no executables", false]);
   });
 
-  it("is checked after stop as well", () => {
-    expect(() => exec('require "reject"; keep; reject "a"; stop;')).toThrow(/conflicts with the keep action/);
+  it("discard is not a conflict", () => {
+    const d = exec('require "reject"; discard; reject "a";');
+    expect([d.rejected, d.indeterminate]).toEqual([true, false]);
+  });
+
+  it("flags are not a conflict", () => {
+    const d = exec('require ["reject","imap4flags"]; addflag "\\\\Seen"; reject "a";');
+    expect([d.rejected, d.indeterminate]).toEqual([true, false]);
+    expect(d.flags).toEqual(["\\seen"]);
   });
 });
 
@@ -142,9 +163,10 @@ describe.skipIf(!hasCorpus)("Pigeonhole reject fixtures", () => {
     "extensions/vacation/errors/conflict-reject.sieve",
   ];
   for (const f of fixtures) {
-    it(`${f} fails at run time`, () => {
+    it(`${f} fails at run time under strictReject, and is otherwise disclosed or refused once`, () => {
       const src = fs.readFileSync(path.join(CORPUS, f), "utf8");
-      expect(() => exec(src)).toThrow(/conflicts with the|more than one reject/);
+      expect(() => exec(src, MSG, "sirius@example.org", true)).toThrow(/conflicts with the|more than one reject/);
+      expect(() => exec(src)).not.toThrow();
     });
   }
 });
@@ -192,7 +214,11 @@ describe("RuntimeData.clone()", () => {
   it("carries a vacation that ran into a sub-run's conflict check", () => {
     const d = exec('require "vacation"; vacation "away";');
     const s = load('require "reject"; reject "no";', { enabledExtensions: EXT });
-    expect(() => s.execute(d.clone(s))).toThrow(/conflicts with the vacation action/);
+    const c = d.clone(s);
+    s.execute(c);
+    expect(c.indeterminate).toBe(true);
+    const strict = load('require "reject"; reject "no";', { enabledExtensions: EXT, strictReject: true });
+    expect(() => strict.execute(d.clone(strict))).toThrow(/conflicts with the vacation action/);
   });
 
   it("carries the refusal into a sub-run", () => {

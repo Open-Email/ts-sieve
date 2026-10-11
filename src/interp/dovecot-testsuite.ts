@@ -133,13 +133,14 @@ export class CmdDovecotTest implements Cmd {
             t.errorf(`test_fail at ${line}:${col} called: ${d.testFailMessage}`);
             return;
           }
-          checkRejectConflicts(d);
+          checkRejectConflicts(d, true);
           return;
         }
         throw e; // any other error ⇒ recorded as a fatal sub-test failure by run()
       }
-      // RFC 5429 §2.4, as Script.execute checks it for an ordinary script.
-      checkRejectConflicts(d);
+      // RFC 5429 §2.4, as Script.execute checks it under strictReject: the
+      // testsuite runs Pigeonhole's tests, which expect its errors.
+      checkRejectConflicts(d, true);
     });
     // `test` never aborts the enclosing script (caught internally).
   }
