@@ -20,6 +20,20 @@ export interface HeaderEdit {
 
 const PROTECTED_HEADERS = new Set(["received", "auto-submitted"]);
 
+/** Header edits one execution may record, and the octets of added values.
+ * foreverypart repeats commands, so without them a loop over many parts grew
+ * the ledger past a Worker's memory (56,730 edits, 221M characters). An edit
+ * past either is dropped and the guess disclosed: later header reads miss it. */
+const MAX_HEADER_EDITS = 1024;
+const MAX_HEADER_EDIT_BYTES = 1024 * 1024;
+
+/** Whether one more edit (adding `bytes`) fits; if not, disclose the drop. */
+function editFits(d: RuntimeData, bytes: number): boolean {
+  if (d.headerEdits.length < MAX_HEADER_EDITS && d.headerEditBytes + bytes <= MAX_HEADER_EDIT_BYTES) return true;
+  d.indeterminate = true;
+  return false;
+}
+
 /** RFC 2822 field-name: 1*ftext where ftext = %d33-57 / %d59-126 (excludes ctrl, SP, ':'). */
 function isValidHeaderName(name: string): boolean {
   if (name.length === 0) return false;
@@ -116,6 +130,8 @@ export class CmdAddHeader implements Cmd {
     const fieldName = expandVars(d, this.fieldName);
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
     const value = foldHeaderValue(expandVars(d, this.value));
+    if (!editFits(d, value.length)) return;
+    d.headerEditBytes += value.length;
     d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0 });
   }
 }
@@ -136,7 +152,7 @@ export class CmdDeleteHeader implements Cmd {
 
     const valuePatterns = expandVarsList(d, this.valuePatterns);
     if (valuePatterns.length === 0) {
-      d.headerEdits.push({ action: "delete", fieldName, value: "", index: this.index, last: this.last });
+      if (editFits(d, 0)) d.headerEdits.push({ action: "delete", fieldName, value: "", index: this.index, last: this.last });
       return;
     }
 
@@ -167,7 +183,7 @@ export class CmdDeleteHeader implements Cmd {
       d.indeterminate = true;
       return;
     }
-    d.headerEdits.push(...edits);
+    for (const e of edits) if (editFits(d, 0)) d.headerEdits.push(e);
   }
 
   private valueMatchesPatterns(d: RuntimeData, value: string): boolean {

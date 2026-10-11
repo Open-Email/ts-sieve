@@ -240,6 +240,8 @@ export class RuntimeData {
 
   /** RFC 5293 editheader ledger, replayed over raw header values on every read. */
   headerEdits: HeaderEdit[] = [];
+  /** Characters of the values headerEdits adds (editheader.ts caps it). */
+  headerEditBytes = 0;
 
   /** RFC 5229 user variables (keyed by lowercased name). */
   variables: Map<string, string> = new Map();
@@ -250,6 +252,8 @@ export class RuntimeData {
   /** Folds of large values, per fold kind, for this execution (matcher.ts
    * foldOnce). */
   foldCache: Map<string, Map<string, string>> = new Map();
+  /** UTF-16 units foldCache holds, values and folds together. */
+  foldCacheUnits = 0;
 
   /** RFC 5703: the part each running foreverypart has reached, innermost last. */
   partStack: MimePart[] = [];
@@ -320,6 +324,7 @@ export class RuntimeData {
     c.flagAliases = new Map(this.flagAliases);
     c.mailboxChecker = this.mailboxChecker;
     c.headerEdits = [...this.headerEdits];
+    c.headerEditBytes = this.headerEditBytes;
     c.variables = new Map(this.variables);
     c.matchVariables = [...this.matchVariables];
     c.partStack = [...this.partStack];

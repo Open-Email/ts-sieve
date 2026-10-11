@@ -9,7 +9,8 @@
 // value read costs steps.
 
 import { describe, expect, it } from "vitest";
-import { run } from "./harness.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { ALL_EXTENSIONS, parseEml, run } from "./harness.js";
 
 const CORE = { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } };
 
@@ -90,5 +91,59 @@ describe("many parts, four nested loops", () => {
       foreverypart { foreverypart { foreverypart { foreverypart { if header :mime :anychild :contains [${names}] "z" { fileinto "A"; } } } } }
       fileinto "After";`;
     within(1000, () => expect(run(script, small, CORE).fileinto).toEqual(["After"]));
+  });
+});
+
+describe("what loops can make an execution hold", () => {
+  const OPTS = { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 };
+  /** `depth` nested multiparts and `leaves` leaves, with a long Subject. */
+  function wide(depth: number, leaves: number, leaf: (j: number) => string): string {
+    let body = "";
+    for (let i = 1; i <= depth; i++) body += `--b${i - 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n`;
+    for (let j = 0; j < leaves; j++) body += `--b${depth}\r\n${leaf(j)}\r\n\r\nx\r\n`;
+    for (let i = depth; i >= 0; i--) body += `--b${i}--\r\n`;
+    return `From: a@x\r\nTo: b@y\r\nSubject: ${"S".repeat(3900)}\r\nContent-Type: multipart/mixed; boundary=b0\r\n\r\n${body}`;
+  }
+  function exec(script: string, eml: string) {
+    const { headers, size, body } = parseEml(eml);
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...OPTS });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    s.execute(d);
+    return d;
+  }
+
+  it("a fold found in the cache is still charged for the value it hashes", () => {
+    // A string built afresh each evaluation (4M characters) hit the fold cache
+    // uncharged, and hashing it is linear: 24 s.
+    const refs = Array.from({ length: 1000 }, () => "${a}").join("");
+    const script = `require ["foreverypart","mime","variables","fileinto"];
+      if header :matches "subject" "*" { set "a" "\${1}"; }
+      foreverypart { foreverypart { if string :is "${refs}" "zz" { fileinto "A"; } } } fileinto "After";`;
+    within(2000, () => exec(script, wide(60, 900, () => "Content-Type: text/plain")));
+  });
+
+  it("the fold cache holds a bounded amount", () => {
+    const tests = "abcdefghijklmnopqrst"
+      .split("")
+      .map((c) => `if string :contains "${c}\${acc}\${acc}\${acc}" "zz" { fileinto "A"; }`)
+      .join(" ");
+    const script = `require ["foreverypart","mime","variables","fileinto"]; set "acc" "";
+      foreverypart { foreverypart { if header :mime :matches "x-id" "*" { set "acc" "\${1}\${acc}"; } ${tests} } }
+      fileinto "After";`;
+    const d = exec(script, wide(60, 950, (j) => `X-Id: i${j}-${"X".repeat(30)}`));
+    let units = 0;
+    for (const m of d.foldCache.values()) for (const [k, v] of m) units += k.length + v.length;
+    expect(units).toBeLessThanOrEqual(2 * 4 * 1024 * 1024);
+  });
+
+  it("header edits are capped, and an edit past the cap is disclosed", () => {
+    const script = `require ["foreverypart","mime","variables","fileinto","editheader"];
+      if header :matches "subject" "*" { set "v" "\${1}"; }
+      foreverypart { foreverypart { addheader "X-Part" "\${v}"; } } fileinto "After";`;
+    const d = exec(script, wide(60, 900, () => "Content-Type: text/plain"));
+    expect(d.headerEdits.length).toBeLessThanOrEqual(1024);
+    expect(d.headerEdits.reduce((n, e) => n + e.value.length, 0)).toBeLessThanOrEqual(1024 * 1024);
+    expect(d.indeterminate).toBe(true);
+    expect(d.mailboxes).toEqual(["After"]);
   });
 });
