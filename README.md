@@ -203,6 +203,12 @@ execution budget.
   scan. MIME tree construction runs inside the requesting test or loop's budget
   share, so exhaustion leaves later commands runnable. Completed splits are
   cached; a tree build interrupted by the budget is retried on its next use.
+- **Structural header reuse.** Body tests, MIME tree construction and text
+  extraction share parsed Content-Type values within each immutable `Message`.
+  Each new value costs one step plus one per 64 bytes before parsing. The root
+  Content-Type and transfer-encoding byte views are also read and converted
+  once; cached absence still honors each reader's default and raw-header
+  precedence. Virtual header edits do not change the received MIME structure.
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
   script upload, not when a message arrives. A pattern built from variables

@@ -569,15 +569,40 @@ export function hostValueBytes(v: string): string {
   return out;
 }
 
+type RootField = "content-type" | "content-transfer-encoding";
+interface RootFieldBytes {
+  bytes: string | undefined;
+  raw: boolean;
+}
+const rootFields = new WeakMap<import("./runtime.js").Message, Map<RootField, RootFieldBytes>>();
+
 /** A raw root field, when supplied, owns both its bytes and its absence.
+ * Cache the immutable field, including authoritative absence, rather than a
+ * caller's fallback: body and MIME readers use different defaults. Keeping
+ * its byte view also avoids rebuilding and hashing a large UTF-8 string on
+ * every lookup of an already-parsed type.
  * Re-encoding a binary string would corrupt Latin-1 and UTF-8 boundaries. */
 export function rootHeaderBytes(
   msg: import("./runtime.js").Message,
-  key: "content-type" | "content-transfer-encoding",
+  key: RootField,
   fallback = "",
 ): string {
-  const raw = msg.mimeHeaderGet?.(key);
-  return raw === undefined ? hostValueBytes(msg.headerGet(key)[0] ?? fallback) : raw[0] ?? fallback;
+  let fields = rootFields.get(msg);
+  let field = fields?.get(key);
+  if (field === undefined) {
+    const raw = msg.mimeHeaderGet?.(key);
+    let bytes: string | undefined;
+    if (raw === undefined) {
+      const text = msg.headerGet(key)[0];
+      bytes = text === undefined ? undefined : hostValueBytes(text);
+    } else {
+      bytes = raw[0];
+    }
+    field = { bytes, raw: raw !== undefined };
+    if (fields === undefined) rootFields.set(msg, (fields = new Map()));
+    fields.set(key, field);
+  }
+  return field.bytes ?? (field.raw ? fallback : hostValueBytes(fallback));
 }
 
 /**

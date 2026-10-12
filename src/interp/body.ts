@@ -168,6 +168,23 @@ export function parseMediaType(ct: string): { mediaType: string; primary: string
   return contentType(ct);
 }
 
+/** Structural fields, unlike editheader's virtual values, are immutable for
+ * the lifetime of a Message. Share parsed types across parts and both walkers;
+ * the part caps bound the distinct headers encountered. Charge new parsing
+ * before doing it, and publish nothing if the requesting share runs out. */
+const mediaTypes = new WeakMap<Message, Map<string, ReturnType<typeof parseMediaType>>>();
+
+export function parseMediaTypeForMessage(d: RuntimeData, ct: string): ReturnType<typeof parseMediaType> {
+  let cache = mediaTypes.get(d.msg);
+  const held = cache?.get(ct);
+  if (held !== undefined) return held;
+  d.budget.consume(1 + Math.floor(ct.length / 64));
+  const parsed = parseMediaType(ct);
+  if (cache === undefined) mediaTypes.set(d.msg, (cache = new Map()));
+  cache.set(ct, parsed);
+  return parsed;
+}
+
 /** Whether a part of this media type nests a message the walker descends. */
 export function isMessage(mediaType: string): boolean {
   return mediaType === "message/rfc822" || mediaType === "message/global";
@@ -641,7 +658,7 @@ export class TestBody implements Test {
       flags.unknown = true;
       return false;
     }
-    const { mediaType, primary, params } = parseMediaType(ctHeader || "text/plain; charset=us-ascii");
+    const { mediaType, primary, params } = parseMediaTypeForMessage(d, ctHeader || "text/plain; charset=us-ascii");
     d.budget.consume(this.content.length); // each :content type, per part
     const process = this.wantsPart(mediaType);
 
