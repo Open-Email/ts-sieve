@@ -3,6 +3,7 @@
 // including the RFC 5231 `:count` accumulation and RFC 5260 `:index`/`:last`
 // field selection on header/address.
 
+import type { ReserveContext } from "./budget-reserve.js";
 import { canonicalFlags, chargeFlags } from "./action.js";
 import {
   parseEnvelopeAddress,
@@ -194,6 +195,21 @@ export class AddressTest implements Test {
     public addressPart: AddressPart,
     public header: string[],
   ) {}
+
+  budgetReserve(context: ReserveContext): number | undefined {
+    if (this.mime?.enabled) return undefined;
+    context.names(this.header.length);
+    let cost = 2 + this.header.length;
+    for (const name of this.header) {
+      if (!name.includes("${") && !allowedAddrHeaders.has(name.toLowerCase())) continue;
+      const values = context.header(name, this.index, this.last);
+      if (values === undefined) return undefined;
+      const match = this.matcher.reserveFor(values, true);
+      if (match === undefined) return undefined;
+      cost += match;
+    }
+    return cost;
+  }
 
   check(d: RuntimeData): Tri {
     const state = { entryCount: 0, unknown: false };
@@ -392,6 +408,20 @@ export class HeaderTest implements Test {
     readonly matcher: MatcherTest,
     public header: string[],
   ) {}
+
+  budgetReserve(context: ReserveContext): number | undefined {
+    if (this.mime?.enabled) return undefined;
+    context.names(this.header.length);
+    let cost = 2 + this.header.length;
+    for (const name of this.header) {
+      const values = context.header(name, this.index, this.last);
+      if (values === undefined) return undefined;
+      const match = this.matcher.reserveFor(values);
+      if (match === undefined) return undefined;
+      cost += match;
+    }
+    return cost;
+  }
 
   check(d: RuntimeData): Tri {
     if (this.mime?.enabled) return this.checkMime(d, this.mime);

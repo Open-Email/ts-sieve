@@ -5,6 +5,7 @@
 // does I/O or MIME parsing itself. RuntimeData is the action accumulator the
 // executor reads after Script.execute() returns.
 
+import { reservePlan, type ReserveContext } from "./budget-reserve.js";
 import { SieveError } from "../errors.js";
 import type { Position } from "../parser/command.js";
 import type { HeaderEdit } from "./editheader.js";
@@ -86,8 +87,7 @@ class Budget {
       if (this.shares > 0) {
         // Not below the floor: what is under it belongs to command dispatch
         // and the tests after this one. (A share never opens with its floor
-        // above `remaining`, as withShare keeps at most half of what is free,
-        // so this only ever lowers the count.)
+        // above `remaining`, so this only ever lowers the count.)
         this.remaining = this.floor;
         throw SHARE_EXHAUSTED;
       }
@@ -96,42 +96,35 @@ class Budget {
   }
 }
 
-/** Steps kept back for each test after the running one, as a fraction of
- * maxExecSteps (195 of core's 200k: a header :contains or a short glob, not a
- * body glob). Larger, and a script with many rules after a body glob costs the
- * glob its answer on mail that fits the budget. */
-const LATER_TEST_RESERVE = 1 / 1024;
-
 /**
- * Run budgeted work number `index` (a test, or deleteheader's matching, in
- * script order) under a share of the step budget, returning "unknown" when the
- * share runs out. Without this, exhausting the budget threw, and a message can
- * drive that (large parts under a glob, a :regex key built from a header): a
- * thrown execute() skips every rule, which a host's fail-open turns into a
- * filter bypass.
+ * Run one operation under a share of the remaining budget. Later siblings
+ * retain an estimated minimum: cheap literal header reads use their actual
+ * counts/lengths, pattern tests include their VM size, and unknown-size work
+ * uses a bounded fallback. Surplus is available to the current operation.
+ * If all requested minima cannot fit, divide what remains proportionally.
+ * This preserves the last rule's allowance across several exhausted earlier
+ * tests instead of repeatedly halving it (#66).
  *
- * The share is everything left, minus the steps command dispatch may still
- * need (one per command in the script, so it never runs out) and a reserve for
- * each budgeted step after this one, capped at half of what is left. One
- * expensive test therefore cannot starve the rest of the script: they keep
- * their reserve, or half of what was left. Many expensive tests in a row can,
- * each taking its share of what the previous ones left; and a run that fits
- * the budget may still lose an answer to the reserves of the tests after it.
+ * Loop bodies reserve only for siblings inside that loop: the outer share
+ * already protects following rules. Estimates are not completion guarantees;
+ * unusually expensive, dynamic or edited values can still exhaust a share.
+ * No reserve increases maxExecSteps, and command dispatch keeps its floor.
  */
 export function withShare(d: RuntimeData, index: number, f: () => Tri): Tri {
   const b = d.budget;
   if (b.remaining === Number.POSITIVE_INFINITY) return f();
-  const s = d.script;
-  const free = Math.max(0, b.remaining - Math.max(b.floor, s.commandCount));
-  const later = Math.max(0, s.budgetedCount - index - 1);
-  const keep = Math.min(later * Math.floor(s.opts.maxExecSteps * LATER_TEST_RESERVE), Math.floor(free / 2));
   const outer = b.floor;
-  b.floor = b.remaining - (free - keep);
+  b.floor = Math.max(outer, Math.min(b.remaining, d.script.commandCount));
   b.shares++;
   try {
+    const plan = reservePlan(d);
+    const free = Math.max(0, b.remaining - b.floor);
+    const wanted = plan.after[index] ?? 0;
+    const own = plan.weights[index] ?? 1;
+    const keep = wanted + own <= free ? wanted : Math.floor(free * wanted / (wanted + own));
+    b.floor += keep;
     return f();
   } catch (e) {
-    // The innermost share's floor is the one in force, so it is this one.
     if (e !== SHARE_EXHAUSTED) throw e;
     d.budgetExhausted = true;
     return "unknown";
@@ -234,6 +227,8 @@ export interface Cmd {
 export type Tri = boolean | "unknown";
 
 export interface Test {
+  /** Advisory minimum for a future rule; omitted for unknown-size work. */
+  budgetReserve?(context: ReserveContext): number | undefined;
   check(d: RuntimeData): Tri;
 }
 

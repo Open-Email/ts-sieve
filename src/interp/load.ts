@@ -611,8 +611,10 @@ function loadForEveryPart(s: Script, pcmd: PCmd): Cmd {
     throw at(pcmd, `foreverypart nested deeper than ${MAX_LOOP_NESTING} levels`);
   }
   const cmd = new CmdForEveryPart();
-  // Numbered before its block, so the tests inside count as after it.
+  // Numbered before its block; the span records which shares are children.
   cmd.shareIndex = s.budgetedCount++;
+  const share = { end: cmd.shareIndex + 1 };
+  s.budgetShares.push(share);
   // The tag loads before the block, so a break inside sees the loop's name.
   s.loops.push("");
   try {
@@ -641,6 +643,7 @@ function loadForEveryPart(s: Script, pcmd: PCmd): Cmd {
   } finally {
     s.loops.pop();
   }
+  share.end = s.budgetedCount;
   return cmd;
 }
 
@@ -771,6 +774,7 @@ function loadDeleteHeader(s: Script, pcmd: PCmd): Cmd {
       throw new SieveError(`deleteheader: ${e instanceof Error ? e.message : String(e)}`);
     }
     cmd.shareIndex = s.budgetedCount++;
+    s.budgetShares.push({ end: cmd.shareIndex + 1 });
   }
   return cmd;
 }
@@ -1208,5 +1212,10 @@ function loadTest(s: Script, t: PTest): Test {
   const factory = tests[id];
   if (!factory) throw at(t, `unsupported test: ${id}`);
   const test = factory(s, t);
-  return UNSHARED_TESTS.has(id) || id.startsWith("test_") ? test : new SharedTest(test, s.budgetedCount++);
+  if (UNSHARED_TESTS.has(id) || id.startsWith("test_")) return test;
+  const index = s.budgetedCount++;
+  // Root-header estimates do not describe arbitrary part scopes or repeated
+  // reads in a loop. Those keep the fallback reservation.
+  s.budgetShares.push({ end: index + 1, estimate: s.loops.length === 0 ? test.budgetReserve?.bind(test) : undefined });
+  return new SharedTest(test, index);
 }
