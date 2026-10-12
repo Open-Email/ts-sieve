@@ -1,0 +1,247 @@
+{
+  "source": "Open-Email/core/src/lib/mimewalk/{encodedword,bytes}.ts",
+  "commit": "3480fc2422460907447071947783492a306d3ed6",
+  "normalization": "Existing Sieve CR/LF unfolding before Core decodeHeaderShim; goUtf8ToString converts the final bytes.",
+  "cases": [
+    {
+      "name": "Q text containing a question mark",
+      "input": "=?utf-8?q?vi=61gra?x?=",
+      "expected": "viagra?x"
+    },
+    {
+      "name": "bad Q escape shares its closing equals with the next word",
+      "input": "=?utf-8?q?a=zz?=?utf-8?q?vi=61gra?=",
+      "expected": "=?utf-8?q?a=zz?viagra"
+    },
+    {
+      "name": "Q control byte shares its closing equals with the next word",
+      "input": "=?utf-8?q?a\u0001?=?utf-8?q?vi=61gra?=",
+      "expected": "=?utf-8?q?a\u0001?viagra"
+    },
+    {
+      "name": "unpadded base64 shares its closing equals with the next word",
+      "input": "=?utf-8?b?YQ?=?utf-8?q?vi=61gra?=",
+      "expected": "=?utf-8?b?YQ?viagra"
+    },
+    {
+      "name": "unsupported charset",
+      "input": "=?windows-1252?q?caf=E9?= x",
+      "expected": "=?windows-1252?q?caf=E9?= x"
+    },
+    {
+      "name": "unframable marker stops the remaining decode",
+      "input": "=?utf-8?b?dmlh?= =? =?utf-8?b?Z3Jh?=",
+      "expected": "via =? =?utf-8?b?Z3Jh?="
+    },
+    {
+      "name": "unsupported charset rolls back an earlier decoded word",
+      "input": "=?utf-8?q?viagra?= =?windows-1252?q?caf=E9?=",
+      "expected": "=?utf-8?q?viagra?= =?windows-1252?q?caf=E9?="
+    },
+    {
+      "name": "unsupported charset before a valid word",
+      "input": "=?bogus?q?x?= =?utf-8?q?viagra?=",
+      "expected": "=?bogus?q?x?= =?utf-8?q?viagra?="
+    },
+    {
+      "name": "invalid word with unsupported charset does not roll back other words",
+      "input": "=?bogus?b?!!!?=?utf-8?q?viagra?=",
+      "expected": "=?bogus?b?!!!?viagra"
+    },
+    {
+      "name": "unknown encoding resumes the search",
+      "input": "=?utf-8?X?abc?=?utf-8?q?viagra?=",
+      "expected": "=?utf-8?X?abc?viagra"
+    },
+    {
+      "name": "empty charset is a charset error",
+      "input": "=??q?x?= =?utf-8?q?viagra?=",
+      "expected": "=??q?x?= =?utf-8?q?viagra?="
+    },
+    {
+      "name": "empty base64 word",
+      "input": "=?utf-8?b??=",
+      "expected": ""
+    },
+    {
+      "name": "empty Q word",
+      "input": "=?utf-8?q??=",
+      "expected": ""
+    },
+    {
+      "name": "valid padded base64",
+      "input": "=?utf-8?b?YQ==?=",
+      "expected": "a"
+    },
+    {
+      "name": "base64 space is invalid",
+      "input": "=?utf-8?b?Y Q==?=",
+      "expected": "=?utf-8?b?Y Q==?="
+    },
+    {
+      "name": "base64 tab is invalid",
+      "input": "=?utf-8?b?Y\tQ==?=",
+      "expected": "=?utf-8?b?Y\tQ==?="
+    },
+    {
+      "name": "base64 line break is unfolded",
+      "input": "=?utf-8?b?Y\r\nQ==?=",
+      "expected": "a"
+    },
+    {
+      "name": "base64 without required padding is invalid",
+      "input": "=?utf-8?b?YQ?=",
+      "expected": "=?utf-8?b?YQ?="
+    },
+    {
+      "name": "base64 needs no padding for a full quantum",
+      "input": "=?utf-8?b?YWJj?=",
+      "expected": "abc"
+    },
+    {
+      "name": "base64 excess padding is invalid",
+      "input": "=?utf-8?b?YQ===?=",
+      "expected": "=?utf-8?b?YQ===?="
+    },
+    {
+      "name": "base64 alphabet symbols",
+      "input": "=?utf-8?b?Pj4+?= =?utf-8?b?Pz8/?=",
+      "expected": ">>>???"
+    },
+    {
+      "name": "Q printable question marks",
+      "input": "=?utf-8?q?a??b?=",
+      "expected": "a??b"
+    },
+    {
+      "name": "Q space and tab",
+      "input": "=?utf-8?q?a b\tc?=",
+      "expected": "a b\tc"
+    },
+    {
+      "name": "Q dangling escape",
+      "input": "=?utf-8?q?a=?=",
+      "expected": "=?utf-8?q?a=?="
+    },
+    {
+      "name": "Q half escape",
+      "input": "=?utf-8?q?a=A?=",
+      "expected": "=?utf-8?q?a=A?="
+    },
+    {
+      "name": "Q bad hex",
+      "input": "=?utf-8?q?a=G1?=",
+      "expected": "=?utf-8?q?a=G1?="
+    },
+    {
+      "name": "Q literal non-ASCII is invalid",
+      "input": "=?utf-8?q?café?=",
+      "expected": "=?utf-8?q?café?="
+    },
+    {
+      "name": "Q literal NUL is invalid",
+      "input": "=?utf-8?q?a\u0000b?=",
+      "expected": "=?utf-8?q?a\u0000b?="
+    },
+    {
+      "name": "Q DEL is invalid",
+      "input": "=?utf-8?q?ab?=",
+      "expected": "=?utf-8?q?ab?="
+    },
+    {
+      "name": "Q encoded control bytes are permitted",
+      "input": "=?utf-8?q?a=01b?=",
+      "expected": "a\u0001b"
+    },
+    {
+      "name": "case-insensitive UTF-8 charset",
+      "input": "=?UtF-8?Q?caf=C3=A9?=",
+      "expected": "café"
+    },
+    {
+      "name": "ISO-8859-1",
+      "input": "=?ISO-8859-1?q?caf=E9?=",
+      "expected": "café"
+    },
+    {
+      "name": "ASCII replaces each high byte",
+      "input": "=?us-ascii?q?=C3=A9?=",
+      "expected": "��"
+    },
+    {
+      "name": "UTF-8 alias is unsupported",
+      "input": "=?utf8?q?caf=C3=A9?=",
+      "expected": "=?utf8?q?caf=C3=A9?="
+    },
+    {
+      "name": "ASCII alias is unsupported",
+      "input": "=?ascii?q?abc?=",
+      "expected": "=?ascii?q?abc?="
+    },
+    {
+      "name": "Latin-1 alias is unsupported",
+      "input": "=?latin1?q?caf=E9?=",
+      "expected": "=?latin1?q?caf=E9?="
+    },
+    {
+      "name": "language suffix is unsupported",
+      "input": "=?utf-8*en?q?abc?=",
+      "expected": "=?utf-8*en?q?abc?="
+    },
+    {
+      "name": "UTF-8 bytes split between adjacent words",
+      "input": "=?utf-8?q?=C3?= =?utf-8?q?=A9?=",
+      "expected": "é"
+    },
+    {
+      "name": "invalid UTF-8 byte",
+      "input": "=?utf-8?q?a=FFb?=",
+      "expected": "a�b"
+    },
+    {
+      "name": "incomplete UTF-8 sequence uses one replacement per byte",
+      "input": "=?utf-8?q?=E0=A0?=",
+      "expected": "��"
+    },
+    {
+      "name": "invalid continuation uses one replacement per byte",
+      "input": "=?utf-8?q?=E0=A0=42?=",
+      "expected": "��B"
+    },
+    {
+      "name": "UTF-8 BOM is preserved",
+      "input": "=?utf-8?q?=EF=BB=BFx?=",
+      "expected": "﻿x"
+    },
+    {
+      "name": "raw Unicode around words",
+      "input": "é😀 =?utf-8?q?caf=C3=A9?= Ω",
+      "expected": "é😀 café Ω"
+    },
+    {
+      "name": "nonbreaking space separates words",
+      "input": "=?utf-8?q?via?= =?utf-8?q?gra?=",
+      "expected": "via gra"
+    },
+    {
+      "name": "folding whitespace between words",
+      "input": "=?utf-8?q?via?=\r\n \t=?utf-8?q?gra?=",
+      "expected": "viagra"
+    },
+    {
+      "name": "ordinary unfolded text",
+      "input": "plain\r\n text",
+      "expected": "plain text"
+    },
+    {
+      "name": "malformed word remains raw",
+      "input": "=?utf-8?b?!!!?=",
+      "expected": "=?utf-8?b?!!!?="
+    },
+    {
+      "name": "leading and trailing whitespace survives",
+      "input": " =?utf-8?q?via?= ",
+      "expected": " via "
+    }
+  ]
+}

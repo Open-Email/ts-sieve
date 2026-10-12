@@ -80,9 +80,9 @@ describe("a word that does not decode costs no more than one that does", () => {
   });
 });
 
-describe("base64 is read as atob reads it", () => {
-  it("with or without its padding, and white space inside", () => {
-    expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("aaa");
+describe("base64 is read as Core reads it", () => {
+  it("requires padding and refuses spaces inside a word", () => {
+    expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("a =?utf-8?b?YQ?= =?utf-8?b?Y Q?=");
     // The alphabet's "+" and "/".
     expect(decodeHeaderValue("=?utf-8?b?Pj4+?= =?utf-8?b?Pz8/?=")).toBe(">>>???");
   });
