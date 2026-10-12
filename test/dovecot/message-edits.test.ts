@@ -11,7 +11,7 @@ const REQ = 'require ["vnd.dovecot.testsuite", "editheader", "variables", "forev
 const NEXT = 'test_set "message" "Subject: second\r\n\r\nnewbody";';
 
 function script(commands: string) {
-  return load(`${REQ} ${commands}`, { enabledExtensions: ALL_EXTENSIONS, testEnv: new Reporter() });
+  return load(`${REQ} ${commands}`, { enabledExtensions: ALL_EXTENSIONS, testEnv: new Reporter(), maxExecSteps: 100_000 });
 }
 
 function exec(commands: string, message = "Subject: first\r\n\r\noldbody") {
