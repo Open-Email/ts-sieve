@@ -67,6 +67,7 @@ export class CmdIf implements Cmd {
   uncertainWrites?: UncertainWrites;
 
   execute(d: RuntimeData): void {
+    d.captureDoubt = false;
     const res = this.test.check(d);
     // Doubt about captures lasts one test's evaluation (see doubtCaptures).
     d.captureDoubt = false;
@@ -110,6 +111,7 @@ export class CmdElsif implements Cmd {
     const prior = d.chainGuessed;
     // Whole, the chain may have ended before this test: the captures it sets
     // are then a guess too.
+    d.captureDoubt = false;
     if (prior && setsCaptures(this.test)) doubtCaptures(d);
     const res = this.test.check(d);
     // Doubt about captures lasts one test's evaluation (see doubtCaptures).

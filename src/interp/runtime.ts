@@ -13,17 +13,22 @@ import type { MimePart } from "./mime.js";
 import type { Script } from "./script.js";
 import type { VacationResponse } from "./vacation.js";
 
-/**
- * What a value the engine could not hold whole is to the tests that read it
- * (ts-sieve #57): "prefix", a prefix of the real value (a variable cut to its
- * size limit, the last capture of a :matches over a cut input); "doubt",
- * possibly anything else (text after such a prefix, its :length, a :regex
- * capture from a cut input, a capture an unknown may have changed); "" for a
- * value held whole. The mark is on the value, not the run: only a test that
- * reads it answers "unknown" for it, and only that unknown deciding a branch
- * is disclosed.
- */
-export type Mark = "" | "prefix" | "doubt";
+/** Certainty carried with a value. The string forms retain the original
+ * API: whole, all held text is a prefix, or no usable text. A prefix length
+ * proves only the leading UTF-16 units (text appended after a cut is not
+ * necessarily adjacent to that head). A length bound describes the numeric
+ * result of :length; it is not an exact number or a textual prefix. */
+export type Mark = "" | "prefix" | "doubt" | Readonly<{ prefix: number }> | Readonly<{ minLength: number }>;
+
+export function provenLength(value: string, mark: Mark): number {
+  return mark === "" || mark === "prefix" ? value.length
+    : typeof mark === "object" && "prefix" in mark ? Math.min(mark.prefix, value.length) : 0;
+}
+
+/** Mark a best-effort value whose first length units are a proven prefix. */
+export function prefixMark(value: string, length: number): Mark {
+  return length >= value.length ? "prefix" : length > 0 ? { prefix: length } : "doubt";
+}
 
 /**
  * Captures a match took from an input the engine cut (matcher.ts), and the
@@ -457,14 +462,14 @@ export class RuntimeData {
   }
 
   /** User variables whose value is marked (see Mark), by lowercased name. */
-  varMarks: Map<string, "prefix" | "doubt"> = new Map();
+  varMarks: Map<string, Exclude<Mark, "">> = new Map();
 
   /** A test read a marked value where it cannot weigh the mark itself (a
-   * header name, a :count key): SharedTest then answers "unknown". */
+   * an exists field or a :count key): SharedTest then answers "unknown". */
   testDoubt = false;
 
   /** An "unknown" was met in the test being evaluated (see doubtCaptures);
-   * cleared after each if/elsif test. (deleteheader, the one other matcher,
+   * reset for each if/elsif test. (deleteheader, the one other matcher,
    * discloses its own unknowns.) */
   captureDoubt = false;
 

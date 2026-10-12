@@ -17,9 +17,25 @@ import { parseHeaderAddressesOnce } from "./header-values.js";
 import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
-import { type MimeOpts, partHeader } from "./mime.js";
-import { doubtCaptures, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
-import { expandVars } from "./variables.js";
+import { type MimeOpts, type MimePart, partHeader } from "./mime.js";
+import { doubtCaptures, provenLength, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
+import { expandMarked, expandVars } from "./variables.js";
+
+/** A header-list member may be unknown without doubting the other
+ * members. Preserve an enclosing test's doubt, including MIME parameters. */
+function headerMember(d: RuntimeData, template: string | { value: string; mark: Mark }, part?: MimePart): string[] | null {
+  const { value: name, mark } = typeof template === "string" ? expandMarked(d, template) : template;
+  if (mark !== "") return null;
+  const outer = d.testDoubt;
+  d.testDoubt = false;
+  try {
+    const values = part ? partHeader(d, part, name) : getHeader(d, name);
+    return d.testDoubt ? null : values;
+  } finally { d.testDoubt = outer; }
+}
+function doubtMatchCaptures(d: RuntimeData, matcher: MatcherTest): void {
+  if (matcher.match === "matches" || matcher.match === "regex") doubtCaptures(d);
+}
 
 /** RFC 5260 §6 `:index`/`:last` — the positions [from, to) of the indexth
  * field instance (1-based) among `n`: all of them without :index. */
@@ -219,7 +235,8 @@ export class AddressTest implements Test {
       const { parts, open } = this.mime.scope(d);
       for (const part of parts) {
         for (const hdr of this.header) {
-          const values = partHeader(d, part, expandVars(d, hdr));
+          const values = headerMember(d, hdr, part);
+          if (values === null) { d.budget.consume(1); state.unknown = true; doubtMatchCaptures(d, this.matcher); continue; }
           // Parsing each value as addresses costs its size, wherever the test
           // runs: a part's header is not capped as the message's are, and
           // :anychild multiplies the parts read.
@@ -233,13 +250,15 @@ export class AddressTest implements Test {
       if (this.matcher.isCount()) return state.unknown ? "unknown" : countOver(d, this.matcher, state.entryCount, open);
       return state.unknown || open ? "unknown" : false;
     }
-    for (let hdr of this.header) {
-      hdr = expandVars(d, hdr).toLowerCase();
-      if (!allowedAddrHeaders.has(hdr)) {
+    for (const template of this.header) {
+      const expanded = expandMarked(d, template);
+      if (expanded.mark !== "") { d.budget.consume(1); state.unknown = true; doubtMatchCaptures(d, this.matcher); continue; }
+      if (!allowedAddrHeaders.has(expanded.value.toLowerCase())) {
         d.budget.consume(1);
         continue;
       }
-      const all = getHeader(d, hdr);
+      const all = headerMember(d, expanded);
+      if (all === null) { d.budget.consume(1); state.unknown = true; doubtMatchCaptures(d, this.matcher); continue; }
       chargeRead(d, all);
       const [from, to] = indexRange(all.length, this.index, this.last);
       if (this.matchValues(d, all.slice(from, to), valueMarks(all)?.slice(from, to), state)) return true;
@@ -260,13 +279,14 @@ export class AddressTest implements Test {
     // accumulate through this probe instead.
     const probe = (address: string): boolean => {
       const r = testAddress(d, this.matcher, this.addressPart, address);
-      if (r === "unknown") state.unknown = true;
+      if (r === "unknown") { state.unknown = true; doubtMatchCaptures(d, this.matcher); }
       return r === true;
     };
     if (values.length === 0) return !this.matcher.isCount() && probe("");
     for (let i = 0; i < values.length; i++) {
       if ((marks?.[i] ?? "") !== "") {
         state.unknown = true;
+        doubtMatchCaptures(d, this.matcher);
         continue;
       }
       // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
@@ -428,7 +448,8 @@ export class HeaderTest implements Test {
     let entryCount = 0;
     let unknown = false;
     for (const hdr of this.header) {
-      const all = getHeader(d, expandVars(d, hdr));
+      const all = headerMember(d, hdr);
+      if (all === null) { d.budget.consume(1); unknown = true; doubtMatchCaptures(d, this.matcher); continue; }
       d.budget.consume(1 + (inLoop(d) ? all.length : 0)); // the name; in a loop, the values found
       const marks = valueMarks(all);
       const [from, to] = indexRange(all.length, this.index, this.last);
@@ -442,10 +463,10 @@ export class HeaderTest implements Test {
         if (inLoop(d)) d.budget.consume(decodeCost(value));
         const r = matchHeaderValue(d, this.matcher, value, marks?.[i] ?? "", matchOpts(d));
         if (r === true) return true;
-        if (r === "unknown") unknown = true;
+        if (r === "unknown") { unknown = true; doubtMatchCaptures(d, this.matcher); }
       }
     }
-    if (this.matcher.isCount()) return this.matcher.countMatches(d, entryCount);
+    if (this.matcher.isCount()) return unknown ? this.matcher.matchAtLeast(d, entryCount) : this.matcher.countMatches(d, entryCount);
     return unknown ? "unknown" : false;
   }
 
@@ -462,9 +483,11 @@ export class HeaderTest implements Test {
     let marked = false;
     for (const part of parts) {
       for (const hdr of this.header) {
-        const name = expandVars(d, hdr);
+        const expanded = expandMarked(d, hdr);
+        const name = expanded.value;
         d.budget.consume(1); // the name; mime.values charges each value
-        const all = partHeader(d, part, name);
+        const all = headerMember(d, expanded, part);
+        if (all === null) { marked = true; doubtMatchCaptures(d, this.matcher); continue; }
         // Each part in scope is tested on its own (RFC 5703 §4.1: the test is
         // true if any of them satisfies it), so :index counts the fields of
         // the part's own header, as it counts the message's; Pigeonhole
@@ -480,6 +503,7 @@ export class HeaderTest implements Test {
         const marks = valueMarks(all)?.slice(from, to);
         if (marks?.some((m) => m !== "")) {
           marked = true;
+          doubtMatchCaptures(d, this.matcher);
           raw = raw.filter((_, i) => marks[i] === "");
         }
         const values = mime.values(d, name, raw, params);
@@ -490,11 +514,11 @@ export class HeaderTest implements Test {
         for (const value of values) {
           const r = this.matcher.tryMatch(d, value, matchOpts(d));
           if (r === true) return true;
-          if (r === "unknown") unknown = true;
+          if (r === "unknown") { unknown = true; doubtMatchCaptures(d, this.matcher); }
         }
       }
     }
-    if (this.matcher.isCount()) return marked ? "unknown" : countOver(d, this.matcher, entryCount, open);
+    if (this.matcher.isCount()) return marked || open ? this.matcher.matchAtLeast(d, entryCount) : this.matcher.countMatches(d, entryCount);
     return unknown || open || marked ? "unknown" : false;
   }
 }
@@ -597,19 +621,27 @@ export class HasFlagTest implements Test {
 
   check(d: RuntimeData): Tri {
     let flags: string[];
+    let unknown = false;
     if (this.variables.length > 0) {
-      const lists = this.variables.map((v) => d.variables.get(v.toLowerCase()) ?? "");
-      // A flag variable stored from a marked value (see Mark) is read here,
-      // not through an expansion: the test cannot answer for the whole input.
-      if (this.variables.some((v) => d.varMarks.has(v.toLowerCase()))) d.testDoubt = true;
+      const lists = this.variables.map((v) => {
+        const name = v.toLowerCase();
+        const value = d.variables.get(name) ?? "";
+        const mark = d.varMarks.get(name) ?? "";
+        if (mark === "") return value;
+        unknown = true;
+        const head = value.slice(0, provenLength(value, mark));
+        // Only space-terminated tokens are complete before a possible tail.
+        return head.slice(0, head.lastIndexOf(" ") + 1);
+      });
       chargeFlags(d, lists);
       flags = canonicalFlags(lists, null, d.flagAliases).filter((f) => f !== "");
     } else {
-      flags = d.flags;
-      if (d.flagsMarked) d.testDoubt = true; // as a marked flag variable
+      unknown = d.flagsMarked;
+      // Unobserved writes could have removed any internal flag.
+      flags = unknown ? [] : d.flags;
     }
-    if (this.matcher.isCount()) return this.matcher.countMatches(d, flags.length);
-    let unknown = false;
+    if (this.matcher.isCount()) return unknown ? this.matcher.matchAtLeast(d, flags.length) : this.matcher.countMatches(d, flags.length);
+    if (unknown) doubtMatchCaptures(d, this.matcher);
     for (const f of flags) {
       const r = this.matcher.tryMatch(d, f, matchOpts(d));
       if (r === true) return true;
@@ -617,6 +649,7 @@ export class HasFlagTest implements Test {
     }
     return unknown ? "unknown" : false;
   }
+
 }
 
 export class SizeTest implements Test {
