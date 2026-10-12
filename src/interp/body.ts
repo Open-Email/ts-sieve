@@ -492,6 +492,35 @@ export function rawBinary(msg: Message, raw: Uint8Array): string {
 }
 export const MAX_MIME_PARTS = 1024;
 
+interface SplitCacheEntry {
+  body: string;
+  boundary: string;
+  cut: boolean;
+  inputEnd: InputEnd;
+  result: Multipart;
+}
+
+/** Like rawBinaries and leafTexts, splits belong to the immutable Message.
+ * Both walkers use the same part paths: .N for a multipart's Nth child, .m
+ * for an embedded message. Keying by path avoids hashing each large nested
+ * body on every read. The walkers' part/depth caps bound the paths retained.
+ * A path keeps only its latest tuple, checked in full before reusing it. */
+const multipartSplits = new WeakMap<Message, Map<string, SplitCacheEntry>>();
+
+export function splitMultipartForMessage(d: RuntimeData, path: string, b: string, boundary: string, cut: boolean, inputEnd: InputEnd): Multipart {
+  let cache = multipartSplits.get(d.msg);
+  const held = cache?.get(path);
+  if (held !== undefined && held.body === b && held.boundary === boundary && held.cut === cut && held.inputEnd === inputEnd) return held.result;
+  // Charge before scanning. A missing boundary synthesizes a child without
+  // scanning, but each real split can read this entire level's bytes. An
+  // exhausted share must not publish a partial result in this cache.
+  d.budget.consume(1 + (boundary === "" ? 0 : Math.floor((b.length + boundary.length) / 64)));
+  const result = splitMultipart(b, boundary, cut, inputEnd);
+  if (cache === undefined) multipartSplits.set(d.msg, (cache = new Map()));
+  cache.set(path, { body: b, boundary, cut, inputEnd, result });
+  return result;
+}
+
 export class TestBody implements Test {
   /** Restores the captures in force, whatever it matched (see check). */
   readonly setsCaptures = false;
@@ -618,7 +647,7 @@ export class TestBody implements Test {
 
     if (primary === "multipart") {
       // A multipart with no boundary has the one synthesized child, as in core.
-      const mp = splitMultipart(b, params["boundary"] ?? "", cut, inputEnd);
+      const mp = splitMultipartForMessage(d, path, b, params["boundary"] ?? "", cut, inputEnd);
       // A list that may go on past the cut can hide whole sibling parts —
       // even whole part TYPES a :content filter wanted — so any no-match at
       // this level is unknown. (With the list's end in view the structure is

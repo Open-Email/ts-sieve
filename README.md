@@ -195,6 +195,14 @@ execution budget.
   and existing entries stay cached. This avoids a size charge on top-level
   reads that could consume later rules' reserve; existing loop and MIME budget
   charges remain in place.
+- **Repeated multipart scans.** Body tests and MIME tree construction share
+  each part's split, cached by its path within the immutable `Message` object,
+  with body bytes, boundary, truncation and input ending checked before reuse.
+  An uncached split is charged before scanning (one step plus one per 64 bytes
+  of body and boundary); a missing boundary synthesizes its child without a
+  scan. MIME tree construction runs inside the requesting test or loop's budget
+  share, so exhaustion leaves later commands runnable. Completed splits are
+  cached; a tree build interrupted by the budget is retried on its next use.
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
   script upload, not when a message arrives. A pattern built from variables

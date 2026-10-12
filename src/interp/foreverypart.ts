@@ -42,13 +42,17 @@ export class CmdForEveryPart implements Cmd {
   mayReject = true;
 
   execute(d: RuntimeData): void {
-    const cur = currentPart(d);
-    const top = cur ?? mimeTree(d);
-    const parts = cur === null ? subtree(top) : subtree(top).slice(1);
     let broke = false;
+    let open = false;
     // Where the first part an open list may still hold would come.
     let gap = Infinity;
     const r = withShare(d, this.shareIndex, () => {
+      // Constructing a cold MIME tree scans multipart bodies too. Keep it
+      // inside the loop's share so exhaustion skips the loop, not the script.
+      const cur = currentPart(d);
+      const top = cur ?? mimeTree(d);
+      const parts = cur === null ? subtree(top) : subtree(top).slice(1);
+      open = top.openBelow;
       d.budget.consume(parts.length); // the parts it walks, before the block costs
       for (let i = 0; i < parts.length; i++) {
         const p = parts[i]!;
@@ -79,7 +83,7 @@ export class CmdForEveryPart implements Cmd {
       }
       return true;
     });
-    if (r === "unknown" || (!broke && top.openBelow)) {
+    if (r === "unknown" || (!broke && open)) {
       d.indeterminate = true;
       // The iterations it missed may have changed what runs after it.
       if (this.mayAffectLater) d.guessAfter = true;
