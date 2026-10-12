@@ -2,7 +2,7 @@
 // String arguments are expanded through RFC 5229 variables at execution time
 // (expandVars is identity when the script does not require `variables`).
 
-import { type Cmd, cutOffOnGuess, onGuess, type RuntimeData, StopSignal } from "./runtime.js";
+import { type Cmd, cancelImplicitKeep, cutOffOnGuess, onGuess, type RuntimeData, StopSignal } from "./runtime.js";
 import { expandMarked, expandVars, setVar } from "./variables.js";
 
 /**
@@ -144,7 +144,7 @@ export class CmdFileInto implements Cmd {
       chargeFlags(d, flags.flags);
     }
     if (!held) append(names, d.mailboxes, mailbox, mailbox);
-    if (!this.copy) d.implicitKeep = false;
+    if (!this.copy) cancelImplicitKeep(d);
     if (this.create) {
       const created = memberSet(d.mailboxesCreate, same);
       if (!created.keys.has(mailbox)) append(created, d.mailboxesCreate, mailbox, mailbox);
@@ -205,7 +205,7 @@ export class CmdRedirect implements Cmd {
     // A literal's key is computed once; an expansion was charged by its size.
     const key = addr === this.addr ? (this.literalKey ??= redirectKey(addr)) : redirectKey(addr);
     if (memberSet(d.redirectAddr, redirectKey).keys.has(key)) {
-      if (!this.copy) d.implicitKeep = false;
+      if (!this.copy) cancelImplicitKeep(d);
       // A repeat outside a guess makes the target no guess.
       if (d.redirectGuessed.size > 0 && !onGuess(d)) d.redirectGuessed.delete(key);
       return;
@@ -224,7 +224,7 @@ export class CmdRedirect implements Cmd {
       append(held, d.redirectAddr, addr, key);
       if (onGuess(d)) d.redirectGuessed.add(key);
     }
-    if (!this.copy) d.implicitKeep = false;
+    if (!this.copy) cancelImplicitKeep(d);
   }
 }
 
@@ -242,9 +242,9 @@ export class CmdKeep implements Cmd {
 
 export class CmdDiscard implements Cmd {
   execute(d: RuntimeData): void {
-    d.implicitKeep = false;
+    cancelImplicitKeep(d);
     d.flags = [];
-    d.flagsMarked = false;
+    d.flagsMarked = onGuess(d);
   }
 }
 
@@ -266,7 +266,7 @@ function flagsMarked(d: RuntimeData, list: string[]): { flags: string[]; doubt: 
  * RuntimeData.flagsMarked): setflag, and the :flags of keep and fileinto. */
 function setInternalFlags(d: RuntimeData, flags: string[], doubt: boolean): void {
   d.flags = canonicalFlags(flags, null, d.flagAliases);
-  d.flagsMarked = doubt;
+  d.flagsMarked = doubt || onGuess(d);
 }
 
 /** Read a flag variable's current value as a flag-token list (RFC 5232 §5). */
@@ -321,7 +321,7 @@ export class CmdAddFlag implements Cmd {
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags([...d.flags, ...flags], null, d.flagAliases);
-      d.flagsMarked ||= doubt;
+      d.flagsMarked ||= doubt || onGuess(d);
     }
   }
 }
@@ -339,7 +339,7 @@ export class CmdRemoveFlag implements Cmd {
     } else {
       chargeFlags(d, d.flags, flags);
       d.flags = canonicalFlags(d.flags, flags, d.flagAliases);
-      d.flagsMarked ||= doubt;
+      d.flagsMarked ||= doubt || onGuess(d);
     }
   }
 }

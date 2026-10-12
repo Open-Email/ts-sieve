@@ -1,20 +1,16 @@
-// Which blocks could change what runs after them (see runtime.ts's onGuess).
-//
-// When an "unknown" decides an if/elsif/else arm, or a foreverypart loop may
-// have missed iterations, the arm the whole input would run may differ. The
-// actions in the arm that ran are on a guess either way. Whether what runs
-// AFTER the arm is on a guess depends on what the other arm could have done:
-// stop the run, write a variable, a flag or a header a later test reads, or
-// change which later action is dropped at a limit. An arm that only files or
-// keeps can do none of that, and a body rule that files a cut message must
-// not put an unrelated forward after it on a guess.
-//
-// Computed once at load, conservatively: a command not listed as inert is
-// taken to affect what follows.
+// Analyze the effects of an arm or loop once, at load. Unobserved writes
+// mark only their variables, captures, flags and header fields. Possible local
+// stores and reject conflicts have separate disclosures. Control flow and
+// action-limit interactions retain a conservative barrier for later actions.
+// Unknown extension commands are treated as affecting control flow.
 
 import { CmdAddFlag, CmdDiscard, CmdFileInto, CmdKeep, CmdRedirect, CmdRemoveFlag, CmdSetFlag } from "./action.js";
 import { CmdElse, CmdElsif, CmdIf } from "./control.js";
-import { CmdForEveryPart } from "./foreverypart.js";
+import { CmdForEveryPart, CmdExtractText } from "./foreverypart.js";
+import { CmdAddHeader, CmdDeleteHeader } from "./editheader.js";
+import { CmdSet } from "./variables.js";
+import { setsCaptures } from "./test.js";
+import { emptyWrites, mergeWrites, type UncertainWrites } from "./uncertainty.js";
 import { CmdReject } from "./reject.js";
 import type { Cmd } from "./runtime.js";
 import type { Script } from "./script.js";
@@ -58,51 +54,64 @@ export function analyzeGuessScope(s: Script): void {
   const capturesRead = s.requiresExtension("variables");
   const flagsRead = s.readsFlags;
 
-  type Effects = { affects: boolean; vacation: boolean; reject: boolean };
+  type Effects = { affects: boolean; vacation: boolean; reject: boolean; local: boolean; conflict: boolean; writes: UncertainWrites };
 
-  /** What `cmds` could do that matters after them; sets mayAffectLater,
-   * mayVacation and mayReject on every arm and loop inside, each block
-   * walked once. */
   const mark = (cmds: Cmd[]): Effects => {
-    const e: Effects = { affects: false, vacation: false, reject: false };
+    const e: Effects = { affects: false, vacation: false, reject: false, local: false, conflict: false, writes: emptyWrites() };
     for (const c of cmds) {
-      let affects: boolean;
+      let affects = false;
       if (c instanceof CmdIf || c instanceof CmdElsif || c instanceof CmdElse || c instanceof CmdForEveryPart) {
         const inner = mark(c.block);
         c.mayAffectLater = inner.affects;
         c.mayVacation = inner.vacation;
         c.mayReject = inner.reject;
+        c.mayKeepLocal = inner.local;
+        c.mayConflictReject = inner.conflict;
+        c.uncertainWrites = inner.writes;
         e.vacation ||= inner.vacation;
         e.reject ||= inner.reject;
-        affects = inner.affects || ((c instanceof CmdIf || c instanceof CmdElsif) && capturesRead);
+        e.local ||= inner.local;
+        e.conflict ||= inner.conflict;
+        mergeWrites(e.writes, inner.writes);
+        // A loop iteration not visited could have evaluated this condition.
+        if ((c instanceof CmdIf || c instanceof CmdElsif) && capturesRead && setsCaptures(c.test)) e.writes.captures = true;
+        affects = inner.affects;
       } else if (c instanceof CmdKeep) {
-        // :flags replaces the internal flag set.
-        affects = c.flags !== null && flagsRead;
+        e.local = e.conflict = true;
+        e.writes.flags ||= c.flags !== null;
       } else if (c instanceof CmdFileInto) {
-        // :flags replaces the internal flag set; and near maxFileintos a
-        // target filed (or not) decides whether a later fileinto, and its
-        // :flags, is dropped.
-        affects = flagsRead && (c.flags !== null || s.fileintosMayCap);
+        if (s.opts.maxFileintos > 0) e.local = e.conflict = true;
+        e.writes.flags ||= c.flags !== null;
+        affects = flagsRead && s.fileintosMayCap;
       } else if (c instanceof CmdRedirect) {
+        e.conflict ||= s.opts.maxRedirects > 0;
         affects = s.redirectsMayCap;
       } else if (c instanceof CmdVacation) {
-        e.vacation = true;
+        e.vacation = e.conflict = true;
         affects = vacationsRepeat;
       } else if (c instanceof CmdDiscard) {
-        // It clears the internal flag set.
-        affects = flagsRead;
+        e.writes.flags = true;
       } else if (c instanceof CmdSetFlag || c instanceof CmdAddFlag || c instanceof CmdRemoveFlag) {
-        // A flag variable is a variable; the internal set is read by hasflag.
-        affects = c.variableName !== null || flagsRead;
+        if (c.variableName !== null) e.writes.variables.add(c.variableName.toLowerCase());
+        else e.writes.flags = true;
+      } else if (c instanceof CmdSet || c instanceof CmdExtractText) {
+        e.writes.variables.add(c.name.toLowerCase());
+      } else if (c instanceof CmdAddHeader || c instanceof CmdDeleteHeader) {
+        if (c.fieldName.includes("${")) e.writes.allHeaders = true;
+        else e.writes.headers.add(c.fieldName.toLowerCase());
+        if (c instanceof CmdDeleteHeader && capturesRead && c.valuePatterns.length > 0) e.writes.captures = true;
       } else {
-        // stop, set, extracttext, editheader, break, reject and anything
-        // else.
+        // stop, break, reject, and extension commands without a known effect
+        // model retain the conservative control-flow barrier.
         if (c instanceof CmdReject) e.reject = true;
         const block = blockOf(c);
         if (block !== null) {
           const inner = mark(block);
           e.vacation ||= inner.vacation;
           e.reject ||= inner.reject;
+          e.local ||= inner.local;
+          e.conflict ||= inner.conflict;
+          mergeWrites(e.writes, inner.writes);
         }
         affects = true;
       }
@@ -110,5 +119,7 @@ export function analyzeGuessScope(s: Script): void {
     }
     return e;
   };
-  mark(s.cmds);
+  const effects = mark(s.cmds);
+  s.hasLocalDelivery = effects.local;
+  s.hasRejectConflictAction = effects.conflict;
 }

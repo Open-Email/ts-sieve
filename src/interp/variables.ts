@@ -7,7 +7,7 @@
 
 import { SieveError } from "../errors.js";
 import { MatcherTest } from "./matcher.js";
-import type { Cmd, Mark, RuntimeData, Test, Tri } from "./runtime.js";
+import { onGuess, type Cmd, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 
 const VAR_NAME_MAX_SCAN = 300; // bound the } search — real names are ≤ 32 chars
@@ -208,6 +208,7 @@ export function setVar(d: RuntimeData, name: string, value: string, mark: Mark =
   const lower = name.toLowerCase();
   const dot = lower.indexOf(".");
   if (dot !== -1) throw new SieveError(`cannot set namespaced variable: ${name}`);
+  if (onGuess(d)) mark = "doubt";
   d.variables.set(lower, v);
   if (mark === "") d.varMarks.delete(lower);
   else d.varMarks.set(lower, mark);

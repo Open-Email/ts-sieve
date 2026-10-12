@@ -8,7 +8,8 @@
 import { decodeHeaderOnce } from "./header-values.js";
 import { MatcherTest } from "./matcher.js";
 import type { MatchOptions } from "./matching.js";
-import { type Cmd, type Mark, type RuntimeData, type Tri, withShare } from "./runtime.js";
+import { type Cmd, doubtCaptures, type Mark, onGuess, type RuntimeData, type Tri, withShare } from "./runtime.js";
+import { headerUncertain, markHeaderUncertain } from "./uncertainty.js";
 import { expandMarked, expandVarsList } from "./variables.js";
 
 export interface HeaderEdit {
@@ -33,22 +34,22 @@ const MAX_HEADER_EDITS = 1024;
 const MAX_HEADER_EDIT_BYTES = 1024 * 1024;
 
 /** An edit not made, or not made on proof: later header reads may differ
- * from the whole input's, so what runs after it is on a guess (see onGuess). */
-function disclose(d: RuntimeData): void {
+ * from the whole input's. Mark that field rather than unrelated later work. */
+function disclose(d: RuntimeData, fieldName: string | null): void {
   d.indeterminate = true;
-  d.guessAfter = true;
+  markHeaderUncertain(d, fieldName);
 }
 
 /** Count a command with an edit dropped, once even if several edits cannot fit. */
-function dropEdit(d: RuntimeData): void {
+function dropEdit(d: RuntimeData, fieldName: string | null = null): void {
   d.headerEditsDropped++;
-  disclose(d);
+  disclose(d, fieldName);
 }
 
 /** Whether one more edit (adding `bytes`) fits; if not, disclose the drop. */
-function editFits(d: RuntimeData, bytes: number): boolean {
+function editFits(d: RuntimeData, bytes: number, fieldName: string): boolean {
   if (d.headerEdits.length < MAX_HEADER_EDITS && d.headerEditBytes + bytes <= MAX_HEADER_EDIT_BYTES) return true;
-  dropEdit(d);
+  dropEdit(d, fieldName);
   return false;
 }
 
@@ -115,6 +116,9 @@ const replayMarks = new WeakMap<string[], Mark[]>();
 export function resetHeaderEdits(d: RuntimeData): void {
   d.headerEdits = [];
   d.headerEditBytes = 0;
+  d.uncertainHeaders.clear();
+  d.certainHeaders.clear();
+  d.allHeadersUncertain = false;
   replays.delete(d);
 }
 
@@ -235,7 +239,7 @@ export class CmdAddHeader implements Cmd {
     }
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
     // A full ledger takes nothing, so nothing is folded for it.
-    if (!editFits(d, 0)) return;
+    if (!editFits(d, 0, fieldName)) return;
     // The value keeps its mark: every later read of the field weighs it (see
     // valueMarks). Folding a prefix gives a prefix of the folded whole: a run
     // of line breaks the cut ended is removed, where whole it is removed or
@@ -244,7 +248,8 @@ export class CmdAddHeader implements Cmd {
     // In a loop the fold is charged by size: a literal has no expansion to pay.
     if (d.budget.shares > 0) d.budget.consume(raw.length >> 7);
     const value = foldHeaderValue(raw);
-    if (!editFits(d, value.length)) return;
+    if (!editFits(d, value.length, fieldName)) return;
+    if (onGuess(d)) markHeaderUncertain(d, fieldName);
     d.headerEditBytes += value.length;
     d.headerEdits.push({ action: "add", fieldName, value, last: this.last, index: 0, ...(mark !== "" ? { mark } : {}) });
   }
@@ -269,13 +274,28 @@ export class CmdDeleteHeader implements Cmd {
     }
     if (!isValidHeaderName(fieldName)) return;
     if (isProtectedHeader(fieldName)) return; // RFC 5293 §6
+    if (onGuess(d)) markHeaderUncertain(d, fieldName);
 
     const valuePatterns = expandVarsList(d, this.valuePatterns);
     if (valuePatterns.length === 0) {
-      if (editFits(d, 0)) d.headerEdits.push({ action: "delete", fieldName, value: "", index: this.index, last: this.last });
+      if (editFits(d, 0, fieldName)) {
+        d.headerEdits.push({ action: "delete", fieldName, value: "", index: this.index, last: this.last });
+        if (this.index === 0 && !onGuess(d)) {
+          d.uncertainHeaders.delete(fieldName.toLowerCase());
+          d.certainHeaders.add(fieldName.toLowerCase());
+        }
+      }
       return;
     }
 
+    if (headerUncertain(d, fieldName)) {
+      if (this.matcher.match === "matches" || this.matcher.match === "regex") {
+        doubtCaptures(d);
+        d.captureDoubt = false;
+      }
+      disclose(d, fieldName);
+      return;
+    }
     const values = applyHeaderEditsToValues(d, fieldName, d.msg.headerGet(fieldName));
     if (values.length === 0) return;
     const marks = valueMarks(values);
@@ -289,7 +309,7 @@ export class CmdDeleteHeader implements Cmd {
       if (this.index > 0) {
         let idx = this.index - 1;
         if (this.last) idx = values.length - this.index;
-        if (idx >= 0 && idx < values.length && this.valueMatchesPatterns(d, values[idx]!, marks?.[idx] ?? "")) {
+        if (idx >= 0 && idx < values.length && this.valueMatchesPatterns(d, values[idx]!, marks?.[idx] ?? "", fieldName)) {
           edits.push({ action: "delete", fieldName, value: values[idx]!, index: this.index, last: this.last });
         }
         return true;
@@ -297,24 +317,28 @@ export class CmdDeleteHeader implements Cmd {
       for (let i = 0; i < values.length; i++) {
         const val = values[i]!;
         const mark = marks?.[i] ?? "";
-        if (this.valueMatchesPatterns(d, val, mark)) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false, ...(mark !== "" ? { mark } : {}) });
+        if (this.valueMatchesPatterns(d, val, mark, fieldName)) edits.push({ action: "delete", fieldName, value: val, index: 0, last: false, ...(mark !== "" ? { mark } : {}) });
       }
       return true;
     });
     if (r === "unknown") {
       d.matchVariables = savedVars; // a match before the share ran out proves nothing
-      disclose(d);
+      if (this.matcher.match === "matches" || this.matcher.match === "regex") {
+        doubtCaptures(d);
+        d.captureDoubt = false;
+      }
+      disclose(d, fieldName);
       return;
     }
     for (const e of edits) {
       // The rest cannot fit either. Count the command once, preserving any
       // edits already recorded before the ledger filled.
-      if (!editFits(d, 0)) break;
+      if (!editFits(d, 0, fieldName)) break;
       d.headerEdits.push(e);
     }
   }
 
-  private valueMatchesPatterns(d: RuntimeData, value: string, mark: Mark): boolean {
+  private valueMatchesPatterns(d: RuntimeData, value: string, mark: Mark, fieldName: string): boolean {
     // An "unknown" (a glob over a value past the match-input cap, or over one
     // an addheader built from a marked value) reads as no-match here —
     // deleting a header on an unproven match would corrupt what every later
@@ -326,7 +350,7 @@ export class CmdDeleteHeader implements Cmd {
     if (mark === "" || (mark === "prefix" && decodesAsPrefix(value))) {
       r = this.matcher.tryMatch(d, decodeHeaderOnce(d, value).trim(), opts, mark === "prefix");
     }
-    if (r === "unknown") disclose(d);
+    if (r === "unknown") disclose(d, fieldName);
     return r === true;
   }
 }

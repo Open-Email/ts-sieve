@@ -1,11 +1,13 @@
 // Header access with virtual edits, plus RFC 2047 decoding so comparisons
 // run on the text Core exposes (RFC 5228 §2.7.2).
 
+import { headerUncertain } from "./uncertainty.js";
 import { applyHeaderEditsToValues } from "./editheader.js";
 import { decodeHeaderText } from "./mediatype.js";
 import type { RuntimeData } from "./runtime.js";
 
 export function getHeader(d: RuntimeData, field: string): string[] {
+  if (headerUncertain(d, field)) d.testDoubt = true;
   return applyHeaderEditsToValues(d, field, d.msg.headerGet(field));
 }
 
