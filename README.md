@@ -127,6 +127,14 @@ else — or for a name you left out of `enabledExtensions` — fails at load.
 | `regex` | draft-murchison-sieve-regex | on the linear engine: classes, alternation, bounded `{n,m}`, anchors, `\b`, inline `(?ism)` flags; **no** backreferences or lookaround (rejected at load). Over a cut input, a match is "unknown" when it relied on `$`, `\z`, `\b` or `\B` at the cut: those look at what follows, and the whole input goes on |
 | `comparator-i;octet`, `comparator-i;ascii-casemap`, `comparator-i;ascii-numeric`, `comparator-i;unicode-casemap` | 4790/5228 | `i;octet` and `i;ascii-casemap` are built-in; the other two must be required (RFC 5228 §2.7.3) |
 
+For `header :mime :param`, a missing parameter contributes no value: `:count`
+counts zero, and neither `:is ""` nor `:matches "*"` matches it. A present
+parameter with an empty quoted value contributes one value and matches both.
+This follows [RFC 5703 §4.1](https://www.rfc-editor.org/rfc/rfc5703.html#section-4.1),
+which counts parameters found, and preserves Core's distinction between absent
+and empty parameters. Pigeonhole's empty-value fallback for missing parameters
+is an intentional compatibility difference (#80).
+
 There is also a `vnd.dovecot.testsuite` gate (`Options.testEnv`) implementing the
 in-Sieve test DSL (`test`/`test_set`/`test_fail`/`test_config_set`,
 `test_script_compile`/`test_script_run`/`test_error`) used to run the Dovecot
