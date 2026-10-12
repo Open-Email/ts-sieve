@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { stripRFC2822Comments } from "../src/interp/address.js";
 import { stripTrailingComment } from "../src/interp/date.js";
 import { run } from "./harness.js";
+import { stringWork } from "./work-counts.js";
 
 const OLD_ADDRESS = (s: string) => s.replace(/\([^)]*\)/g, "").trim();
 const OLD_DATE = (s: string) => s.replace(/\s*\([^()]*\)\s*$/, "");
@@ -29,12 +30,6 @@ function* samples(alphabet: string[], count: number, maxLen: number): Generator<
   }
 }
 
-function within(ms: number, f: () => unknown): unknown {
-  const t0 = performance.now();
-  const r = f();
-  expect(performance.now() - t0).toBeLessThan(ms);
-  return r;
-}
 
 describe("address comment stripping", () => {
   it("gives the regex's output", () => {
@@ -49,8 +44,11 @@ describe("address comment stripping", () => {
   it("is linear in the header", () => {
     const script = 'require "fileinto"; if address :is "from" "a@b" { fileinto "A"; }';
     const small = run(script, `From: ${"(".repeat(10)}a@b\r\n\r\nx\r\n`);
-    const big = within(500, () => run(script, `From: ${"(".repeat(200_000)}a@b\r\n\r\nx\r\n`));
-    expect(big).toEqual(small);
+    const value = "(".repeat(200_000) + "a@b";
+    const measured = stringWork(() => stripRFC2822Comments(value), 4 * value.length);
+    expect(measured.value).toBe(value);
+    expect(measured.calls.indexOf, "the comment-search probe must observe both searches").toBe(2);
+    expect(run(script, `From: ${value}\r\n\r\nx\r\n`)).toEqual(small);
   });
 });
 
@@ -68,7 +66,11 @@ describe("the trailing comment of a Date", () => {
     const script = 'require ["date","fileinto"]; if date :is "date" "year" "2026" { fileinto "Y"; }';
     const date = (ws: number) => `Date: Thu, 20 Aug 2026 21:30:35${" ".repeat(ws)}(x +0000\r\n\r\nx\r\n`;
     const small = run(script, date(10));
-    const big = within(500, () => run(script, date(200_000)));
-    expect(big).toEqual(small);
+    const value = `Thu, 20 Aug 2026 21:30:35${" ".repeat(200_000)}(x +0000`;
+    const measured = stringWork(() => stripTrailingComment(value), 4 * value.length);
+    expect(measured.value).toBe(value);
+    expect(measured.calls.trimEnd, "the trailing-comment probe must observe the scan").toBe(1);
+    expect(measured.calls.charCodeAt).toBe(1);
+    expect(run(script, date(200_000))).toEqual(small);
   });
 });

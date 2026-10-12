@@ -7,6 +7,8 @@
 
 import { describe, expect, it } from "vitest";
 import { run } from "./harness.js";
+import { htmlToText } from "../src/interp/htmltext.js";
+import { stringWork } from "./work-counts.js";
 
 const quote = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const eml = (html: string) =>
@@ -197,16 +199,25 @@ describe("HTML to text: no drop state a browser would not enter", () => {
 describe("HTML to text: cost", () => {
   // Every search here must resume where the last one stopped: a search per
   // construct that runs to the end of the input is quadratic, and 1 MiB of
-  // small scripts took 41 s. A generous bound — linear runs in milliseconds.
-  it("many small constructs over a large input stay linear", { timeout: 30_000 }, () => {
-    const units = ["<script>x</script>", "<!-- x -->", '<a title="x">', "<style>x</style>", "<"];
-    const bounded = ["<a", "<![CDATA[x]]>", "<textarea>x</textarea>", "<xmp>"].map((u) => ["<svg>", u] as const);
-    for (const [prefix, unit] of [...units.map((u) => ["", u] as const), ...bounded]) {
-      const html = prefix + unit.repeat(Math.ceil(1_048_576 / unit.length));
-      const t = performance.now();
-      textIs(html, "");
-      expect(performance.now() - t).toBeLessThan(2000);
-    }
+  // small scripts took 41 s. Count searched/copied spans and character reads.
+  const cases: [string, string, (n: number) => string][] = [
+    ["", "<script>x</script>", () => ""],
+    ["", "<!-- x -->", () => ""],
+    ["", '<a title="x">', () => ""],
+    ["", "<style>x</style>", () => ""],
+    ["", "<", (n) => "<".repeat(n)],
+    ["<svg>", "<a", (n) => "<a".repeat(n)],
+    ["<svg>", "<![CDATA[x]]>", (n) => "x".repeat(n)],
+    ["<svg>", "<textarea>x</textarea>", (n) => "x ".repeat(n).trimEnd()],
+    ["<svg>", "<xmp>", (n) => "<xmp>".repeat(n - 1)],
+  ];
+  it.each(cases)("linear work over %s + %s", { timeout: 30_000 }, (prefix, unit, expected) => {
+    const n = Math.ceil(1_048_576 / unit.length);
+    const html = prefix + unit.repeat(n);
+    const measured = stringWork(() => htmlToText(html), 40 * html.length);
+    expect(measured.calls.indexOf, `the search probe must observe ${unit}`).toBeGreaterThan(0);
+    expect(measured.calls.charCodeAt, `the character probe must observe ${unit}`).toBeGreaterThan(0);
+    expect(measured.value, `the complete reduction of ${unit}`).toBe(expected(n));
   });
 });
 
