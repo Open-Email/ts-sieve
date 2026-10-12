@@ -1,10 +1,10 @@
 // #65: an uncertain recoverable effect must not make an independent local
 // drop uncertain. A possibly missed local store must still prevent the drop.
 import { describe, expect, it } from "vitest";
-import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, redirectsOnGuess } from "../src/index.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
-const REQUIRE = 'require ["foreverypart", "mime", "imap4flags", "fileinto", "variables", "editheader", "reject", "vacation", "copy"];';
+const REQUIRE = 'require ["foreverypart", "mime", "imap4flags", "fileinto", "variables", "editheader", "reject", "vacation", "copy", "relational", "comparator-i;ascii-numeric"];';
 const DISCARD = 'if address :is "from" "spammer@remote-tr.test" { discard; }';
 const PDF = 'header :mime :anychild :subtype "content-type" "pdf"';
 const LOOP_FLAGS = 'foreverypart { if header :mime :subtype "content-type" "pdf" { addflag "pdf"; } }';
@@ -18,10 +18,10 @@ function nested(depth: number): string {
   for (let i = depth - 1; i >= 0; i--) body = `Content-Type: multipart/mixed; boundary=b${i}\r\n\r\n--b${i}\r\n${body}\r\n--b${i}--\r\n`;
   return 'From: spammer@remote-tr.test\r\n' + body;
 }
-function exec(commands: string, eml = parts(1030)) {
+function exec(commands: string, eml = parts(1030), truncated = false) {
   const { headers, size, body } = parseEml(eml);
   const s = load(REQUIRE + commands, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
-  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("spammer@remote-tr.test", "to@local.test"), new MessageStatic(size, headers, body));
+  const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("spammer@remote-tr.test", "to@local.test"), new MessageStatic(size, headers, body, truncated));
   s.execute(d);
   // The fallback models Core's old run-wide guard and keeps this test commit
   // buildable before the per-outcome disclosure exists.
@@ -120,4 +120,57 @@ describe("later tests see the specific writes unseen iterations could make", () 
   ])("a definite overwrite restores an exact value", (before, condition) => {
     definiteDrop(before + `if ${condition} { discard; }`);
   });
+});
+
+
+it("a drop or forward proved over an open tree survives concrete completions", () => {
+  const prefix = parts(1).replace("--b--\r\n", "");
+  const completions = ["text/plain", "application/pdf"].map((type) => prefix + `--b\r\nContent-Type: ${type}\r\n\r\ntail\r\n--b--\r\n`);
+  const actions = [
+    'addflag "pdf";', 'removeflag "known";', 'setflag "pdf";',
+    'set "v" "changed";', 'addflag "v" "changed";',
+    'deleteheader "from";', 'addheader "X-Test" "yes";',
+    'keep;', 'fileinto "Pdf";', 'redirect "archive@remote.test";',
+    'discard;', 'stop;', 'break;', 'reject "no";', 'vacation "away";',
+  ];
+  const later = [
+    DISCARD, 'redirect "archive@remote.test";', 'reject "no";',
+    'if not hasflag "pdf" { discard; }',
+    'if hasflag "pdf" { keep; } discard;',
+    'if string :is "${v}" "known" { discard; }',
+    'if string :is "${v}" "changed" { keep; } discard;',
+    'if exists "x-test" { keep; } discard;',
+    'if not exists "x-test" { discard; }',
+    'if header :count "gt" "from" "0" { discard; }',
+    'if address :is "from" "spammer@remote-tr.test" { redirect "archive@remote.test"; }',
+    'if hasflag "pdf" {} else { stop; } keep;',
+    'set "copy" "${v}"; if string :is "${copy}" "known" { discard; }',
+    'deleteheader "X-Test"; addheader "X-Test" "yes"; if exists "x-test" { discard; }',
+  ];
+  let provedDrops = 0, provedForwards = 0;
+  for (const action of actions) for (const tail of later) for (const initial of ["", "discard;", 'reject "no";']) {
+    const script = 'set "v" "known"; setflag "known";' + initial +
+      `foreverypart { if header :mime :subtype "content-type" "pdf" { ${action} } }` + tail;
+    const cut = exec(script, prefix, true);
+    const guessed = redirectsOnGuess(cut.d);
+    const definiteForwards = cut.d.redirectAddr.filter((addr) => !guessed.includes(addr));
+    const provedDrop = !cut.keepsLocal && !cut.uncertain;
+    if (provedDrop) provedDrops++;
+    provedForwards += definiteForwards.length;
+    for (const whole of completions) {
+      const result = exec(script, whole);
+      if (provedDrop) expect(result.keepsLocal, script + "\n" + whole).toBe(false);
+      for (const addr of definiteForwards) expect(result.d.redirectAddr, script + "\n" + whole).toContain(addr);
+    }
+  }
+  expect(provedDrops, "the oracle must exercise actual drop proofs").toBeGreaterThan(30);
+  expect(provedForwards, "the oracle must exercise actual forward proofs").toBeGreaterThan(10);
+});
+
+it("an uncertain delete cannot leave trusted captures for a later redirect", () => {
+  const r = exec('if header :matches "from" "*" {} deleteheader :matches "subject" "*zzz"; redirect "${1}";',
+    `From: archive@remote.test\r\nSubject: ${"x".repeat(20_000)}\r\n\r\nbody`);
+  expect(r.d.indeterminate).toBe(true);
+  expect(r.d.redirectAddr).toEqual([]);
+  expect(r.d.redirectsDropped).toBe(1);
 });
