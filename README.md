@@ -173,8 +173,9 @@ All limits ship with safe defaults (shown); `0` means unlimited where noted.
 | `enabledExtensions` | `null` (none) | allow-list for `require` |
 
 Independent of options, the regex engine enforces: pattern ≤ 1000 chars,
-compiled program ≤ 10 000 instructions and ≤ 100 000 compile calls (a key
-compiled at delivery is charged for them to the budget each time its
+compiled program ≤ 10 000 instructions and ≤ 100 000 compile work units,
+including Unicode class closure (a key compiled at delivery is charged to
+the budget for that work each time its
 expansion changes), `{n,m}` counts ≤ 1000, ≤ 250 nested
 groups and ≤ 500 levels of compiler recursion (quantifiers stacked on groups
 deepen it too; a `{n,}` counts twice), input ≤ 256 KiB unless
@@ -241,8 +242,14 @@ on them and this one follows the RFC strictly:
   captures retain original text. This is not general Unicode case folding:
   `ß` remains distinct from `ẞ`, and decomposed ligature `ﬁ` is not titlecased
   a second time. Regenerate the checked table with `npm run gen:unicode`.
-  The separate Unicode `:regex` limitations are tracked in
-  [#110](https://github.com/Open-Email/ts-sieve/issues/110).
+- **Unicode `:regex`:** `i;unicode-casemap` selects Unicode 17.0.0 default
+  simple case folding for literals and character classes (UTS #18 RL1.5),
+  including escaped classes such as `\\w`. Classes are closed under case
+  before negation; word-boundary assertions remain ASCII-based, as in Go's
+  regex engine. Source text and captures are unchanged. Regex characters stay
+  single code points: this mode does not perform RFC 5051 decomposition or
+  multi-character full case folding (`ß` matches `ẞ`, not `ss`). Regenerate
+  its checksum-pinned table with `npm run gen:unicode-regex`.
 - **`:regex` gating:** `require "regex"` is enforced centrally for every test,
   including `address` and `envelope`.
 - **`i;ascii-numeric` (RFC 4790 §9.1.1):** values compare by their leading

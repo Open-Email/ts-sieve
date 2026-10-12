@@ -26,7 +26,8 @@
     "typecheck": "tsc --noEmit",
     "gen:entities": "node scripts/gen-html-entities.mjs",
     "prepare": "npm run build",
-    "gen:unicode": "node scripts/gen-unicode-casemap.mjs"
+    "gen:unicode": "node scripts/gen-unicode-casemap.mjs",
+    "gen:unicode-regex": "node scripts/gen-unicode-simple-fold.mjs"
   },
   "license": "MIT",
   "devDependencies": {
