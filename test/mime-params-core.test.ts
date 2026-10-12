@@ -60,6 +60,11 @@ describe(":param follows Core's malformed-list handling (#82)", () => {
 });
 
 describe(":param retains Core's valid and decoded parameter values", () => {
+  it.each(["__proto__", "constructor", "toString"])("preserves the ordinary parameter name %s", (name) => {
+    const message = `Content-Disposition: attachment; ${name}="evil.exe"\r\n\r\nbody`;
+    expect(run(script("content-disposition", name, ":is"), message)).toEqual(R({ fileinto: ["Match"] }));
+  });
+
   it.each([
     ['trailing semicolon', 'attachment; filename="evil.exe";', 'evil.exe'],
     ['identical duplicate', 'attachment; filename="evil.exe"; filename="evil.exe"', 'evil.exe'],
