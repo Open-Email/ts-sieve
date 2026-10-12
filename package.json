@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "LICENSE-UNICODE.txt"
   ],
   "sideEffects": false,
   "scripts": {
@@ -24,7 +25,8 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "gen:entities": "node scripts/gen-html-entities.mjs",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "gen:unicode": "node scripts/gen-unicode-casemap.mjs"
   },
   "license": "MIT",
   "devDependencies": {

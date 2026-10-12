@@ -752,7 +752,7 @@ export function byteLen(s: string): number {
 /** The longest prefix of s within maxBytes. A character the byte cut splits is
  * dropped, not decoded as U+FFFD: the cut input is matched as a prefix of the
  * real one, and a U+FFFD there is content the real input does not have. */
-function truncateToBytes(s: string, maxBytes: number): string {
+export function truncateToBytes(s: string, maxBytes: number): string {
   const bytes = encoder.encode(s);
   return new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true });
 }

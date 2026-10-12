@@ -1,11 +1,12 @@
 // Comparators + match types.
 //
 // `:is`/`:contains` are direct string comparisons implemented here; `:matches`
-// and `:regex` are handled in matcher.ts through the linear (Thompson-NFA)
-// regex engine in regex.ts — never through JavaScript's backtracking RegExp —
+// and `:regex` are handled in matcher.ts through bounded NFAs in regex.ts
+// and unicode-glob.ts — never through JavaScript's backtracking RegExp —
 // so hostile patterns cannot pin a Worker's CPU (no ReDoS class). `:value` and
 // `:count` (RFC 5231 relational) live in relational.ts.
 
+import { UNICODE_CASEMAP } from "./unicode-casemap-data.js";
 import { SieveError } from "../errors.js";
 import { parseNumericPrefix } from "./relational.js";
 import type { Tri } from "./runtime.js";
@@ -33,21 +34,22 @@ export function toLowerASCII(s: string): string {
   return r;
 }
 
-/**
- * The i;unicode-casemap fold: lowercase, without context.
- *
- * String.prototype.toLowerCase() applies the Unicode Final_Sigma context rule:
- * Σ lowercases to ς at the end of a word, and to σ elsewhere. That causes
- * two problems:
- * 1. Over a cut input, the fold of a prefix is not a prefix of the fold of the
- *    whole ("ΑΣ" folds to "ας", but "ΑΣΑ" folds to "ασα"), breaking prefix
- *    decidability.
- * 2. RFC 5051 maps characters to titlecase, under which σ and ς both map to Σ.
- *    Mapping ς to σ produces a context-free canonical fold where σ and ς
- *    compare equal.
- */
+/** RFC 5051 §2: simple titlecase once, then recursive decomposition of
+ * each code point. Do not normalize the whole string: canonical reordering
+ * can change an already-read prefix when a later combining mark arrives. */
 export function toUnicodeCasemapFold(s: string): string {
-  return s.toLowerCase().replace(/ς/g, "σ");
+  let out = "";
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (cp >= 0xac00 && cp <= 0xd7a3) {
+      // UAX #44: Hangul decomposition is algorithmic, omitted from the
+      // UnicodeData range. Emit L, V and the optional trailing consonant.
+      const n = cp - 0xac00;
+      out += String.fromCodePoint(0x1100 + Math.floor(n / 588), 0x1161 + Math.floor(n % 588 / 28));
+      if (n % 28 !== 0) out += String.fromCodePoint(0x11a7 + n % 28);
+    } else out += UNICODE_CASEMAP.get(cp) ?? ch;
+  }
+  return out;
 }
 
 export interface MatchOptions {

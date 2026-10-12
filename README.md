@@ -234,6 +234,15 @@ on them and this one follows the RFC strictly:
 - **Comparator gating (RFC 5228 §2.7.3):** `i;ascii-numeric` and
   `i;unicode-casemap` demand `require "comparator-i;…"`; a bare use fails at
   load.
+- **`i;unicode-casemap` (RFC 5051):** `:is`, `:contains`, `:value` and
+  `:matches` use a pinned Unicode 17.0.0 table: simple titlecase once, followed
+  by recursive decomposition of each code point without canonical reordering.
+  This preserves prefix proofs. Wildcards consume original code points and
+  captures retain original text. This is not general Unicode case folding:
+  `ß` remains distinct from `ẞ`, and decomposed ligature `ﬁ` is not titlecased
+  a second time. Regenerate the checked table with `npm run gen:unicode`.
+  The separate Unicode `:regex` limitations are tracked in
+  [#110](https://github.com/Open-Email/ts-sieve/issues/110).
 - **`:regex` gating:** `require "regex"` is enforced centrally for every test,
   including `address` and `envelope`.
 - **`i;ascii-numeric` (RFC 4790 §9.1.1):** values compare by their leading

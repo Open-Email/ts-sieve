@@ -1,10 +1,11 @@
 // The shared match-type/comparator
 // state for header/address/envelope/string/date/body/hasflag tests. `:is` and
 // `:contains` fold the value once and compare (compareFolded, or testString for
-// i;ascii-numeric); `:matches`/`:regex` compile to the
-// linear regex engine (patterns without variable refs precompile at load);
+// i;ascii-numeric); `:matches`/`:regex` compile to bounded NFAs
+// (patterns without variable refs precompile at load);
 // `:value`/`:count` route through the relational kernel.
 
+import { compileUnicodeGlob } from "./unicode-glob.js";
 import type { ValueProfile } from "./budget-reserve.js";
 import { SieveError } from "../errors.js";
 import {
@@ -16,8 +17,6 @@ import {
   compareFolded,
   testString,
   testStringPrefix,
-  toLowerASCII,
-  toUnicodeCasemapFold,
 } from "./matching.js";
 import { byteLen, type CompiledRegex, compileRegex, MAX_COMPILE_WORK, MAX_INPUT_LENGTH, patternToRegex } from "./regex.js";
 import {
@@ -75,9 +74,9 @@ function foldOnce(d: RuntimeData, kind: string, source: string, fold: (s: string
   let folded = cache.get(source);
   if (folded === undefined) {
     folded = fold(source);
-    if (d.foldCacheUnits + 2 * source.length <= FOLD_CACHE_MAX) {
+    if (d.foldCacheUnits + source.length + folded.length <= FOLD_CACHE_MAX) {
       cache.set(source, folded);
-      d.foldCacheUnits += 2 * source.length;
+      d.foldCacheUnits += source.length + folded.length;
     }
   }
   return folded;
@@ -216,8 +215,8 @@ export class MatcherTest {
       throw new SieveError("numeric comparator cannot be used with :contains or :matches");
     }
 
-    // :matches case-folding is applied via the compiled regex's (?i); default
-    // comparator i;ascii-casemap folds, i;octet does not.
+    // ASCII :matches uses the regex VM's (?i). Unicode globs prepare their
+    // literals separately, preserving source characters for wildcards.
     this.caseFold = this.comparator === "i;ascii-casemap" || this.comparator === "i;unicode-casemap";
     if (this.match === "matches") {
       // Precompile patterns with no variable refs (throws at load on oversize);
@@ -249,7 +248,9 @@ export class MatcherTest {
   /** Compile a `:matches` glob or a `:regex` pattern; throws SieveError when it
    * does not compile or is past the pattern-length cap. */
   private compileKey(pattern: string): CompiledRegex {
-    if (this.match === "matches") return compileRegex(patternToRegex(pattern, this.caseFold));
+    if (this.match === "matches") return this.comparator === "i;unicode-casemap"
+      ? compileUnicodeGlob(pattern)
+      : compileRegex(patternToRegex(pattern, this.caseFold));
     // Under i;unicode-casemap the :regex input is folded context-free (ς→σ),
     // so a literal ς in the pattern is too, or it could never match. The same
     // length, and safe inside escapes and classes.
@@ -365,8 +366,8 @@ export class MatcherTest {
         // comparator whose whole point is non-ASCII case. Its residual is as
         // before — a non-ASCII UPPERCASE literal in the pattern never matches,
         // and captures fold to lowercase (and ς to σ) under this comparator
-        // only.
-        const value = this.comparator === "i;unicode-casemap" ? toUnicodeCasemapFold(source) : source;
+        // only. This separate limitation is tracked in #110.
+        const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase().replace(/ς/g, "σ") : source;
         const { re } = this.runtimeKey(d, i);
         if (re === null) {
           unknown = true;
@@ -405,8 +406,8 @@ export class MatcherTest {
             if (compareNumericValue(this.relational, parseNumericPrefix(source), parseNumericPrefix(k))) return true;
           } else {
             // Folded once, as for :is/:contains below.
-            const fold = this.comparator === "i;octet" ? (x: string) => x : toLowerASCII;
-            valueFolded ??= this.comparator === "i;octet" ? source : foldOnce(d, "ascii", source, toLowerASCII);
+            const fold = comparatorFold(this.comparator);
+            valueFolded ??= this.comparator === "i;octet" ? source : foldOnce(d, this.comparator === "i;unicode-casemap" ? "unicode" : "ascii", source, fold);
             if (compareString(this.relational, valueFolded, fold(k))) return true;
           }
         }
