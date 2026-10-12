@@ -174,3 +174,12 @@ it("an uncertain delete cannot leave trusted captures for a later redirect", () 
   expect(r.d.redirectAddr).toEqual([]);
   expect(r.d.redirectsDropped).toBe(1);
 });
+
+it("a budget-interrupted delete cannot restore trusted captures for a later redirect", () => {
+  const subjects = Array.from({ length: 3 }, () => `Subject: ${"x".repeat(16_000)}\r\n`).join("");
+  const r = exec('if header :matches "from" "*" {} deleteheader :matches "subject" "*casino*"; redirect "${1}";',
+    `From: archive@remote.test\r\n${subjects}\r\nbody`);
+  expect(r.d.budgetExhausted).toBe(true);
+  expect(r.d.redirectAddr).toEqual([]);
+  expect(r.d.redirectsDropped).toBe(1);
+});
