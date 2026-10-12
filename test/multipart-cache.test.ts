@@ -2,6 +2,7 @@
 // when a MIME tree had already split it. Count the searches, not elapsed time.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, type Options } from "../src/index.js";
+import { type InputEnd, splitMultipart, splitMultipartForMessage } from "../src/interp/body.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
 const REQ = 'require ["body", "mime", "foreverypart", "extracttext", "variables", "relational", "fileinto"];';
@@ -85,6 +86,19 @@ describe("multipart splits shared by message and part (#86)", () => {
     const cut = exec(MISS.repeat(2), message(raw, true));
     expect(whole.indeterminate).toBe(false);
     expect(cut.indeterminate).toBe(true);
+  });
+
+  it("checks body, boundary, cut and input ending before reusing a part's result", () => {
+    const d = exec("keep;");
+    const bodies = ["--scan0\r\nX-Test: yes", "--scan0\r\n\r\ntext\r\n--scan0--\r\n", "--scan0\r\n\r\ndifferent"];
+    for (const b of bodies) for (const boundary of ["scan0", "scan1", ""]) for (const cut of [false, true]) {
+      for (const end of ["whole", "part", "ranOut"] as InputEnd[]) {
+        const expected = splitMultipart(b, boundary, cut, end);
+        const found = splitMultipartForMessage(d, "same-path", b, boundary, cut, end);
+        expect(found).toEqual(expected);
+        expect(splitMultipartForMessage(d, "same-path", b, boundary, cut, end)).toBe(found);
+      }
+    }
   });
 });
 
