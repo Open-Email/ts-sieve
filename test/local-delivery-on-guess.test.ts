@@ -183,3 +183,34 @@ it("a budget-interrupted delete cannot restore trusted captures for a later redi
   expect(r.d.redirectAddr).toEqual([]);
   expect(r.d.redirectsDropped).toBe(1);
 });
+
+it("a definite field reset restores certainty after a dynamic unseen field write", () => {
+  definiteDrop('set "name" "X-Test"; foreverypart { if header :mime :subtype "content-type" "pdf" { addheader "${name}" "maybe"; } } deleteheader "From"; addheader "From" "spammer@remote-tr.test";' + DISCARD);
+});
+
+it("a guessed else cannot restore certainty by writing a literal", () => {
+  const r = exec(`set "v" "before"; if ${PDF} { set "v" "pdf"; } else { set "v" "other"; } if string :is "${'${v}'}" "other" { discard; }`);
+  expect([r.d.indeterminate, r.keepsLocal]).toEqual([true, true]);
+});
+
+it("cloned header uncertainty can be cleared without changing the parent", () => {
+  const parent = exec('foreverypart { if header :mime :subtype "content-type" "pdf" { addheader "X-Test" "maybe"; } }').d;
+  const s = load(REQUIRE + 'deleteheader "X-Test"; addheader "X-Test" "known"; if header :is "X-Test" "known" { discard; }', { enabledExtensions: ALL_EXTENSIONS });
+  const child = parent.clone(s);
+  s.execute(child);
+  expect([child.implicitKeep, child.localDeliveryOnGuess]).toEqual([false, false]);
+  expect(parent.uncertainHeaders.has("x-test")).toBe(true);
+  expect(child.uncertainHeaders.has("x-test")).toBe(false);
+});
+
+it("a cloned reject proof still accounts for a later uncertain conflict", () => {
+  const parent = exec('reject "No.";', parts(1)).d;
+  expect(parent.localDeliveryOnGuess).toBe(false);
+  const s = load(REQUIRE + `if ${PDF} { vacation "away"; }`, { enabledExtensions: ALL_EXTENSIONS });
+  const child = parent.clone(s);
+  const { size, headers, body } = parseEml(parts(1030));
+  child.msg = new MessageStatic(size, headers, body);
+  s.execute(child);
+  expect(child.localDeliveryOnGuess).toBe(true);
+  expect(parent.localDeliveryOnGuess).toBe(false);
+});

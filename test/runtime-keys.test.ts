@@ -9,7 +9,8 @@
 // fails at load, where the author can fix it.
 
 import { describe, expect, it } from "vitest";
-import { compile, R, run } from "./harness.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { compile, R, run, parseEml, ALL_EXTENSIONS } from "./harness.js";
 
 const msg = (headers: Record<string, string>) =>
   `${Object.entries(headers)
@@ -87,7 +88,13 @@ describe("deleteheader with a key that does not compile", () => {
     const script = `require ["regex","variables","editheader","fileinto"];
       if header :matches "from" "*" { deleteheader :regex "x-tag" "\${1}"; }
       if exists "x-tag" { fileinto "Tagged"; }`;
-    expect(run(script, msg({ From: "(a", "X-Tag": "(a" }))).toEqual(R({ fileinto: ["Tagged"], indeterminate: true }));
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS });
+    const { headers, size, body } = parseEml(msg({ From: "(a", "X-Tag": "(a" }));
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect(d.headerEdits).toEqual([]);
+    expect(d.msg.headerGet("x-tag")).toEqual(["(a"]);
+    expect([d.mailboxes, d.implicitKeep, d.indeterminate]).toEqual([[], true, true]);
   });
 });
 
