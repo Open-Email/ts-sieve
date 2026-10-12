@@ -14,6 +14,7 @@ import { Stream } from "../lexer/stream.js";
 import type { Position } from "../parser/command.js";
 import { parse } from "../parser/parse.js";
 import { parseAddressList, parseEnvelopeAddress, stripRFC2822Comments } from "./address.js";
+import { resetHeaderEdits } from "./editheader.js";
 import { loadBlock } from "./load.js";
 import { checkRejectConflicts } from "./reject.js";
 import {
@@ -216,6 +217,7 @@ export class CmdDovecotTestSet implements Cmd {
         // envelope operand. Charge the actual fixture, not its reference.
         d.budget.consume(1 + (value.length >> 6));
         d.msg = parseTestMessage(value);
+        resetHeaderEdits(d);
         d.envelope = new EnvelopeStatic(
           messageEnvelopeAddress(d.msg, ["return-path", "sender", "from"], "sender@example.com"),
           messageEnvelopeAddress(d.msg, ["envelope-to", "to"], "recipient@example.com"),

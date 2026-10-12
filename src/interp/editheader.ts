@@ -108,6 +108,16 @@ const replays = new WeakMap<RuntimeData, Map<string, { n: number; src: string[];
 /** The marks of a replay's values, by position, when any is marked. */
 const replayMarks = new WeakMap<string[], Mark[]>();
 
+/** A testsuite fixture replacement starts with its own empty edit ledger.
+ * Reads cached by RuntimeData must go with the old ledger: two messages can
+ * both lack a field, and equally long ledgers need not contain the same edits.
+ * Drop diagnostics and execution budget describe the whole run and stay. */
+export function resetHeaderEdits(d: RuntimeData): void {
+  d.headerEdits = [];
+  d.headerEditBytes = 0;
+  replays.delete(d);
+}
+
 /**
  * The marks of the values getHeader returned, by position (see Mark), or
  * undefined when every one is held whole. An added value built from a marked
