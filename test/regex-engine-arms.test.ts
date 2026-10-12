@@ -239,11 +239,9 @@ describe("casemap comparators fold :regex via the PATTERN (two-sided semantics)"
     expect(cap("(t\\\\w+)", "Ticket 4521")).toBe("Ticket");
   });
 
-  it("i;unicode-casemap still folds non-ASCII — via the INPUT, not the pattern", () => {
-    // The engine's `i` flag is an ASCII fold, so this comparator alone keeps
-    // lowercasing the input (its whole point is non-ASCII case); the
-    // pattern-side fold covers the ASCII letters. Residual, as before the
-    // pattern-fold fix: a non-ASCII UPPERCASE literal in the pattern.
+  it("i;unicode-casemap folds non-ASCII literals without changing input", () => {
+    // Unicode simple folding applies symmetrically to literal characters;
+    // the input remains intact for captures and byte-based truncation.
     const mUni = (pattern: string, value: string): boolean => {
       const eml = ["From: a@x", "To: b@y", `X-T: ${value}`, "", "body"].join("\r\n");
       return run(
@@ -252,8 +250,8 @@ describe("casemap comparators fold :regex via the PATTERN (two-sided semantics)"
         eml,
       ).fileinto.includes("X");
     };
-    expect(mUni("café", "CAFÉ corner")).toBe(true); // non-ASCII fold (input side)
-    expect(mUni("Cafe", "CAFE corner")).toBe(true); // ASCII fold (pattern side)
+    expect(mUni("café", "CAFÉ corner")).toBe(true); // non-ASCII case equivalence
+    expect(mUni("Cafe", "CAFE corner")).toBe(true); // ASCII case equivalence
     expect(mUni("mate", "MATE corner")).toBe(true);
     expect(mUni("café", "cafe corner")).toBe(false); // é is not e under any fold
   });

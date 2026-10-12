@@ -59,3 +59,15 @@ describe('bounds and prefixes', () => {
     expect([d.fileinto,d.indeterminate]).toEqual([[],true]);
   });
 });
+
+it('bounds Unicode class closure while compiling an uploaded pattern', () => {
+  const expensive = '[A-\u{10ffff}]'.repeat(80);
+  expect(() => compile(script(expensive, 'a'))).toThrow(/complex to compile/);
+});
+it('an over-complex dynamic class answers unknown and leaves later rules usable', () => {
+  const expensive = '[A-\u{10ffff}]'.repeat(80);
+  const s = REQUIRE + `set "p" ${quote(expensive)}; if string :regex :comparator "i;unicode-casemap" "a" "\${p}" { fileinto "hit"; } if true { fileinto "later"; }`;
+  const d = run(s, '', {options:{maxExecSteps:5000}});
+  expect([d.fileinto,d.indeterminate]).toEqual([['later'],true]);
+});
+it('ordinary repeated classes remain within the compiler limit', () => expect(hit('[a-z]'.repeat(100), 'A'.repeat(100))).toBe(true));
