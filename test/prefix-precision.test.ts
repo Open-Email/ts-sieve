@@ -91,3 +91,48 @@ describe('length of a prefix is a numeric lower bound', () => {
     expect(verdict('string :value "gt" :comparator "i;ascii-numeric" "${n}" "256"', TAIL + 'set :length "n" "${line}";').verdict).toBe('unknown');
   });
 });
+
+it.each(['address :is ["${s}", "from"] "sender@example.test"', 'address :mime :is ["${s}", "from"] "sender@example.test"'])("a known address-header member proves %s", test => {
+  expect(verdict(test).verdict).toBe('yes');
+});
+it("a header count can be proved without knowing every field name", () => {
+  expect(verdict('header :count "ge" :comparator "i;ascii-numeric" ["${s}", "subject"] "1"').verdict).toBe('yes');
+});
+it("prefix and length metadata survive cloning without being mutated by overwrites", () => {
+  const parent = exec(TAIL + 'set :length "n" "${s}";');
+  const s = load(REQUIRE + 'set "copy" "${line}"; set :upper "line" "${line}"; if string :contains "${copy}" "urgent" { fileinto "head"; } if string :value "gt" :comparator "i;ascii-numeric" "${n}" "200" { fileinto "length"; }', { enabledExtensions: ALL_EXTENSIONS });
+  const child = parent.clone(s); s.execute(child);
+  expect(child.mailboxes).toEqual(['head', 'length']);
+  expect(parent.variables.get('line')!.startsWith('urgent')).toBe(true);
+  expect(child.variables.get('line')!.startsWith('URGENT')).toBe(true);
+});
+it("every definite prefix verdict agrees with concrete continuations", () => {
+  const heads = ['urgent ' + 'a'.repeat(57), '$label1 ' + 'a'.repeat(56), 'A'.repeat(62) + 'Σ'];
+  const transforms = [
+    'set "line" "${s} (via list)";',
+    'set "line" "known:${s}";',
+    'set :lower "line" "${s} (via list)";',
+    'set :upper "line" "${s} (via list)";',
+    'set :quotewildcard "line" "${s} (via list)";',
+    'set :length "line" "${s}";',
+    'set "x" "${s} (via list)"; set :length "line" "${x}";',
+  ];
+  const tests = [
+    'string :contains "${line}" "urgent"', 'string :contains "${line}" "known"',
+    'string :contains :comparator "i;octet" "${line}" "ς"',
+    'string :contains "${line}" "(via list)"', 'string :matches "${line}" "urgent*"',
+    'string :value "gt" :comparator "i;ascii-numeric" "${line}" "50"',
+    'string :value "lt" :comparator "i;ascii-numeric" "${line}" "50"',
+  ];
+  let proved = 0;
+  for (const head of heads) for (const before of transforms) for (const test of tests) {
+    const cut = verdict(test, before, head + 'hidden continuation', { maxMatchInputLength: 64 }).verdict;
+    if (cut === 'unknown') continue;
+    proved++;
+    for (const tail of ['', 'rest', 'α', ' (via list)']) {
+      const whole = verdict(test, before, head + tail, { maxMatchInputLength: 16_384 }).verdict;
+      expect(whole, JSON.stringify({ head, before, test, tail })).toBe(cut);
+    }
+  }
+  expect(proved).toBeGreaterThan(20);
+});
