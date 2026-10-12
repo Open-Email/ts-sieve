@@ -214,3 +214,13 @@ it("a cloned reject proof still accounts for a later uncertain conflict", () => 
   expect(child.localDeliveryOnGuess).toBe(true);
   expect(parent.localDeliveryOnGuess).toBe(false);
 });
+
+it("bounds uncertainty retained for distinct header edits dropped after the ledger fills", () => {
+  const fill = 'addheader "X-Fill" "x";'.repeat(1024);
+  const overflow = Array.from({ length: 2048 }, (_, i) => `addheader "X-Dropped-${i}" "x";`).join("");
+  const { d } = exec(fill + overflow + 'discard;', parts(1));
+  expect(d.headerEditsDropped).toBe(2048);
+  expect(d.uncertainHeaders.size).toBeLessThanOrEqual(1024);
+  expect(d.allHeadersUncertain).toBe(true);
+  expect(d.localDeliveryOnGuess).toBe(false);
+});
