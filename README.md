@@ -153,6 +153,8 @@ from `Return-Path`, then `Sender`, then `From`; recipient comes from `Envelope-T
 then `To`. Each uses the first address in the first field, falling back to
 `sender@example.com` / `recipient@example.com` when none is usable. Authentication
 resets to the harness default (empty); explicit envelope overrides may follow.
+Replacement also clears the previous fixture's virtual header edits and their
+retained-value allowance, while preserving variables and execution diagnostics.
 
 ## Options
 
