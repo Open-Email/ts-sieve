@@ -602,3 +602,24 @@ export function contentType(value: string): { mediaType: string; primary: string
   const slash = mediaType.indexOf("/");
   return { mediaType, primary: slash < 0 ? mediaType : mediaType.slice(0, slash), params: decoded };
 }
+
+/** A text header's parameters as Core exposes them to clients: parse and
+ * decode over bytes, then convert to Unicode using Go's per-invalid-byte
+ * replacement. A malformed parameter list contributes no parameters (#82).
+ * The type/disposition fallback itself is immaterial to a :param test. */
+export function contentParams(value: string): Map<string, string> {
+  const { params } = parseMediaType(hostValueBytes(value));
+  const out = new Map<string, string>();
+  if (params === null) return out;
+  for (const [name, raw] of Object.entries(params)) {
+    const bytes = decodeHeaderShim(raw).value;
+    let text = "";
+    for (let i = 0; i < bytes.length; ) {
+      const { r, size } = decodeRune(bytes, i);
+      text += String.fromCodePoint(r);
+      i += size;
+    }
+    out.set(name, text);
+  }
+  return out;
+}

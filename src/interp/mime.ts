@@ -26,7 +26,7 @@ import {
   type InputEnd,
 } from "./body.js";
 import { decodeHeaderValue, getHeader } from "./header.js";
-import { rootHeaderBytes } from "./mediatype.js";
+import { contentParams, rootHeaderBytes } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import type { Message, RuntimeData } from "./runtime.js";
 import type { SpecTag } from "./spec.js";
@@ -346,10 +346,13 @@ export class MimeOpts {
     const field = name.toLowerCase();
     for (const v of raw) {
       if (this.opt === "param") {
-        const parsed = derive(v, "p", parseContentValue);
+        const parsed = derive(v, "p", contentParams);
         for (const want of params) {
-          const p = parsed.params.get(want.toLowerCase());
-          if (p !== undefined) out.push(derive(p, "d", decodeHeaderValue));
+          const p = parsed.get(want.toLowerCase());
+          if (p !== undefined) {
+            d.budget.consume(1);
+            out.push(p); // already decoded once by Core's parameter parser
+          }
         }
         continue;
       }
@@ -392,44 +395,6 @@ function contentValueOnly(v: string): string {
   return (semi === -1 ? v : v.slice(0, semi)).trim().toLowerCase();
 }
 
-/**
- * A Content-Type or Content-Disposition value: the media type or disposition
- * lower-cased, and its parameters (names lower-cased) with RFC 2231
- * continuations joined and extended values decoded. Lenient, as mail is: a
- * parameter that does not parse is skipped, not the whole value.
- */
-export function parseContentValue(v: string): { value: string; params: Map<string, string> } {
-  const semi = indexOutsideQuotes(v, 0);
-  const value = (semi === -1 ? v : v.slice(0, semi)).trim().toLowerCase();
-  const raw = new Map<string, string>();
-  // One pass: each ";"-separated segment is scanned once.
-  for (let i = semi === -1 ? v.length : semi + 1; i < v.length; ) {
-    const end = indexOutsideQuotes(v, i);
-    const seg = v.slice(i, end === -1 ? v.length : end);
-    i = end === -1 ? v.length : end + 1;
-    const eq = seg.indexOf("=");
-    if (eq === -1) continue; // not a parameter
-    const key = seg.slice(0, eq).trim().toLowerCase();
-    const val = unquote(seg.slice(eq + 1).trim());
-    if (key !== "" && !raw.has(key)) raw.set(key, val);
-  }
-  return { value, params: joinRfc2231(raw) };
-}
-
-/** A parameter value: a quoted-string's content (backslash escapes undone,
- * up to its closing quote), or the token as is. */
-function unquote(v: string): string {
-  if (!v.startsWith('"')) return v;
-  let out = "";
-  for (let i = 1; i < v.length; i++) {
-    const c = v[i]!;
-    if (c === '"') break;
-    if (c === "\\" && i + 1 < v.length) i++;
-    out += v[i];
-  }
-  return out;
-}
-
 /** The next ";" at or after `from` outside a quoted string, or -1. */
 function indexOutsideQuotes(v: string, from: number): number {
   let quoted = false;
@@ -445,102 +410,4 @@ function indexOutsideQuotes(v: string, from: number): number {
     }
   }
   return -1;
-}
-
-/** RFC 2231: "name*=charset'lang'%XX…" is an extended value; "name*0", "name*1*"
- * … are continuations, joined in order (the "*" ones percent-encoded, the first
- * carrying the charset). A plain "name" is used when neither is present. */
-function joinRfc2231(raw: Map<string, string>): Map<string, string> {
-  const out = new Map<string, string>();
-  const sections = new Map<string, { index: number; value: string; encoded: boolean }[]>();
-  for (const [key, value] of raw) {
-    const k = sectionKey(key);
-    if (k === null) {
-      if (!out.has(key)) out.set(key, value);
-      continue;
-    }
-    if (k.index === null) {
-      // "name*": one extended value
-      out.set(k.base, decodeExtended(value) ?? value);
-      continue;
-    }
-    const list = sections.get(k.base) ?? [];
-    list.push({ index: k.index, value, encoded: k.star });
-    sections.set(k.base, list);
-  }
-  for (const [base, list] of sections) {
-    if (raw.has(`${base}*`)) continue;
-    list.sort((a, b) => a.index - b.index);
-    let charset = "";
-    const bytes: number[] = [];
-    for (let k = 0; k < list.length && list[k]!.index === k; k++) {
-      const s = list[k]!;
-      let text = s.value;
-      if (s.encoded && k === 0) {
-        const q1 = text.indexOf("'");
-        const q2 = q1 === -1 ? -1 : text.indexOf("'", q1 + 1);
-        if (q2 !== -1) {
-          charset = text.slice(0, q1);
-          text = text.slice(q2 + 1);
-        }
-      }
-      if (s.encoded) pushPercentDecoded(bytes, text);
-      else for (const b of new TextEncoder().encode(text)) bytes.push(b);
-    }
-    out.set(base, decodeCharset(Uint8Array.from(bytes), charset));
-  }
-  return out;
-}
-
-/** An RFC 2231 parameter name: "base*" (extended), "base*N" or "base*N*"
- * (a section); null for a plain name. Scanned from the end, no regex. */
-function sectionKey(key: string): { base: string; index: number | null; star: boolean } | null {
-  let end = key.length;
-  const star = key.endsWith("*");
-  if (star) end--;
-  let j = end;
-  while (j > 0 && key.charCodeAt(j - 1) >= 0x30 && key.charCodeAt(j - 1) <= 0x39) j--;
-  if (j < end && j > 1 && key[j - 1] === "*") return { base: key.slice(0, j - 1), index: Number(key.slice(j, end)), star };
-  if (star && end > 0) return { base: key.slice(0, end), index: null, star: true };
-  return null;
-}
-
-function decodeExtended(value: string): string | null {
-  const q1 = value.indexOf("'");
-  const q2 = q1 === -1 ? -1 : value.indexOf("'", q1 + 1);
-  if (q2 === -1) return null;
-  const bytes: number[] = [];
-  pushPercentDecoded(bytes, value.slice(q2 + 1));
-  return decodeCharset(Uint8Array.from(bytes), value.slice(0, q1));
-}
-
-function pushPercentDecoded(out: number[], s: string): void {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    const hi = c === 0x25 /* % */ && i + 2 < s.length ? hexDigit(s.charCodeAt(i + 1)) : -1;
-    const lo = hi === -1 ? -1 : hexDigit(s.charCodeAt(i + 2));
-    if (lo !== -1) {
-      out.push(hi * 16 + lo);
-      i += 2;
-    } else if (c < 0x80) {
-      out.push(c);
-    } else {
-      for (const b of new TextEncoder().encode(s[i]!)) out.push(b);
-    }
-  }
-}
-
-function hexDigit(c: number): number {
-  if (c >= 0x30 && c <= 0x39) return c - 0x30;
-  if (c >= 0x41 && c <= 0x46) return c - 0x37;
-  if (c >= 0x61 && c <= 0x66) return c - 0x57;
-  return -1;
-}
-
-function decodeCharset(bytes: Uint8Array, charset: string): string {
-  try {
-    return new TextDecoder(charset.trim() || "utf-8").decode(bytes);
-  } catch {
-    return new TextDecoder("utf-8").decode(bytes);
-  }
 }
