@@ -18,7 +18,7 @@ import {
   MAX_MIME_DEPTH,
   MAX_MIME_PARTS,
   isMessage,
-  parseMediaType,
+  parseMediaTypeForMessage,
   parseMimeHeader,
   rawBinary,
   readHeaderBlock,
@@ -95,25 +95,18 @@ export function mimeTree(d: RuntimeData): MimePart {
   } else {
     // A body the host did not read: whatever it holds was not seen.
     root = newPart(null, "", true, contentType, cte);
-    root.container = holdsParts(contentType);
+    const { mediaType, primary } = parseMediaTypeForMessage(d, contentType || "text/plain");
+    root.container = primary === "multipart" || isMessage(mediaType);
     if (root.container) root.open = root.openBelow = true;
   }
   trees.set(d.msg, root);
   return root;
 }
 
-/** Whether a part of this type has parts of its own: a multipart (with no
- * boundary, or no part found, it has the child core synthesizes), or a nested
- * message. */
-function holdsParts(contentType: string): boolean {
-  const { mediaType, primary } = parseMediaType(contentType || "text/plain");
-  return primary === "multipart" || isMessage(mediaType);
-}
-
 /** `inputEnd`: see InputEnd in body.ts. */
 function build(d: RuntimeData, p: MimePart, contentType: string, b: string, cut: boolean, inputEnd: InputEnd, depth: number, counter: { parts: number }, path: string): void {
-  const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
-  p.container = holdsParts(contentType);
+  const { mediaType, primary, params } = parseMediaTypeForMessage(d, contentType || "text/plain");
+  p.container = primary === "multipart" || isMessage(mediaType);
   if (primary === "multipart") {
     if (depth >= MAX_MIME_DEPTH) {
       p.open = true;
@@ -193,7 +186,7 @@ export function partText(d: RuntimeData, p: MimePart, limit: number): { text: st
   let complete = true;
   if (!p.container) {
     d.budget.consume(1 + (p.body.length >> 10));
-    const { mediaType, params } = parseMediaType(p.contentType || "text/plain; charset=us-ascii");
+    const { mediaType, params } = parseMediaTypeForMessage(d, p.contentType || "text/plain; charset=us-ascii");
     const charset = params["charset"] ?? "us-ascii";
     let bytes = cteDecode(binaryToBytes(p.body), p.cte, p.cut);
     // An encoding or charset that cannot be decoded gives "" however much of
