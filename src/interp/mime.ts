@@ -22,7 +22,7 @@ import {
   parseMimeHeader,
   rawBinary,
   readHeaderBlock,
-  splitMultipart,
+  splitMultipartForMessage,
   type InputEnd,
 } from "./body.js";
 import { getHeader } from "./header.js";
@@ -91,7 +91,7 @@ export function mimeTree(d: RuntimeData): MimePart {
   if (raw !== null) {
     const cut = d.msg.bodyTruncated?.() ?? false;
     root = newPart(null, rawBinary(d.msg, raw), cut, contentType, cte);
-    build(root, contentType, root.body, cut, "whole", 0, { parts: 0 });
+    build(d, root, contentType, root.body, cut, "whole", 0, { parts: 0 }, "");
   } else {
     // A body the host did not read: whatever it holds was not seen.
     root = newPart(null, "", true, contentType, cte);
@@ -111,23 +111,24 @@ function holdsParts(contentType: string): boolean {
 }
 
 /** `inputEnd`: see InputEnd in body.ts. */
-function build(p: MimePart, contentType: string, b: string, cut: boolean, inputEnd: InputEnd, depth: number, counter: { parts: number }): void {
+function build(d: RuntimeData, p: MimePart, contentType: string, b: string, cut: boolean, inputEnd: InputEnd, depth: number, counter: { parts: number }, path: string): void {
   const { mediaType, primary, params } = parseMediaType(contentType || "text/plain");
   p.container = holdsParts(contentType);
   if (primary === "multipart") {
     if (depth >= MAX_MIME_DEPTH) {
       p.open = true;
     } else {
-      const mp = splitMultipart(b, params["boundary"] ?? "", cut, inputEnd);
+      const mp = splitMultipartForMessage(d, path, b, params["boundary"] ?? "", cut, inputEnd);
       if (mp.open) p.open = true;
-      for (const part of mp.parts) {
+      for (let i = 0; i < mp.parts.length; i++) {
+        const part = mp.parts[i]!;
         if (++counter.parts > MAX_MIME_PARTS) {
           p.open = true;
           break;
         }
         const child = newPart(parseHeaderFields(part.fields), part.body, part.cut, part.contentType, part.cte);
         p.children.push(child);
-        build(child, child.contentType, part.body, part.cut, part.ends, depth + 1, counter);
+        build(d, child, child.contentType, part.body, part.cut, part.ends, depth + 1, counter, `${path}.${i}`);
       }
     }
   } else if (isMessage(mediaType)) {
@@ -141,7 +142,7 @@ function build(p: MimePart, contentType: string, b: string, cut: boolean, inputE
       const body = b.slice(h.end);
       const child = newPart(parseHeaderFields(h.fields), body, cut, fields.get("content-type") ?? "", fields.get("content-transfer-encoding") ?? "");
       p.children.push(child);
-      build(child, child.contentType, body, cut, "whole", depth + 1, counter);
+      build(d, child, child.contentType, body, cut, "whole", depth + 1, counter, `${path}.m`);
     }
   }
   p.openBelow = p.open || p.children.some((c) => c.openBelow);
