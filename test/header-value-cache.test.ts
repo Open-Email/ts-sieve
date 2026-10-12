@@ -111,6 +111,14 @@ describe("bounded header-value memoization (#53)", () => {
     expect(header.decodeHeaderValue).toHaveBeenCalledTimes(2);
   });
 
+  it("bounds entry overhead for thousands of distinct tiny values", () => {
+    const values = Array.from({ length: 5000 }, (_, i) => String(i));
+    exec('if header :comparator "i;octet" "subject" "missing" { discard; }'.repeat(2), [["subject", values]]);
+    const calls = vi.mocked(header.decodeHeaderValue).mock.calls;
+    expect(calls.filter(([raw]) => raw === values[0])).toHaveLength(1);
+    expect(calls.filter(([raw]) => raw === values[4999])).toHaveLength(2);
+  });
+
   it("accounts for address objects as well as string length when bounding retained results", () => {
     const value = Array.from({ length: 150_000 }, () => "a@b").join(",");
     exec('if address :count "eq" "from" "150000" { keep; }'.repeat(2), [["from", [value]]]);
