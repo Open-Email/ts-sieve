@@ -36,8 +36,10 @@ describe("test_set message replacement (#91)", () => {
     ["Return-path: <return@example.net>\r\nSender: sender@example.net\r\nFrom: from@example.net", "return@example.net"],
     ["Sender: sender@example.net\r\nFrom: from@example.net", "sender@example.net"],
     ["Return-path: <>\r\nSender: sender@example.net\r\nFrom: from@example.net", "sender@example.net"],
-    ["Return-path: invalid\r\nSender: invalid\r\nFrom: From <from@example.net>", "from@example.net"],
+    ["Return-path: <>\r\nSender: <>\r\nFrom: From <from@example.net>", "from@example.net"],
     ["From: First <first@example.net>, Second <second@example.net>", "first@example.net"],
+    ["From: First <first@example.net>, <>", "first@example.net"],
+    ["From: localmailbox", "localmailbox"],
     ["Subject: no sender", "sender@example.com"],
   ])("derives sender from %s", (headers, expected) => {
     const d = exec(`test_set "message" ${quoted(`${headers}\r\n\r\nbody`)};`);
@@ -46,9 +48,9 @@ describe("test_set message replacement (#91)", () => {
 
   it.each([
     ["Envelope-To: envelope@example.net\r\nTo: to@example.net", "envelope@example.net"],
-    ["Envelope-To: invalid\r\nTo: To <to@example.net>", "to@example.net"],
+    ["Envelope-To: <>\r\nTo: To <to@example.net>", "to@example.net"],
     ["To: First <first@example.net>, Second <second@example.net>", "first@example.net"],
-    ["Envelope-To: invalid\r\nEnvelope-To: ignored@example.net\r\nTo: to@example.net", "to@example.net"],
+    ["Envelope-To: <>\r\nEnvelope-To: ignored@example.net\r\nTo: to@example.net", "to@example.net"],
     ["Subject: no recipient", "recipient@example.com"],
   ])("derives recipient from %s", (headers, expected) => {
     const d = exec(`test_set "message" ${quoted(`${headers}\r\n\r\nbody`)};`);
