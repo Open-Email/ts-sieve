@@ -100,9 +100,10 @@ function splitAddressList(s: string): string[] {
 /**
  * Parse an address-list header value into addr-specs. Throws if a non-empty
  * entry yields no address (caller then falls back to literal matching on parse
- * error).
+ * error). A caller may request only the first addresses; subsequent entries
+ * are then not parsed, so a malformed tail cannot invalidate that prefix.
  */
-export function parseAddressList(value: string): { address: string }[] {
+export function parseAddressList(value: string, maxAddresses = Infinity): { address: string }[] {
   const out: { address: string }[] = [];
   for (const raw of splitAddressList(value)) {
     const p = raw.trim();
@@ -117,6 +118,7 @@ export function parseAddressList(value: string): { address: string }[] {
     }
     if (addr === "") throw new SieveError("address: empty address in list");
     out.push({ address: addr });
+    if (out.length >= maxAddresses) break;
   }
   return out;
 }
