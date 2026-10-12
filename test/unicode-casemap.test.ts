@@ -76,3 +76,12 @@ it("Unicode glob work yields unknown on budget exhaustion", () => {
   expect(result.fileinto).toEqual([]);
   expect(result.indeterminate).toBe(true);
 });
+
+// UnicodeData represents Hangul as a range: its decomposition property is
+// algorithmic (UAX #44 §5.7.3), not an explicit field for every syllable.
+it.each([":is", ":matches", ':value "eq"'])("%s decomposes Hangul syllables", kind => {
+  expect(hit(kind, "각", "\u1100\u1161\u11a8")).toEqual(["hit"]);
+});
+it("prepares both ends of the Hangul syllable range", () => {
+  expect(fold("가힣")).toBe("\u1100\u1161\u1112\u1175\u11c2");
+});
