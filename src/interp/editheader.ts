@@ -5,7 +5,7 @@
 // deleteheader's own value lookup) replays the ledger over the raw header values
 // via applyHeaderEditsToValues. The message itself is never rewritten.
 
-import { decodeHeaderValue } from "./header.js";
+import { decodeHeaderOnce } from "./header-values.js";
 import { MatcherTest } from "./matcher.js";
 import type { MatchOptions } from "./matching.js";
 import { type Cmd, type Mark, type RuntimeData, type Tri, withShare } from "./runtime.js";
@@ -137,7 +137,7 @@ export function valueMarks(values: string[]): readonly Mark[] | undefined {
  */
 export function matchHeaderValue(d: RuntimeData, matcher: MatcherTest, value: string, mark: Mark, opts: MatchOptions): Tri {
   if (mark === "doubt" || (mark === "prefix" && !decodesAsPrefix(value))) return "unknown";
-  return matcher.tryMatch(d, decodeHeaderValue(value), opts, mark === "prefix");
+  return matcher.tryMatch(d, decodeHeaderOnce(d, value), opts, mark === "prefix");
 }
 
 /** Whether a prefix of a raw value decodes to a prefix of the whole one
@@ -324,7 +324,7 @@ export class CmdDeleteHeader implements Cmd {
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     let r: Tri = "unknown";
     if (mark === "" || (mark === "prefix" && decodesAsPrefix(value))) {
-      r = this.matcher.tryMatch(d, decodeHeaderValue(value).trim(), opts, mark === "prefix");
+      r = this.matcher.tryMatch(d, decodeHeaderOnce(d, value).trim(), opts, mark === "prefix");
     }
     if (r === "unknown") disclose(d);
     return r === true;
