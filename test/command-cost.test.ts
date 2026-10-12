@@ -15,15 +15,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
 import { ALL_EXTENSIONS, parseEml, parts, R, readCounted, run } from "./harness.js";
+import { CmdSet } from "../src/interp/variables.js";
+import { CmdAddFlag } from "../src/interp/action.js";
 
 const CORE = { options: { maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 } };
 
 // These runs are heavy, and slower still under CI's coverage instrumentation.
 vi.setConfig({ testTimeout: 60_000 });
-
-/** The wall-clock bound for the cases that took 12-15 s before their fix:
- * loose enough for an instrumented CI run, far below the regression. */
-const SLOW = 5000;
 
 const REQ = 'require ["foreverypart","variables","fileinto","imap4flags","editheader"];';
 const FROM_SUBJECT = 'if header :matches "subject" "*" { set "v" "${1}"; }';
@@ -62,10 +60,22 @@ function extraInLoop(cmd: string, literal: string, subject: string): number {
   return stepsOf(`${REQ} ${FROM_SUBJECT} foreverypart { ${cmd} }`, eml) - stepsOf(`${REQ} ${FROM_SUBJECT} foreverypart { ${literal} }`, eml);
 }
 
-function within(ms: number, f: () => unknown): void {
-  const t0 = performance.now();
-  f();
-  expect(performance.now() - t0).toBeLessThan(ms);
+/** The old nested-loop regressions dispatched near 200,000 large commands.
+ * Count actual command entries and stop at 2,000; ordinary charged execution
+ * must do some work, disclose exhaustion, and still reach the final rule. */
+function boundedCommands(script: string, eml: string, command: typeof CmdSet | typeof CmdAddFlag): void {
+  let calls = 0;
+  const original = command.prototype.execute;
+  const spy = vi.spyOn(command.prototype, "execute").mockImplementation(function (this: any, d) {
+    if (++calls > 2000) throw new Error("large command dispatch bound exceeded");
+    return original.call(this, d);
+  });
+  try {
+    const result = run(script + ' fileinto "After";', eml, CORE);
+    expect(result.fileinto).toEqual(["After"]);
+    expect(result.indeterminate).toBe(true);
+    expect(calls, "the command probe must observe the loop body").toBeGreaterThan(1);
+  } finally { spy.mockRestore(); }
 }
 
 describe("a value cut to the variable size limit is disclosed", () => {
@@ -417,15 +427,15 @@ describe("four nested loops at core's options", () => {
   const loops = (body: string) => `${REQ} ${FROM_SUBJECT} foreverypart { foreverypart { foreverypart { foreverypart { ${body} } } } }`;
 
   it("set :quotewildcard over a variable of '*'", () => {
-    within(SLOW, () => run(loops('set :quotewildcard "u" "${v}";'.repeat(50)), chain(30, "*".repeat(3990)), CORE));
+    boundedCommands(loops('set :quotewildcard "u" "${v}";'.repeat(50)), chain(30, "*".repeat(3990)), CmdSet);
   });
 
   it("an expansion twenty times the variable size limit", () => {
-    within(SLOW, () => run(loops(`set "u" "${"${v}".repeat(20)}";`.repeat(50)), chain(30, "a".repeat(3990)), CORE));
+    boundedCommands(loops(`set "u" "${"${v}".repeat(20)}";`.repeat(50)), chain(30, "a".repeat(3990)), CmdSet);
   });
 
   it("a template of four thousand empty references", () => {
-    within(SLOW, () => run(loops(`set "u" "${"${e}".repeat(4000)}";`.repeat(50)), chain(30, "a"), CORE));
+    boundedCommands(loops(`set "u" "${"${e}".repeat(4000)}";`.repeat(50)), chain(30, "a"), CmdSet);
   });
 
   it("an expansion past the longest string a runtime holds runs out of its share, not throws", () => {
@@ -437,7 +447,7 @@ describe("four nested loops at core's options", () => {
 
   it("addflag over 800 flags", () => {
     const words = Array.from({ length: 800 }, (_, i) => `w${i}`).join(" ");
-    within(SLOW, () => run(loops('addflag "${v}";'.repeat(50)), chain(30, words), CORE));
+    boundedCommands(loops('addflag "${v}";'.repeat(50)), chain(30, words), CmdAddFlag);
   });
 });
 

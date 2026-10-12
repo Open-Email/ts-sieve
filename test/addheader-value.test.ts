@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
 import { compile, R, run } from "./harness.js";
+import { stringWork } from "./work-counts.js";
 
 const msg = (subject: string) => `From: a@x\r\nTo: b@y\r\nSubject: ${subject}\r\n\r\nbody\r\n`;
 const echo = (check: string) =>
@@ -71,9 +72,9 @@ describe("a value from the message", () => {
     // 64,000 took seconds, and the step budget does not see it. The run sits
     // mid-value, where no leading-break shortcut reaches it.
     const value = `a${"\n".repeat(50_000)}x${"\r\n".repeat(50_000)} y`;
-    const t0 = performance.now();
-    expect(ledger("", value)).toEqual(["a x y"]);
-    expect(performance.now() - t0).toBeLessThan(500);
+    const measured = stringWork(() => ledger("", value), 8 * value.length);
+    expect(measured.value).toEqual(["a x y"]);
+    expect(measured.calls.charCodeAt, "the folding probe must observe the value scan").toBeGreaterThanOrEqual(value.length);
   });
 });
 

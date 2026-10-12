@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { delimiterSearch, type InputEnd, type Multipart, splitMultipart } from "../src/interp/body.js";
+import { stringWork } from "./work-counts.js";
 
 /** A deterministic generator: rnd(n) is in [0, n). Math.imul keeps the
  * product exact, and the high bits are the random ones. */
@@ -234,22 +235,9 @@ describe("the splitter's results", () => {
   });
 });
 
-// A regression fails in the bound and one more run (see repeatedWithin),
-// which took up to 40 s.
-vi.setConfig({ testTimeout: 120_000 });
-
-/** Each timed case below takes under 100 ms, and under 300 ms with coverage
- * on a loaded machine running other files; what each guards against took
- * 20-40 s for the same work, ten times the bound or more. */
-const BOUND = 2000;
-
-/** Runs `f` `times` times, stopping once `ms` has passed, and asserts that
- * all of them took under `ms`. */
-function repeatedWithin(ms: number, times: number, f: () => void): void {
-  const t0 = performance.now();
-  for (let i = 0; i < times && performance.now() - t0 < ms; i++) f();
-  expect(performance.now() - t0).toBeLessThan(ms);
-}
+// These stress cases also run under coverage on shared CI runners. Their
+// assertions count work; the runner timeout is only a deadlock safeguard.
+vi.setConfig({ testTimeout: 60_000 });
 
 /** The patterns indexOf was asked to find in `body` while `f` ran, in order.
  * (The spy's record is cleared when it is restored, so it is read first.) */
@@ -319,9 +307,14 @@ describe("the splitter's cost", () => {
       expect(body.length).toBeGreaterThan(1 << 20);
       return body;
     });
-    repeatedWithin(BOUND, 25, () => {
-      for (const body of bodies) splitMultipart(body, boundary, false);
-    });
+    for (const body of bodies) {
+      const measured = stringWork(() => splitMultipart(body, boundary, false), 16 * body.length);
+      expect(measured.value.parts).toHaveLength(4);
+      expect(measured.calls.indexOf, "the delimiter search probe must run").toBeGreaterThan(0);
+      // Native indexOf hides its character comparisons. Keep its needles in
+      // V8's short-pattern path as well as bounding explicit scan work.
+      expect(measured.maxIndexNeedle).toBeLessThanOrEqual(250);
+    }
   });
 
   it("is linear in a preamble that repeats the lines of a boundary with a line break in it", () => {
@@ -332,7 +325,10 @@ describe("the splitter's cost", () => {
     const m = splitMultipart(body, boundary, false);
     expect(m.parts.length).toBe(1);
     expect(m.prologue).toBe(body);
-    repeatedWithin(BOUND, 10, () => splitMultipart(body, boundary, false));
+    const measured = stringWork(() => splitMultipart(body, boundary, false), 16 * body.length);
+    expect(measured.value.prologue).toBe(body);
+    expect(measured.calls.indexOf, "the preamble scan probe must run").toBeGreaterThan(0);
+    expect(measured.maxIndexNeedle).toBeLessThanOrEqual(250);
   });
 });
 
@@ -370,9 +366,12 @@ describe("the delimiter search's cost", () => {
   const cases = [near("\n".repeat(262_144), 4), near(`${"q\n--".repeat(32_768)}q`, 4)];
 
   it("is linear over near-matches of a long boundary with a line break in it", () => {
-    repeatedWithin(BOUND, 1, () => {
-      for (const { b, boundary, at } of cases) expect(delimiterSearch("\n", boundary)(b, 0)).toBe(at);
-    });
+    for (const { b, boundary, at } of cases) {
+      const measured = stringWork(() => delimiterSearch("\n", boundary)(b, 0), 8 * (b.length + boundary.length));
+      expect(measured.value).toBe(at);
+      expect(measured.calls.charCodeAt, "the KMP scan must actually run").toBeGreaterThanOrEqual(b.length);
+      expect(measured.maxIndexNeedle).toBeLessThanOrEqual(250);
+    }
   });
 
   it("reads each byte of the body at most once for such a boundary, and compares nothing after a hit", () => {

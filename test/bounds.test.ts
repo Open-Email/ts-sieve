@@ -1,7 +1,8 @@
 // Safety-bound tests: token/nesting/redirect caps and ReDoS-safety of :matches.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import * as regex from "../src/interp/regex.js";
 
 function runMatch(pattern: string, subject: string): boolean {
   const script = load(`if header :matches "Subject" "${pattern}" { discard; }`, { enabledExtensions: [] });
@@ -42,14 +43,36 @@ describe("bounds", () => {
     expect(d.redirectAddr.length).toBe(5);
   });
 
-  it(":matches is linear — a catastrophic-backtracking pattern returns fast", () => {
-    // A pattern that would blow up a backtracking regex engine, against a long
-    // non-matching subject. The linear matcher returns false without hanging.
+  it(":matches visits at most twice program × input instructions", () => {
     const pattern = "*a".repeat(20) + "*b";
     const subject = "a".repeat(5000);
-    const start = performance.now();
-    expect(runMatch(pattern, subject)).toBe(false);
-    expect(performance.now() - start).toBeLessThan(1000);
+    const original = regex.compileRegex;
+    let reads = 0;
+    let bound = 0;
+    let counted: unknown[];
+    let program: { prog: unknown[] };
+    const spy = vi.spyOn(regex, "compileRegex").mockImplementation((...args) => {
+      const re = original(...args);
+      program = re as unknown as { prog: unknown[] };
+      // One read during epsilon traversal and one during consuming traversal
+      // per (program counter, input position). Stop a revisit regression by
+      // work count before a pathological pattern can hang the test runner.
+      bound = 2 * program.prog.length * (subject.length + 1);
+      counted = new Proxy(program.prog, {
+        get(target, key, receiver) {
+          if (typeof key === "string" && /^\d+$/.test(key) && ++reads > bound) throw new Error("VM instruction visit bound exceeded");
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      program.prog = counted;
+      return re;
+    });
+    try {
+      expect(runMatch(pattern, subject)).toBe(false);
+      expect(reads, "the instruction probe must observe the actual matcher").toBeGreaterThan(subject.length);
+      expect(program!.prog, "the matcher must retain the counted program").toBe(counted!);
+      expect(reads).toBeLessThanOrEqual(bound);
+    } finally { spy.mockRestore(); }
   });
 
   it("maxExecSteps stops a pathological match: the test is unknown, the script completes", () => {
