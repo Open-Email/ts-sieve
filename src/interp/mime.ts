@@ -25,7 +25,8 @@ import {
   splitMultipart,
   type InputEnd,
 } from "./body.js";
-import { decodeHeaderValue, getHeader } from "./header.js";
+import { getHeader } from "./header.js";
+import { decodeHeaderOnce } from "./header-values.js";
 import { contentParams, rootHeaderBytes } from "./mediatype.js";
 import { htmlToText } from "./htmltext.js";
 import type { Message, RuntimeData } from "./runtime.js";
@@ -341,7 +342,7 @@ export class MimeOpts {
       }
       return r;
     };
-    if (this.opt === "") return raw.map((v) => derive(v, "d", decodeHeaderValue));
+    if (this.opt === "") return raw.map((v) => derive(v, "d", (value) => decodeHeaderOnce(d, value)));
     const out: string[] = [];
     const field = name.toLowerCase();
     for (const v of raw) {

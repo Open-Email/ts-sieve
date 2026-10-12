@@ -187,6 +187,14 @@ execution budget.
   program that is O(program × input); scanning (`${…}` expansion, RFC 2047
   decode, MIME walking and part headers, date parsing) is linear: no regular
   expression that can backtrack runs on attacker-controlled text.
+- **Repeated header work.** Decoding and address parsing are memoized by raw
+  value within each runtime, including comment removal and failed address
+  parses. Matching and repeated-field counts still run normally. The cache
+  admits at most 4096 entries and 4 Mi UTF-16 units of keys/results plus object
+  allowances; after either limit, new values are processed without retention
+  and existing entries stay cached. This avoids a size charge on top-level
+  reads that could consume later rules' reserve; existing loop and MIME budget
+  charges remain in place.
 - **Load-time failure over delivery-time failure.** Patterns without variable
   references (and all structural/require errors) fail at `load()` — i.e. at
   script upload, not when a message arrives. A pattern built from variables

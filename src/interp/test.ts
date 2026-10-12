@@ -5,15 +5,14 @@
 
 import { canonicalFlags, chargeFlags } from "./action.js";
 import {
-  parseAddressList,
   parseEnvelopeAddress,
   splitAddress,
   splitSubaddress,
-  stripRFC2822Comments,
   SUBADDRESS_SEPARATOR,
 } from "./address.js";
 import { matchHeaderValue, valueMarks } from "./editheader.js";
 import { getHeader } from "./header.js";
+import { parseHeaderAddressesOnce } from "./header-values.js";
 import type { MatchOptions } from "./matching.js";
 import type { AddressPart } from "./matching.js";
 import type { MatcherTest } from "./matcher.js";
@@ -249,15 +248,11 @@ export class AddressTest implements Test {
         state.unknown = true;
         continue;
       }
-      const cleanValue = stripRFC2822Comments(values[i]!);
-
       // A bare angle-addr ("<user@example.com>") is a valid mailbox (RFC 5322
       // §3.4: name-addr = [display-name] angle-addr), and a non-ASCII local
       // part is accepted in it as in every other form (RFC 6532).
-      let addrList: { address: string }[];
-      try {
-        addrList = parseAddressList(cleanValue);
-      } catch {
+      const { clean: cleanValue, addresses: addrList } = parseHeaderAddressesOnce(d, values[i]!);
+      if (addrList === null) {
         if (this.matcher.isCount()) continue;
         if (probe(cleanValue)) return true;
         continue;
