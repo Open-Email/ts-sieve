@@ -6,7 +6,7 @@ import { withShare } from "../src/interp/runtime.js";
 import { ALL_EXTENSIONS } from "./harness.js";
 
 const LIMIT = 200_000;
-const REQ = 'require ["body", "fileinto", "regex", "relational", "variables", "editheader", "foreverypart"];';
+const REQ = 'require ["body", "fileinto", "regex", "relational", "variables", "editheader", "foreverypart", "index"];';
 const EXPENSIVE = 'if body :matches "*casino*" { fileinto "Body"; }';
 
 function message(fields: [string, string[]][] = [], sizes = [16_000, 16_000, 16_000], token = "") {
@@ -157,5 +157,44 @@ describe("reserve planning is bounded and follows runtime state", () => {
     msg.headerGet = () => { throw new Error("unreadable header"); };
     const d = exec('if size :over 0 { stop; } if header :is "x-unreadable" "x" { discard; }', msg);
     expect([d.indeterminate, d.budgetExhausted]).toEqual([false, false]);
+  });
+});
+
+
+describe("reserve inputs and cache lifetime", () => {
+  it("does not copy an oversized field list just to replay edits for an estimate", () => {
+    let reads = 0;
+    const values = new Proxy(Array<string>(5000).fill("x"), {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const msg = message();
+    msg.headerGet = () => values;
+    const s = load('if header :is "subject" "x" {}', { maxExecSteps: LIMIT });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), msg);
+    d.headerEdits.push({ action: "add", fieldName: "subject", value: "y", index: 0, last: false });
+    expect(withShare(d, 0, () => true)).toBe(true);
+    expect(reads).toBe(0);
+  });
+
+  it.each([false, true])("uses replacement message estimates in a %s clone", (clone) => {
+    const s = load(REQ + EXPENSIVE + later('header :matches "subject" "*viagra*"'), { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: LIMIT, maxMatchInputLength: 16 * 1024 });
+    let d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), message());
+    expect(withShare(d, 0, () => true)).toBe(true);
+    if (clone) d = d.clone();
+    d.msg = message([["subject", ["x".repeat(200) + " viagra"]]]);
+    s.execute(d);
+    expect(d.mailboxes).toEqual(["Later"]);
+    expect(d.budgetExhausted).toBe(true);
+  });
+
+  it.each([false, true])("reserves only for the selected field (:last = %s)", (last) => {
+    const values = Array.from({ length: 5000 }, () => "x".repeat(200));
+    values[last ? values.length - 1 : 0] = "viagra";
+    const d = exec(EXPENSIVE + later(`header :index 1 ${last ? ":last" : ""} :matches "subject" "*viagra*"`), message([["subject", values]]));
+    expect(d.mailboxes).toEqual(["Later"]);
+    expect(d.budgetExhausted).toBe(true);
   });
 });
