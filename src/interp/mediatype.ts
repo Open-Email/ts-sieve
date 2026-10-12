@@ -556,6 +556,24 @@ function decodeHeaderShim(s: string): { value: string } {
   return { value: res.value };
 }
 
+/** Core's final byte-string conversion: each invalid UTF-8 byte becomes one
+ * replacement character. Decode after joining all encoded words so adjacent
+ * words may supply successive bytes of the same character. */
+function byteStringToText(bytes: string): string {
+  let text = "";
+  for (let i = 0; i < bytes.length; ) {
+    const { r, size } = decodeRune(bytes, i);
+    text += String.fromCodePoint(r);
+    i += size;
+  }
+  return text;
+}
+
+/** A host's Unicode header value decoded exactly like Core's header output. */
+export function decodeHeaderText(value: string): string {
+  return byteStringToText(decodeHeaderShim(hostValueBytes(value)).value);
+}
+
 /**
  * A header value a host gave as text (Message.headerGet), as the bytes the
  * walker reads: its UTF-8. A part's header is read from the raw body and is
@@ -637,14 +655,7 @@ export function contentParams(value: string): Map<string, string> {
   const out = new Map<string, string>();
   if (params === null) return out;
   for (const [name, raw] of Object.entries(params)) {
-    const bytes = decodeHeaderShim(raw).value;
-    let text = "";
-    for (let i = 0; i < bytes.length; ) {
-      const { r, size } = decodeRune(bytes, i);
-      text += String.fromCodePoint(r);
-      i += size;
-    }
-    out.set(name, text);
+    out.set(name, byteStringToText(decodeHeaderShim(raw).value));
   }
   return out;
 }

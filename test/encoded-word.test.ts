@@ -1,7 +1,6 @@
-// RFC 2047 encoded words in header values (ts-sieve #67): each word decodes on
-// its own, as core's walker decodes them (Go's WordDecoder.DecodeHeader, which
-// is what the user's client shows), so one malformed word cannot hide the
-// text of the others from a rule.
+// RFC 2047 encoded words in header values (ts-sieve #67): malformed words
+// resume the search inside them as Core's walker does. Charset failures and
+// unframable markers have different behavior, pinned in encoded-word-core.
 
 import { describe, expect, it, vi } from "vitest";
 import { decodeHeaderValue } from "../src/interp/header.js";
@@ -80,9 +79,9 @@ describe("a word that does not decode costs no more than one that does", () => {
   });
 });
 
-describe("base64 is read as atob reads it", () => {
-  it("with or without its padding, and white space inside", () => {
-    expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("aaa");
+describe("base64 is read as Core reads it", () => {
+  it("requires padding and refuses spaces inside a word", () => {
+    expect(decodeHeaderValue("=?utf-8?b?YQ==?= =?utf-8?b?YQ?= =?utf-8?b?Y Q?=")).toBe("a =?utf-8?b?YQ?= =?utf-8?b?Y Q?=");
     // The alphabet's "+" and "/".
     expect(decodeHeaderValue("=?utf-8?b?Pj4+?= =?utf-8?b?Pz8/?=")).toBe(">>>???");
   });

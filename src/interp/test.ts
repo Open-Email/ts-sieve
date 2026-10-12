@@ -153,15 +153,20 @@ function chargeRead(d: RuntimeData, values: readonly string[], sized = inLoop(d)
   d.budget.consume(n);
 }
 
-/** The RFC 2047 encoded words decodeHeaderValue may try: it resumes two
- * characters into a word that does not decode, so each word is counted as if
- * it did not. */
+/** Potential RFC 2047 words: decoding can resume two characters into a failed
+ * candidate. Count framed candidates conservatively, allowing "?" in their
+ * text (#75). Cache the next closing marker so overlapping failed candidates
+ * do not repeatedly scan the same suffix; bare "=?" is only a search cost. */
 function encodedWords(v: string): number {
-  const word = /=\?[^?]+\?[bBqQ]\?[^?]*\?=/g;
+  if (/[\r\n]/.test(v)) v = v.replace(/[\r\n]/g, "");
+  const prefix = /=\?[^?]*\?[bBqQ]\?/g;
   let n = 0;
-  for (let m = word.exec(v); m !== null; m = word.exec(v)) {
+  let closeAt = -1;
+  for (let m = prefix.exec(v); m !== null; m = prefix.exec(v)) {
+    if (closeAt < prefix.lastIndex) closeAt = v.indexOf("?=", prefix.lastIndex);
+    if (closeAt === -1) break;
     n++;
-    word.lastIndex = m.index + 2;
+    prefix.lastIndex = m.index + 2;
   }
   return n;
 }
