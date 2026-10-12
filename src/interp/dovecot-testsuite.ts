@@ -191,7 +191,7 @@ export class CmdDovecotTestSet implements Cmd {
 
   execute(d: RuntimeData): void {
     const value = expandVars(d, this.variableValue);
-    switch (this.variableName) {
+    switch (this.variableName.toLowerCase()) {
       case "message": {
         // Parse the RAW (unexpanded) value; bound the parse against the budget.
         d.budget.consume(1 + (this.variableValue.length >> 6));
@@ -208,7 +208,11 @@ export class CmdDovecotTestSet implements Cmd {
         d.envelope = new EnvelopeStatic(parsed, d.envelope.envelopeTo(), d.envelope.authUsername());
         break;
       }
-      case "envelope.to": {
+      case "envelope.to":
+      case "envelope.orig_to": {
+        // Pigeonhole's envelope "to" test reads the original recipient. This
+        // harness models that Sieve-visible value, not a separate final SMTP
+        // recipient (delivery/result execution is outside its scope).
         let parsed: string;
         try {
           parsed = parseEnvelopeAddress(value);

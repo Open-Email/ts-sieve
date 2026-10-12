@@ -1026,6 +1026,12 @@ function loadDovecotTestSet(s: Script, pcmd: PCmd): Cmd {
     pcmd.tests,
     pcmd.block,
   );
+  const name = cmd.variableName.toLowerCase();
+  if (name.includes(".") && !["envelope.from", "envelope.to", "envelope.orig_to", "envelope.auth"].includes(name)) {
+    // Dotted references read namespaces, never the ordinary variable map.
+    // Refuse a misspelt fixture instead of silently storing unreadable state.
+    throw new SieveError(`test_set: unsupported dotted name '${cmd.variableName}'`, pcmd);
+  }
   return cmd;
 }
 
