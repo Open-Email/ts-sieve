@@ -297,11 +297,14 @@ describe("vacation's :addresses", () => {
 
 describe("a command that runs out of the loop's share mid-way has done nothing", () => {
   it("vacation", () => {
-    const script = `require ["foreverypart","variables","vacation"]; ${FROM_SUBJECT} foreverypart { vacation "${"${v}".repeat(2000)}"; }`;
+    const script = `require ["foreverypart","variables","vacation"]; foreverypart { vacation "${"${v}".repeat(2000)}"; }`;
     const s = load(script, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 5000 });
     const { headers, size, body } = parseEml(flat(1, "a".repeat(4000)));
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
+    // Setup must not spend the budget whose interruption this test observes.
+    d.variables.set("v", "a".repeat(4000));
     s.execute(d);
+    expect(d.variables.get("v")?.length, "vacation must expand a populated variable").toBe(4000);
     expect([d.budgetExhausted, d.vacationRan, d.vacationResponses.size]).toEqual([true, false, 0]);
   });
 });
