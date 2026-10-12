@@ -1,7 +1,7 @@
 // #65: an uncertain recoverable effect must not make an independent local
 // drop uncertain. A possibly missed local store must still prevent the drop.
 import { describe, expect, it } from "vitest";
-import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, redirectsOnGuess } from "../src/index.js";
+import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData, redirectsOnGuess, type Options } from "../src/index.js";
 import { ALL_EXTENSIONS, parseEml } from "./harness.js";
 
 const REQUIRE = 'require ["foreverypart", "mime", "imap4flags", "fileinto", "variables", "editheader", "reject", "vacation", "copy", "relational", "comparator-i;ascii-numeric"];';
@@ -18,9 +18,9 @@ function nested(depth: number): string {
   for (let i = depth - 1; i >= 0; i--) body = `Content-Type: multipart/mixed; boundary=b${i}\r\n\r\n--b${i}\r\n${body}\r\n--b${i}--\r\n`;
   return 'From: spammer@remote-tr.test\r\n' + body;
 }
-function exec(commands: string, eml = parts(1030), truncated = false) {
+function exec(commands: string, eml = parts(1030), truncated = false, options: Options = {}) {
   const { headers, size, body } = parseEml(eml);
-  const s = load(REQUIRE + commands, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024 });
+  const s = load(REQUIRE + commands, { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: 200_000, maxMatchInputLength: 16 * 1024, ...options });
   const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("spammer@remote-tr.test", "to@local.test"), new MessageStatic(size, headers, body, truncated));
   s.execute(d);
   // The fallback models Core's old run-wide guard and keeps this test commit
@@ -218,7 +218,7 @@ it("a cloned reject proof still accounts for a later uncertain conflict", () => 
 it("bounds uncertainty retained for distinct header edits dropped after the ledger fills", () => {
   const fill = 'addheader "X-Fill" "x";'.repeat(1024);
   const overflow = Array.from({ length: 2048 }, (_, i) => `addheader "X-Dropped-${i}" "x";`).join("");
-  const { d } = exec(fill + overflow + 'discard;', parts(1));
+  const { d } = exec(fill + overflow + 'discard;', parts(1), false, { maxTokens: 20_000 });
   expect(d.headerEditsDropped).toBe(2048);
   expect(d.uncertainHeaders.size).toBeLessThanOrEqual(1024);
   expect(d.allHeadersUncertain).toBe(true);
