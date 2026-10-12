@@ -13,12 +13,13 @@ import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import type { Position } from "../parser/command.js";
 import { parse } from "../parser/parse.js";
-import { parseEnvelopeAddress } from "./address.js";
+import { parseAddressList, parseEnvelopeAddress, stripRFC2822Comments } from "./address.js";
 import { loadBlock } from "./load.js";
 import { checkRejectConflicts } from "./reject.js";
 import {
   type Cmd,
   EnvelopeStatic,
+  type Message,
   MessageStatic,
   type RuntimeData,
   StopSignal,
@@ -98,6 +99,24 @@ function parseTestMessage(raw: string): MessageStatic {
   }
 
   return new MessageStatic(size, headers, hasBody ? encoder.encode(body) : null);
+}
+
+/** The testsuite derives envelope fields from the first address in the first
+ * occurrence of each candidate header. A missing/empty address falls through
+ * to the next header. Use the header parser: local-only mailboxes are accepted
+ * here even though an explicit envelope test validates SMTP address syntax. */
+function messageEnvelopeAddress(msg: Message, names: string[], fallback: string): string {
+  for (const name of names) {
+    const raw = msg.headerGet(name)[0];
+    if (raw === undefined) continue;
+    try {
+      const first = parseAddressList(stripRFC2822Comments(raw), 1)[0]?.address;
+      if (first) return first;
+    } catch {
+      // No usable first address (e.g. Return-path: <>); try the next header.
+    }
+  }
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,9 +212,15 @@ export class CmdDovecotTestSet implements Cmd {
     const value = expandVars(d, this.variableValue);
     switch (this.variableName.toLowerCase()) {
       case "message": {
-        // Parse the RAW (unexpanded) value; bound the parse against the budget.
-        d.budget.consume(1 + (this.variableValue.length >> 6));
-        d.msg = parseTestMessage(this.variableValue);
+        // The testsuite's message operand expands variables just like an
+        // envelope operand. Charge the actual fixture, not its reference.
+        d.budget.consume(1 + (value.length >> 6));
+        d.msg = parseTestMessage(value);
+        d.envelope = new EnvelopeStatic(
+          messageEnvelopeAddress(d.msg, ["return-path", "sender", "from"], "sender@example.com"),
+          messageEnvelopeAddress(d.msg, ["envelope-to", "to"], "recipient@example.com"),
+          "", // No configured testsuite username in this harness.
+        );
         break;
       }
       case "envelope.from": {

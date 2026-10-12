@@ -148,6 +148,11 @@ set the one Sieve-visible recipient, read through `envelope "to"` and
 SMTP delivery state is outside this harness's scope. Unknown dotted fixture
 names fail at load; unqualified names still store raw, case-insensitive test
 variables.
+Replacing `message` expands its value and rebuilds the envelope: sender comes
+from `Return-Path`, then `Sender`, then `From`; recipient comes from `Envelope-To`,
+then `To`. Each uses the first address in the first field, falling back to
+`sender@example.com` / `recipient@example.com` when none is usable. Authentication
+resets to the harness default (empty); explicit envelope overrides may follow.
 
 ## Options
 
