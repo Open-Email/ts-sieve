@@ -303,8 +303,14 @@ on them and this one follows the RFC strictly:
   part is decoded (and reduced from HTML) once per message and shared by every
   body test; a quoted-printable "=" that starts neither an escape (two hex
   digits) nor a soft line break is text.
-- RFC 2047 decoding covers UTF-8/ASCII/Latin-1 plus whatever `TextDecoder`
-  labels the runtime provides; unknown charsets fall back to UTF-8/raw.
+- RFC 2047 header decoding follows Core's MIME walker after unfolding: Q
+  escapes and base64 padding are strict, malformed words remain raw, and the
+  search resumes inside a failed word. An unframable marker stops decoding
+  the remainder. The supported charset names are `utf-8`, `us-ascii` and
+  `iso-8859-1` (case-insensitive); any other name, including aliases and
+  language suffixes, keeps the whole unfolded value raw. Adjacent decoded
+  words are joined as bytes before UTF-8 conversion, with one replacement
+  character per invalid byte. Body charset decoding is separate.
 - Named timezones in `Date:` headers (e.g. `MST`) are treated as UTC offsets of
   zero.
 - `vacation` never sends mail — the host owns dedup, rate limits, and loop

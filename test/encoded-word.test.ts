@@ -1,7 +1,6 @@
-// RFC 2047 encoded words in header values (ts-sieve #67): each word decodes on
-// its own, as core's walker decodes them (Go's WordDecoder.DecodeHeader, which
-// is what the user's client shows), so one malformed word cannot hide the
-// text of the others from a rule.
+// RFC 2047 encoded words in header values (ts-sieve #67): malformed words
+// resume the search inside them as Core's walker does. Charset failures and
+// unframable markers have different behavior, pinned in encoded-word-core.
 
 import { describe, expect, it, vi } from "vitest";
 import { decodeHeaderValue } from "../src/interp/header.js";
