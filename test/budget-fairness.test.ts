@@ -64,8 +64,8 @@ describe("later ordinary rules keep useful budget (#66)", () => {
     expect(d.budgetExhausted).toBe(true);
   });
 
-  it("several exhausted body globs do not keep halving the final rule's reserve", () => {
-    const d = exec(EXPENSIVE.repeat(5) + later('header :matches "subject" "*viagra*"'), message([["subject", ["x".repeat(80) + " viagra"]]]));
+  it.each([5, 30])("%i exhausted body globs preserve a useful final rule reserve", (count) => {
+    const d = exec(EXPENSIVE.repeat(count) + later('header :matches "subject" "*viagra*"'), message([["subject", ["x".repeat(80) + " viagra"]]]));
     expect(d.mailboxes).toEqual(["Later"]);
     expect(d.budgetExhausted).toBe(true);
   });
@@ -179,7 +179,7 @@ describe("reserve inputs and cache lifetime", () => {
     expect(reads).toBe(0);
   });
 
-  it.each([false, true])("uses replacement message estimates in a %s clone", (clone) => {
+  it.each([false, true])("refreshes after message replacement (cloned runtime: %s)", (clone) => {
     const s = load(REQ + EXPENSIVE + later('header :matches "subject" "*viagra*"'), { enabledExtensions: ALL_EXTENSIONS, maxExecSteps: LIMIT, maxMatchInputLength: 16 * 1024 });
     let d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), message());
     expect(withShare(d, 0, () => true)).toBe(true);
