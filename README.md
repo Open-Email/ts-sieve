@@ -133,6 +133,13 @@ in-Sieve test DSL (`test`/`test_set`/`test_fail`/`test_config_set`,
 Pigeonhole conformance corpus against the interpreter itself. `require
 "vnd.dovecot.testsuite"` succeeds **only** when `Options.testEnv` is set, so the
 DSL is a development/validation facility and is inert for production scripts.
+`test_set` recognises `message`, `envelope.from`, `envelope.to`,
+`envelope.orig_to`, and `envelope.auth` case-insensitively. Both recipient names
+set the one Sieve-visible recipient, read through `envelope "to"` and
+`${envelope.to}`: Pigeonhole also tests its original recipient. Separate final
+SMTP delivery state is outside this harness's scope. Unknown dotted fixture
+names fail at load; unqualified names still store raw, case-insensitive test
+variables.
 
 ## Options
 
