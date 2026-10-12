@@ -360,6 +360,11 @@ export class RuntimeData {
    * ran on a guess (see onGuess, redirectsOnGuess). Empty in a run that
    * never guessed, so a redirect then costs no lookup in it. */
   redirectGuessed: Set<string> = new Set();
+  /** A redirect to a marked address was dropped while redirects were enabled.
+   * Its whole address may have delivered, so a reject cannot stand beside it
+   * as conflict-free. Separate from redirectsDropped, which also counts known
+   * targets dropped at the limit (including maxRedirects = 0). */
+  redirectUnresolved = false;
   /** Arms being run that an unknown chose (see control.ts). */
   guessDepth = 0;
   /** An unknown decided an arm, a loop or a header edit that could change
@@ -491,6 +496,7 @@ export class RuntimeData {
     c.vacationOnGuess = this.vacationOnGuess;
     c.rejectOnGuess = this.rejectOnGuess;
     c.redirectGuessed = new Set(this.redirectGuessed);
+    c.redirectUnresolved = this.redirectUnresolved;
     c.guessDepth = this.guessDepth;
     c.guessAfter = this.guessAfter;
     c.chainGuessed = this.chainGuessed;

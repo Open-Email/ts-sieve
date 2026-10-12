@@ -190,6 +190,9 @@ export class CmdRedirect implements Cmd {
     if (mark !== "") {
       d.indeterminate = true;
       d.redirectsDropped++;
+      // The whole address may have delivered and conflicted with reject.
+      // A limit of zero forbids even the whole address from being held.
+      d.redirectUnresolved ||= d.script.opts.maxRedirects > 0;
       // Whole, it may have taken a slot under maxRedirects that a later
       // redirect takes here.
       if (d.script.redirectsMayCap) d.guessAfter = true;
