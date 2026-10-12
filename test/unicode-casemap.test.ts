@@ -56,3 +56,23 @@ it("a trailing wildcard proves a match over a cut Unicode prefix", () => {
   const result = run(require + 'if body :comparator "i;unicode-casemap" :matches "été*" { fileinto "hit"; }', '\r\n\r\nÉTÉ', { bodyTruncated: true });
   expect(result.fileinto).toEqual(["hit"]);
 });
+
+it("Unicode globs retain the existing lazy wildcard and capture choices", () => {
+  const values = ["", "a", "b", "A", "*", "?", "\\"];
+  for (let n = 2; n <= 4; n++) for (let i = 0; i < 2 ** n; i++) values.push(i.toString(2).padStart(n, "0").replaceAll("0", "a").replaceAll("1", "b"));
+  const patterns = ["", "*", "?", "??", "?*", "*?", "*?*", "a*b", "**", "*a*", "*a?*", "?a*", "\\*", "\\?", "\\"];
+  for (const value of values) for (const pattern of patterns) {
+    const capture = (comparator: string) => run(require + `if string :comparator "${comparator}" :matches ${quote(value)} ${quote(pattern)} { fileinto "matched:${'${0}|${1}|${2}|${3}'}"; }`).fileinto;
+    expect(capture("i;unicode-casemap"), JSON.stringify({ value, pattern })).toEqual(capture("i;ascii-casemap"));
+  }
+});
+it("a byte cap cannot make a whole-input Unicode glob match definite", () => {
+  const result = run(require + 'if body :comparator "i;unicode-casemap" :matches "été" { fileinto "hit"; }', '\r\n\r\nÉTÉ and more', { options: { maxMatchInputLength: 5 } });
+  expect(result.fileinto).toEqual([]);
+  expect(result.indeterminate).toBe(true);
+});
+it("Unicode glob work yields unknown on budget exhaustion", () => {
+  const result = run(require + 'if body :comparator "i;unicode-casemap" :matches "*never*" { fileinto "hit"; }', '\r\n\r\n' + "é".repeat(10_000), { options: { maxExecSteps: 500 } });
+  expect(result.fileinto).toEqual([]);
+  expect(result.indeterminate).toBe(true);
+});
