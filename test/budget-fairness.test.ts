@@ -2,6 +2,7 @@
 // fixed fraction of the budget, or take needed budget from a fitting match.
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
+import { withShare } from "../src/interp/runtime.js";
 import { ALL_EXTENSIONS } from "./harness.js";
 
 const LIMIT = 200_000;
@@ -99,5 +100,62 @@ describe("reserving for later rules must leave fitting earlier rules definite (#
     const d = exec(EXPENSIVE + later('header :matches "subject" "*viagra*"'), message([["subject", ["x".repeat(200)]]]));
     expect(d.mailboxes).toEqual([]);
     expect(d.budgetExhausted).toBe(true);
+  });
+});
+
+
+describe("reserve planning is bounded and follows runtime state", () => {
+  it("does not inspect future headers when no test budget remains", () => {
+    let reads = 0;
+    const msg = message();
+    const get = msg.headerGet.bind(msg);
+    msg.headerGet = (name) => { reads++; return get(name); };
+    const s = load(Array.from({ length: 100 }, (_, i) => `if header :is "x-${i}" "x" {}`).join("\n"), { maxExecSteps: LIMIT });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), msg);
+    d.budget.remaining = s.commandCount;
+    for (let i = 0; i < 100; i++) expect(withShare(d, i, () => true)).toBe("unknown");
+    expect(reads).toBe(0);
+    expect(d.budget.remaining).toBe(s.commandCount);
+  });
+
+  it("charges planning before reading each new field and propagates exhaustion", () => {
+    let reads = 0;
+    const msg = message();
+    msg.headerGet = () => { reads++; return []; };
+    const s = load(Array.from({ length: 100 }, (_, i) => `if header :is "x-${i}" "x" {}`).join("\n"), { maxExecSteps: LIMIT });
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), msg);
+    d.budget.remaining = s.commandCount + 6;
+    expect(withShare(d, 0, () => true)).toBe("unknown");
+    expect(reads).toBeLessThanOrEqual(4);
+    expect(d.budget.remaining).toBe(s.commandCount);
+  });
+
+  it("refreshes estimates after virtual header edits", () => {
+    const d = exec('if header :contains "subject" "ordinary" {} deleteheader "subject"; addheader "Subject" "' + "x".repeat(200) + ' viagra";' + EXPENSIVE + later('header :matches "subject" "*viagra*"'));
+    expect(d.mailboxes).toEqual(["Later"]);
+    expect(d.budgetExhausted).toBe(true);
+  });
+
+  it.each([1, 3])("protects a later message rule across %i nested loop shares", (depth) => {
+    let body = new TextDecoder().decode(message().bodyRaw()!);
+    let boundary = "b";
+    for (let i = 1; i < depth; i++) {
+      body = `--outer${i}\r\nContent-Type: multipart/mixed; boundary=${boundary}\r\n\r\n${body}\r\n--outer${i}--\r\n`;
+      boundary = `outer${i}`;
+    }
+    const msg = new MessageStatic(body.length, new Map([
+      ["subject", ["x".repeat(200) + " viagra"]],
+      ["content-type", [`multipart/mixed; boundary=${boundary}`]],
+    ]), new TextEncoder().encode(body));
+    const d = exec("foreverypart {".repeat(depth) + EXPENSIVE + "}".repeat(depth) + later('header :matches "subject" "*viagra*"'), msg);
+    expect(d.mailboxes).toEqual(["Later"]);
+    expect(d.budgetExhausted).toBe(true);
+  });
+
+  it("does not turn an unreadable but skipped future header into a runtime error", () => {
+    const msg = message();
+    msg.headerGet = () => { throw new Error("unreadable header"); };
+    const d = exec('if size :over 0 { stop; } if header :is "x-unreadable" "x" { discard; }', msg);
+    expect([d.indeterminate, d.budgetExhausted]).toEqual([false, false]);
   });
 });
