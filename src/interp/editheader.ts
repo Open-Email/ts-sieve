@@ -39,10 +39,16 @@ function disclose(d: RuntimeData): void {
   d.guessAfter = true;
 }
 
+/** Count a command with an edit dropped, once even if several edits cannot fit. */
+function dropEdit(d: RuntimeData): void {
+  d.headerEditsDropped++;
+  disclose(d);
+}
+
 /** Whether one more edit (adding `bytes`) fits; if not, disclose the drop. */
 function editFits(d: RuntimeData, bytes: number): boolean {
   if (d.headerEdits.length < MAX_HEADER_EDITS && d.headerEditBytes + bytes <= MAX_HEADER_EDIT_BYTES) return true;
-  disclose(d);
+  dropEdit(d);
   return false;
 }
 
@@ -214,7 +220,7 @@ export class CmdAddHeader implements Cmd {
     // script's: nothing is added under it, and the guess is disclosed (as
     // deleteheader's).
     if (nameMark !== "") {
-      disclose(d);
+      dropEdit(d);
       return;
     }
     if (!isValidHeaderName(fieldName)) return; // RFC 5293 §6: silently ignore
@@ -248,7 +254,7 @@ export class CmdDeleteHeader implements Cmd {
     // A name built from a value the engine could not hold whole is not the
     // whole input's: nothing is deleted on it, and the guess is disclosed.
     if (mark !== "") {
-      disclose(d);
+      dropEdit(d);
       return;
     }
     if (!isValidHeaderName(fieldName)) return;
@@ -290,7 +296,12 @@ export class CmdDeleteHeader implements Cmd {
       disclose(d);
       return;
     }
-    for (const e of edits) if (editFits(d, 0)) d.headerEdits.push(e);
+    for (const e of edits) {
+      // The rest cannot fit either. Count the command once, preserving any
+      // edits already recorded before the ledger filled.
+      if (!editFits(d, 0)) break;
+      d.headerEdits.push(e);
+    }
   }
 
   private valueMatchesPatterns(d: RuntimeData, value: string, mark: Mark): boolean {

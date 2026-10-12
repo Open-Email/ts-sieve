@@ -322,6 +322,12 @@ export class RuntimeData {
   /** Fileintos that ran and were dropped past maxFileintos, counted as
    * redirectsDropped is: per fileinto run, not per name. */
   fileintosDropped = 0;
+  /** Addheader/deleteheader commands whose edits were dropped for a marked
+   * field name or the ledger's edit/value limits, each setting indeterminate.
+   * Counts commands run, once per loop iteration, including a deleteheader
+   * only partly recorded. Unknown delete matches disclose a guess but prove
+   * no edit to drop; ignored invalid names and protected deletes do not count. */
+  headerEditsDropped = 0;
 
   redirectAddr: string[] = [];
   mailboxes: string[] = [];
@@ -469,6 +475,7 @@ export class RuntimeData {
     c.budgetExhausted = this.budgetExhausted;
     c.redirectsDropped = this.redirectsDropped;
     c.fileintosDropped = this.fileintosDropped;
+    c.headerEditsDropped = this.headerEditsDropped;
     c.redirectAddr = [...this.redirectAddr];
     c.mailboxes = [...this.mailboxes];
     c.mailboxesCreate = [...this.mailboxesCreate];
