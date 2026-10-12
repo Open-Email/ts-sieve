@@ -302,6 +302,30 @@ export class MatcherTest {
     return this.match === "count";
   }
 
+  /** Compare a finite numeric lower bound. Exact truth from any key wins;
+   * a remaining undecidable key contributes unknown to the disjunction. */
+  matchAtLeast(d: RuntimeData, minimum: number): Tri {
+    if (!this.isCount() && (this.match !== "value" || this.comparator !== "i;ascii-numeric")) return "unknown";
+    let unknown = false;
+    for (const key of this.key) {
+      d.budget.consume(1);
+      const { value, mark } = expandMarked(d, key);
+      if (mark !== "") { unknown = true; continue; }
+      const k = parseNumericPrefix(value);
+      const min = BigInt(minimum);
+      let r: Tri;
+      if (k === null) r = compareNumericValue(this.relational, min, k);
+      else if (this.relational === "gt") r = min > k ? true : "unknown";
+      else if (this.relational === "ge") r = min >= k ? true : "unknown";
+      else if (this.relational === "lt") r = min >= k ? false : "unknown";
+      else if (this.relational === "le" || this.relational === "eq") r = min > k ? false : "unknown";
+      else r = min > k ? true : "unknown"; // ne
+      if (r === true) return true;
+      if (r === "unknown") unknown = true;
+    }
+    return unknown ? "unknown" : false;
+  }
+
   countMatches(d: RuntimeData, value: number): boolean {
     const v = BigInt(value);
     for (const k of this.key) {

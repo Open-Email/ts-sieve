@@ -7,7 +7,7 @@
 
 import { SieveError } from "../errors.js";
 import { MatcherTest } from "./matcher.js";
-import { onGuess, type Cmd, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
+import { onGuess, provenLength, prefixMark, type Cmd, type Mark, type RuntimeData, type Test, type Tri } from "./runtime.js";
 import type { Script } from "./script.js";
 
 const VAR_NAME_MAX_SCAN = 300; // bound the } search — real names are ≤ 32 chars
@@ -93,9 +93,9 @@ export function expandVars(d: RuntimeData, s: string): string {
 }
 
 /**
- * expandVars, with the mark the expansion carries (see Mark): a prefix when
- * the last thing in it is a prefix-marked value, held whole before it; in
- * doubt when anything follows a marked value, or a value in doubt is in it.
+ * expandVars with its proof: concatenation retains the head before the
+ * first unknown continuation. A numeric length bound survives only an
+ * otherwise unchanged reference; appending text does not preserve it.
  */
 export function expandMarked(d: RuntimeData, s: string): { value: string; mark: Mark } {
   if (!d.script.requiresExtension("variables") || !s.includes("${")) return { value: s, mark: "" };
@@ -103,15 +103,14 @@ export function expandMarked(d: RuntimeData, s: string): { value: string; mark: 
   if (charge) d.budget.consume(1 + (s.length >> 6));
   let charged = 0;
   let out = "";
-  // The mark of the last marked value, while nothing has followed it; doubt
-  // once anything has.
-  let last: Mark = "";
-  let doubt = false;
+  let resultMark: Mark = "";
   const append = (text: string, mark: Mark) => {
     if (text === "" && mark === "") return;
-    if (last !== "") doubt = true;
-    last = mark;
+    const length = resultMark === "" ? out.length + provenLength(text, mark) : provenLength(out, resultMark);
+    const bound = out === "" && resultMark === "" && typeof mark === "object" && "minLength" in mark ? mark : null;
+    const whole = resultMark === "" && mark === "";
     out += text;
+    resultMark = whole ? "" : bound ?? prefixMark(out, length);
   };
   let i = 0;
   let close = -2;
@@ -134,7 +133,7 @@ export function expandMarked(d: RuntimeData, s: string): { value: string; mark: 
     i++;
   }
   if (charge && out.length >> 7 > charged) d.budget.consume((out.length >> 7) - charged);
-  return { value: out, mark: doubt ? "doubt" : last };
+  return { value: out, mark: resultMark };
 }
 
 /**
@@ -205,6 +204,7 @@ export function setVar(d: RuntimeData, name: string, value: string, mark: Mark =
     v = new TextDecoder().decode(bytes.subarray(0, end));
     if (markCut && mark === "") mark = "prefix";
   }
+  if (typeof mark === "object" && "prefix" in mark) mark = prefixMark(v, mark.prefix);
   const lower = name.toLowerCase();
   const dot = lower.indexOf(".");
   if (dot !== -1) throw new SieveError(`cannot set namespaced variable: ${name}`);
@@ -288,7 +288,7 @@ export class CmdSet implements Cmd {
 /**
  * Apply set modifiers (RFC 5229 §4.1), highest precedence first; shared by set
  * and extracttext, with the value's mark (see Mark): the case and escaping
- * modifiers keep a prefix a prefix, :length of a marked value is in doubt,
+ * modifiers transform its proven head, and :length records a numeric lower bound,
  * and :quotewildcard's truncation marks what it cuts (unless `markCut` is
  * false: a literal, as for setVar).
  *
@@ -305,8 +305,20 @@ export function applySetModifiers(d: RuntimeData, modifiers: string[], value: st
   for (const m of ordered) {
     if (charge) d.budget.consume(v.length >> 7);
     const before = v.length;
+    const head = v.slice(0, provenLength(v, mark));
+    const oldMark = mark;
     v = m === "lower" && mark === "prefix" ? lowerPrefix(v) : SET_MODIFIERS[m]!.apply(v);
-    if (m === "length" && mark !== "") mark = "doubt";
+    if (mark !== "") {
+      if (m === "length") {
+        mark = { minLength: Array.from(head).length };
+      } else if (typeof oldMark === "object" && "minLength" in oldMark) {
+        // Case/quoting leave a decimal length unchanged.
+        mark = oldMark;
+      } else {
+        const transformed = m === "lower" ? lowerPrefix(head) : SET_MODIFIERS[m]!.apply(head);
+        mark = prefixMark(v, transformed.length);
+      }
+    }
     if (charge && m === "quotewildcard") d.budget.consume((v.length - before) >> 4);
     lastPrec = SET_MODIFIERS[m]!.precedence;
   }
@@ -314,6 +326,7 @@ export function applySetModifiers(d: RuntimeData, modifiers: string[], value: st
     const quoted = truncateQuoted(v, d.script.opts.maxVariableLen);
     if (quoted.length !== v.length && markCut && mark === "") mark = "prefix";
     v = quoted;
+    if (typeof mark === "object" && "prefix" in mark) mark = prefixMark(v, mark.prefix);
   }
   return { value: v, mark };
 }
@@ -335,7 +348,7 @@ export class TestString implements Test {
       for (const src of this.source) {
         const { value, mark } = expandMarked(d, src);
         // A non-empty prefix is a non-empty value; an empty one may not be.
-        if (mark === "doubt" || (mark === "prefix" && value === "")) doubt = true;
+        if (mark !== "" && provenLength(value, mark) === 0) doubt = true;
         else if (value !== "") n++;
       }
       return doubt ? "unknown" : this.matcher.countMatches(d, n);
@@ -345,11 +358,11 @@ export class TestString implements Test {
       // A source that is a prefix of the real value is matched as a cut
       // header is: a definite answer only where the prefix proves it.
       const { value, mark } = expandMarked(d, src);
-      if (mark === "doubt") {
-        unknown = true;
-        continue;
-      }
-      const r = this.matcher.tryMatch(d, value, opts, mark === "prefix");
+      let r: Tri;
+      if (typeof mark === "object" && "minLength" in mark) {
+        r = this.matcher.matchAtLeast(d, mark.minLength);
+      } else if (mark === "doubt") r = "unknown";
+      else r = this.matcher.tryMatch(d, value.slice(0, provenLength(value, mark)), opts, mark !== "");
       if (r === true) return true;
       if (r === "unknown") unknown = true;
     }

@@ -8,7 +8,7 @@
 import { decodeHeaderOnce } from "./header-values.js";
 import { MatcherTest } from "./matcher.js";
 import type { MatchOptions } from "./matching.js";
-import { type Cmd, doubtCaptures, type Mark, onGuess, type RuntimeData, type Tri, withShare } from "./runtime.js";
+import { type Cmd, doubtCaptures, type Mark, onGuess, provenLength, prefixMark, type RuntimeData, type Tri, withShare } from "./runtime.js";
 import { headerUncertain, markHeaderUncertain } from "./uncertainty.js";
 import { expandMarked, expandVarsList } from "./variables.js";
 
@@ -140,8 +140,10 @@ export function valueMarks(values: string[]): readonly Mark[] | undefined {
  * the white space between two encoded words the prefix ends between.
  */
 export function matchHeaderValue(d: RuntimeData, matcher: MatcherTest, value: string, mark: Mark, opts: MatchOptions): Tri {
-  if (mark === "doubt" || (mark === "prefix" && !decodesAsPrefix(value))) return "unknown";
-  return matcher.tryMatch(d, decodeHeaderOnce(d, value), opts, mark === "prefix");
+  if (mark === "doubt" || (typeof mark === "object" && "minLength" in mark)) return "unknown";
+  const head = value.slice(0, provenLength(value, mark));
+  if (mark !== "" && !decodesAsPrefix(head)) return "unknown";
+  return matcher.tryMatch(d, decodeHeaderOnce(d, head), opts, mark !== "");
 }
 
 /** Whether a prefix of a raw value decodes to a prefix of the whole one
@@ -244,10 +246,11 @@ export class CmdAddHeader implements Cmd {
     // valueMarks). Folding a prefix gives a prefix of the folded whole: a run
     // of line breaks the cut ended is removed, where whole it is removed or
     // becomes a space.
-    const { value: raw, mark } = expandMarked(d, this.value);
+    let { value: raw, mark } = expandMarked(d, this.value);
     // In a loop the fold is charged by size: a literal has no expansion to pay.
     if (d.budget.shares > 0) d.budget.consume(raw.length >> 7);
     const value = foldHeaderValue(raw);
+    if (mark !== "") mark = prefixMark(value, foldHeaderValue(raw.slice(0, provenLength(raw, mark))).length);
     if (!editFits(d, value.length, fieldName)) return;
     if (onGuess(d)) markHeaderUncertain(d, fieldName);
     d.headerEditBytes += value.length;
@@ -347,8 +350,9 @@ export class CmdDeleteHeader implements Cmd {
     // it a prefix of the trimmed whole.
     const opts = { maxMatchInputLength: d.script.opts.maxMatchInputLength };
     let r: Tri = "unknown";
-    if (mark === "" || (mark === "prefix" && decodesAsPrefix(value))) {
-      r = this.matcher.tryMatch(d, decodeHeaderOnce(d, value).trim(), opts, mark === "prefix");
+    const head = value.slice(0, provenLength(value, mark));
+    if (mark === "" || (mark !== "doubt" && !(typeof mark === "object" && "minLength" in mark) && decodesAsPrefix(head))) {
+      r = this.matcher.tryMatch(d, decodeHeaderOnce(d, head).trim(), opts, mark !== "");
     }
     if (r === "unknown") disclose(d, fieldName);
     return r === true;

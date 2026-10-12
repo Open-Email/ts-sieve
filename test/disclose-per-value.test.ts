@@ -48,10 +48,10 @@ describe("a cut value stored in a variable", () => {
     expect([r.implicitKeep, r.indeterminate]).toEqual([true, true]);
   });
 
-  it("text after it puts a value in doubt: unknown even when the key is found", () => {
+  it("text after a prefix preserves a match proved by its head", () => {
     const script = `require ["variables","fileinto"]; ${STORE} set "t" "\${s} tail"; if string :contains "\${t}" "x" { fileinto "X"; }`;
     const r = run(script, msg(`From: a@x\r\nSubject: ${"x".repeat(4500)}`), CORE);
-    expect([r.fileinto, r.indeterminate]).toEqual([[], true]);
+    expect([r.fileinto, r.indeterminate]).toEqual([["X"], false]);
   });
 
   it(":length of it is in doubt", () => {
