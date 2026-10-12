@@ -8,6 +8,7 @@
 // time is bounded by the (capped) pattern and (truncated) input. RE2-style
 // features only: no backreferences, no lookaround (rejected at parse).
 
+import { simpleFold, simpleFoldVariants, SIMPLE_FOLD_POINTS } from "./unicode-simple-fold.js";
 import { SieveError } from "../errors.js";
 
 const MAX_PATTERN_LENGTH = 1000;
@@ -64,7 +65,37 @@ class Parser {
   private pos = 0;
   private capCount = 0;
   private depth = 0;
-  constructor(private readonly src: string, private flags: Flags) {}
+  work = 0;
+  constructor(private readonly src: string, private flags: Flags, private readonly unicodeCaseFold = false) {}
+
+  /** Close each positive class member before complementing it. In particular,
+   * \W and [\W] must both exclude every case equivalent of a word character.
+   * Scan only cased points within a range, never all of Unicode. */
+  private foldClass(ranges: [number, number][]): [number, number][] {
+    if (!this.unicodeCaseFold || !this.flags.i) return normalizeRanges(ranges);
+    const out: [number, number][] = [];
+    const charge = () => {
+      if (++this.work > MAX_COMPILE_WORK) throw new SieveError("regex: Unicode class too complex to compile");
+    };
+    for (const [lo, hi] of ranges) {
+      charge();
+      if (hi < lo) continue;
+      out.push([lo, hi]);
+      let a = 0, b = SIMPLE_FOLD_POINTS.length;
+      while (a < b) {
+        const m = (a + b) >>> 1;
+        if (SIMPLE_FOLD_POINTS[m]! < lo) a = m + 1; else b = m;
+      }
+      for (; a < SIMPLE_FOLD_POINTS.length && SIMPLE_FOLD_POINTS[a]! <= hi; a++) {
+        charge();
+        for (const cp of simpleFoldVariants(SIMPLE_FOLD_POINTS[a]!)) {
+          charge();
+          if (cp < lo || cp > hi) out.push([cp, cp]);
+        }
+      }
+    }
+    return normalizeRanges(out);
+  }
 
   parse(): { ast: Node; ncaps: number } {
     const ast = this.parseAlt();
@@ -255,14 +286,14 @@ class Parser {
           hi = this.src.codePointAt(this.pos)!;
           this.pos += String.fromCodePoint(hi).length;
         }
-        ranges.push([lo, hi]);
+        ranges.push(...this.foldClass([[lo, hi]]));
       } else {
-        ranges.push([lo, lo]);
+        ranges.push(...this.foldClass([[lo, lo]]));
       }
     }
     if (this.peek() !== "]") throw new SieveError("regex: missing ]");
     this.pos++;
-    return { t: "class", ranges: normalizeRanges(ranges), negated, fold: this.flags.i };
+    return { t: "class", ranges: normalizeRanges(ranges), negated, fold: this.flags.i && !this.unicodeCaseFold };
   }
 
   private parseClassEscape(): number | [number, number][] {
@@ -272,17 +303,17 @@ class Parser {
     this.pos++;
     switch (c) {
       case "d":
-        return [[48, 57]];
+        return this.foldClass([[48, 57]]);
       case "D":
-        return negate([[48, 57]]);
+        return negate(this.foldClass([[48, 57]]));
       case "w":
-        return WORD_RANGES.slice();
+        return this.foldClass(WORD_RANGES);
       case "W":
-        return negate(WORD_RANGES);
+        return negate(this.foldClass(WORD_RANGES));
       case "s":
-        return SPACE_RANGES.slice();
+        return this.foldClass(SPACE_RANGES);
       case "S":
-        return negate(SPACE_RANGES);
+        return negate(this.foldClass(SPACE_RANGES));
       case "n":
         return 10;
       case "r":
@@ -312,17 +343,17 @@ class Parser {
     this.pos++;
     switch (c) {
       case "d":
-        return { t: "class", ranges: [[48, 57]], negated: false, fold: false };
+        return { t: "class", ranges: this.foldClass([[48, 57]]), negated: false, fold: false };
       case "D":
-        return { t: "class", ranges: [[48, 57]], negated: true, fold: false };
+        return { t: "class", ranges: this.foldClass([[48, 57]]), negated: true, fold: false };
       case "w":
-        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: false, fold: false };
+        return { t: "class", ranges: this.foldClass(WORD_RANGES), negated: false, fold: false };
       case "W":
-        return { t: "class", ranges: normalizeRanges(WORD_RANGES), negated: true, fold: false };
+        return { t: "class", ranges: this.foldClass(WORD_RANGES), negated: true, fold: false };
       case "s":
-        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: false, fold: false };
+        return { t: "class", ranges: this.foldClass(SPACE_RANGES), negated: false, fold: false };
       case "S":
-        return { t: "class", ranges: normalizeRanges(SPACE_RANGES), negated: true, fold: false };
+        return { t: "class", ranges: this.foldClass(SPACE_RANGES), negated: true, fold: false };
       case "b":
         return { t: "assert", kind: "wordb" };
       case "B":
@@ -421,7 +452,7 @@ type Inst =
 class Compiler {
   prog: Inst[] = [];
   private depth = 0;
-  work = 0;
+  constructor(public work = 0) {}
   emit(i: Inst): number {
     if (this.prog.length >= MAX_PROGRAM_SIZE) throw new SieveError("regex: compiled program too large");
     this.prog.push(i);
@@ -594,6 +625,7 @@ class Program implements CompiledRegex {
     private readonly prog: Inst[],
     private readonly ncaps: number,
     readonly compileWork: number,
+    private readonly foldCharacter: (cp: number) => number = foldASCII,
   ) {}
 
   findSubmatch(inputStr: string, opts?: { maxInputLength?: number; budget?: StepBudget; info?: { atEnd: boolean } }): string[] | null {
@@ -695,7 +727,7 @@ class Program implements CompiledRegex {
           break; // leftmost-first: prune lower-priority threads
         }
         let consume = false;
-        if (inst.op === "char") consume = cp !== -1 && (inst.fold ? foldASCII(cp) === foldASCII(inst.cp) : cp === inst.cp);
+        if (inst.op === "char") consume = cp !== -1 && (inst.fold ? this.foldCharacter(cp) === this.foldCharacter(inst.cp) : cp === inst.cp);
         else if (inst.op === "any") consume = cp !== -1 && (inst.dotall || cp !== 10);
         else if (inst.op === "class") consume = cp !== -1 && classMatch(inst, cp);
         if (consume) addThread(nlist, nvisited, th.pc + 1, sp + 1, th.caps);
@@ -760,7 +792,7 @@ export function truncateToBytes(s: string, maxBytes: number): string {
 /** Compile a regex pattern, enforcing the compile-time pattern-length cap. */
 export function compileRegex(
   pattern: string,
-  opts?: { maxPatternLength?: number; caseInsensitive?: boolean },
+  opts?: { maxPatternLength?: number; caseInsensitive?: boolean; unicodeCaseFold?: boolean },
 ): CompiledRegex {
   const cap = opts?.maxPatternLength ?? MAX_PATTERN_LENGTH;
   if (pattern.length > cap) throw new SieveError(`regex pattern too long: ${pattern.length} > ${cap}`);
@@ -769,13 +801,13 @@ export function compileRegex(
   // a textual prefix shifts parse positions, so `*abc` (a load-time refusal —
   // nothing for the quantifier to bind) would silently become legal as
   // `(?i)*abc`. Used by `:regex` under casemap comparators.
-  const parser = new Parser(pattern, { i: opts?.caseInsensitive ?? false, s: false, m: false });
+  const parser = new Parser(pattern, { i: opts?.caseInsensitive ?? false, s: false, m: false }, opts?.unicodeCaseFold ?? false);
   const { ast, ncaps } = parser.parse();
-  const compiler = new Compiler();
+  const compiler = new Compiler(parser.work);
   // A leading Save(0) is implicit via the seed caps; add trailing Match.
   compiler.compile(ast);
   compiler.emit({ op: "match" });
-  return new Program(compiler.prog, ncaps, compiler.work);
+  return new Program(compiler.prog, ncaps, compiler.work, opts?.unicodeCaseFold ? simpleFold : foldASCII);
 }
 
 /**

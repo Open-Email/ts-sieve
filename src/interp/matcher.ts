@@ -251,11 +251,9 @@ export class MatcherTest {
     if (this.match === "matches") return this.comparator === "i;unicode-casemap"
       ? compileUnicodeGlob(pattern)
       : compileRegex(patternToRegex(pattern, this.caseFold));
-    // Under i;unicode-casemap the :regex input is folded context-free (ς→σ),
-    // so a literal ς in the pattern is too, or it could never match. The same
-    // length, and safe inside escapes and classes.
-    const p = this.comparator === "i;unicode-casemap" ? pattern.replace(/ς/g, "σ") : pattern;
-    return compileRegex(p, { caseInsensitive: this.caseFold });
+    // Regex syntax stays untouched. The VM folds literal characters and the
+    // parser closes character classes; source text and capture offsets stay exact.
+    return compileRegex(pattern, { caseInsensitive: this.caseFold, unicodeCaseFold: this.comparator === "i;unicode-casemap" });
   }
 
   /**
@@ -380,18 +378,9 @@ export class MatcherTest {
           unknown = true;
         }
       } else if (this.match === "regex") {
-        // :regex always uses the (unicode) engine; a casemap comparator folds
-        // via the compiled pattern (the parser's seeded `i` flag — see the
-        // precompile above), never by rewriting the input — so the ORIGINAL
-        // source is matched and captures preserve its case. i;octet stays exact.
-        // The one exception is i;unicode-casemap, which alone still folds the
-        // INPUT: the engine's `i` flag is an ASCII fold, so the pattern-side
-        // fold cannot reach É↔é, and dropping the input fold would regress the
-        // comparator whose whole point is non-ASCII case. Its residual is as
-        // before — a non-ASCII UPPERCASE literal in the pattern never matches,
-        // and captures fold to lowercase (and ς to σ) under this comparator
-        // only. This separate limitation is tracked in #110.
-        const value = this.comparator === "i;unicode-casemap" ? source.toLowerCase().replace(/ς/g, "σ") : source;
+        // Match original text; Unicode case folding belongs to literal/class
+        // instructions, so it cannot alter syntax, captures, or the byte cap.
+        const value = source;
         const { re } = this.runtimeKey(d, i);
         if (re === null) {
           unknown = true;
