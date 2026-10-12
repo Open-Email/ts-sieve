@@ -60,13 +60,15 @@ export class CmdReject implements Cmd {
  * everything else stands as if the reject had not run: the host refuses the
  * reject, as it refuses a discard on an indeterminate run. `strict`
  * (strictReject, and the testsuite) throws, as Pigeonhole does.
+ * A redirect dropped for an incomplete address may have delivered with the
+ * whole input: conservatively name that possible conflict too (#81).
  */
 export function checkRejectConflicts(d: RuntimeData, strict = strictFor(d)): void {
   if (!d.rejected) return;
   let conflict: RuntimeData["rejectConflict"];
   if (d.keep) conflict = "keep";
   else if (d.mailboxes.length > 0) conflict = "fileinto";
-  else if (d.redirectAddr.length > 0) conflict = "redirect";
+  else if (d.redirectAddr.length > 0 || d.redirectUnresolved) conflict = "redirect";
   else if (d.vacationRan) conflict = "vacation";
   else {
     d.implicitKeep = false;
