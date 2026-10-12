@@ -302,6 +302,7 @@ describe("a command that runs out of the loop's share mid-way has done nothing",
     const { headers, size, body } = parseEml(flat(1, "a".repeat(4000)));
     const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic("a@x", "b@y"), new MessageStatic(size, headers, body));
     s.execute(d);
+    expect(d.variables.get("v")?.length, "vacation must expand a populated variable").toBe(4000);
     expect([d.budgetExhausted, d.vacationRan, d.vacationResponses.size]).toEqual([true, false, 0]);
   });
 });
