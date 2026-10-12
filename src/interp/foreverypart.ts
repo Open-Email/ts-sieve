@@ -23,6 +23,7 @@ import { currentPart, mimeTree, partText, subtree } from "./mime.js";
 import { MAX_INPUT_LENGTH } from "./regex.js";
 import { armSkipped } from "./control.js";
 import { type Cmd, cutOffOnGuess, type RuntimeData, withShare } from "./runtime.js";
+import type { UncertainWrites } from "./uncertainty.js";
 import { applySetModifiers, setVar } from "./variables.js";
 
 /** Thrown by break; the loop it names (or the closest one) catches it. */
@@ -40,6 +41,9 @@ export class CmdForEveryPart implements Cmd {
   /** The block holds a vacation, or a reject (see guess.ts). */
   mayVacation = true;
   mayReject = true;
+  mayKeepLocal = true;
+  mayConflictReject = true;
+  uncertainWrites?: UncertainWrites;
 
   execute(d: RuntimeData): void {
     let broke = false;
@@ -85,7 +89,7 @@ export class CmdForEveryPart implements Cmd {
     });
     if (r === "unknown" || (!broke && open)) {
       d.indeterminate = true;
-      // The iterations it missed may have changed what runs after it.
+      // Missed control flow and writes have distinct effects on later work.
       if (this.mayAffectLater) d.guessAfter = true;
       armSkipped(d, this);
     }

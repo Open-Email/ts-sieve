@@ -9,7 +9,7 @@
 // §4 warns that the sender is then never told.
 
 import { SieveError } from "../errors.js";
-import type { Cmd, RuntimeData } from "./runtime.js";
+import { onGuess, type Cmd, type RuntimeData } from "./runtime.js";
 import { expandVars } from "./variables.js";
 
 /** Whether a reject conflict is an error: under strictReject, and in the
@@ -38,6 +38,8 @@ export class CmdReject implements Cmd {
       return;
     }
     d.rejected = true;
+    d.rejectExecutionProven = !onGuess(d);
+    d.rejectOnGuess ||= !d.rejectExecutionProven;
     d.rejectReason = reason;
     d.rejectExtended = this.extended;
     // The implicit keep is cancelled once the script has run, and only if the

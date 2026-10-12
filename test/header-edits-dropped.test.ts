@@ -34,7 +34,8 @@ describe("headerEditsDropped (#76)", () => {
     expect([full.headerEditsDropped, full.indeterminate]).toEqual([0, false]);
     const over = exec(`${FILL.repeat(1024)} ${FILL} deleteheader "X-Fill"; deleteheader :index 1 "X-Fill";`);
     expect(over.headerEdits).toHaveLength(1024);
-    expect([over.headerEditsDropped, over.indeterminate, over.guessAfter]).toEqual([3, true, true]);
+    expect([over.headerEditsDropped, over.indeterminate, over.guessAfter]).toEqual([3, true, false]);
+    expect([...over.uncertainHeaders]).toEqual(["x-fill"]);
   });
 
   it("counts a partly or wholly dropped delete-by-value once, even with repeated matching values", () => {
@@ -73,7 +74,8 @@ describe("headerEditsDropped (#76)", () => {
   it("counts add and delete commands whose field name is marked", () => {
     const d = exec(`${MARK} addheader "\${name}" "value"; deleteheader "\${name}";`, LONG);
     expect(d.headerEdits).toEqual([]);
-    expect([d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([2, true, true]);
+    expect([d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([2, true, false]);
+    expect(d.allHeadersUncertain).toBe(true);
   });
 
   it("counts a command with both a marked name and a full ledger only once", () => {
@@ -103,7 +105,8 @@ describe("headerEditsDropped (#76)", () => {
   it("leaves an unknown delete match disclosed without claiming a definite edit was dropped", () => {
     const d = exec('deleteheader :matches "subject" "*zzz";', LONG, { maxMatchInputLength: 16 });
     expect(d.headerEdits).toEqual([]);
-    expect([d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([0, true, true]);
+    expect([d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([0, true, false]);
+    expect([...d.uncertainHeaders]).toEqual(["subject"]);
   });
 
   it("copies the count into a clone without sharing subsequent increments", () => {

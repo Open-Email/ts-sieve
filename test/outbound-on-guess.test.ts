@@ -53,36 +53,36 @@ describe("a redirect an unknown decided", () => {
     expect(r.onGuess).toEqual(["a@x.test"]);
   });
 
-  it("after an unknown arm that sets a variable is", () => {
+  it("after an unknown arm that sets an unread variable remains definite", () => {
     const r = exec('require ["copy","body","variables"]; if body :contains "invoice" { set "v" "1"; } redirect :copy "a@x.test";', cutBody, true);
-    expect(r.onGuess).toEqual(["a@x.test"]);
+    expect([r.redirect, r.onGuess]).toEqual([["a@x.test"], []]);
   });
 
-  it("after an unknown arm holding a test, in a script with variables, is: the test may set captures", () => {
+  it("after an unknown arm that may set unread captures remains definite", () => {
     const r = exec(`require ["copy","body","variables","fileinto"]; if body :contains "invoice" { if ${U} { fileinto "X"; } } redirect :copy "a@x.test";`, cutBody, true);
-    expect(r.onGuess).toEqual(["a@x.test"]);
+    expect([r.redirect, r.onGuess]).toEqual([["a@x.test"], []]);
   });
 
-  it("after an unknown arm that discards is, when a hasflag could read the flags it clears", () => {
+  it("after an uncertain flag-dependent keep remains a definite forward", () => {
     const withFlags = exec('require ["copy","body","imap4flags"]; if body :contains "invoice" { discard; } if hasflag "seen" { keep; } redirect :copy "a@x.test";', cutBody, true);
-    expect(withFlags.onGuess).toEqual(["a@x.test"]);
+    expect([withFlags.redirect, withFlags.onGuess]).toEqual([["a@x.test"], []]);
     const without = exec('require ["copy","body","imap4flags"]; if body :contains "invoice" { discard; } redirect :copy "a@x.test";', cutBody, true);
     expect(without.onGuess).toEqual([]);
   });
 
-  it("after an unknown arm that sets flags is only when a hasflag reads them (rules that only tag)", () => {
+  it("an uncertain flag read affects its own arm, not a later unconditional forward", () => {
     const BS = String.fromCharCode(92);
     const tag = exec(`require ["copy","body","imap4flags"]; if body :contains "invoice" { addflag "${BS}${BS}Flagged"; } redirect :copy "a@x.test";`, cutBody, true);
     expect(tag.onGuess).toEqual([]);
     const read = exec(`require ["copy","body","imap4flags"]; if body :contains "invoice" { addflag "${BS}${BS}Flagged"; } if hasflag "x" { keep; } redirect :copy "a@x.test";`, cutBody, true);
-    expect(read.onGuess).toEqual(["a@x.test"]);
+    expect([read.redirect, read.onGuess]).toEqual([["a@x.test"], []]);
   });
 
-  it("after an unknown arm whose fileinto or keep :flags replaces the flags a hasflag reads, is", () => {
+  it("a forward guarded by flags an unknown arm could replace does not run", () => {
     const BS = String.fromCharCode(92);
     for (const act of [`fileinto :flags "${BS}${BS}Seen" "Done";`, `keep :flags "${BS}${BS}Seen";`]) {
       const r = exec(`require ["copy","fileinto","imap4flags"]; addflag "${BS}${BS}Flagged"; if ${U} { ${act} } if hasflag :is "${BS}${BS}Flagged" { redirect :copy "asst@x.test"; }`, longSubject);
-      expect(r.onGuess).toEqual(["asst@x.test"]);
+      expect([r.indeterminate, r.redirect, r.onGuess]).toEqual([true, [], []]);
     }
   });
 
@@ -112,16 +112,16 @@ describe("a redirect an unknown decided", () => {
 });
 
 describe("other unknowns that change what later tests read", () => {
-  it("a deleteheader that could not match puts what follows on a guess", () => {
+  it("an uncertain deletion leaves an unrelated forward definite", () => {
     const r = exec(`require ["editheader","copy"]; deleteheader :matches "subject" "*zzz"; redirect :copy "a@x.test";`, longSubject);
-    expect(r.onGuess).toEqual(["a@x.test"]);
+    expect([r.redirect, r.onGuess]).toEqual([["a@x.test"], []]);
   });
 
-  it("an open MIME tree under a loop that sets flags a hasflag reads puts what follows on a guess", () => {
+  it("an open MIME tree marks its flag writes and prevents dependent forwards", () => {
     const parts = Array.from({ length: 1030 }, () => "--b\r\nContent-Type: text/plain\r\n\r\nx\r\n").join("") + "--b--\r\n";
     const m = `From: a@x\r\nTo: b@y\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n${parts}`;
     const flags = exec('require ["foreverypart","mime","imap4flags","copy"]; foreverypart { if header :mime :subtype "content-type" "pdf" { addflag "pdf"; } } if not hasflag "pdf" { redirect :copy "a@x.test"; }', m);
-    expect([flags.indeterminate, flags.onGuess]).toEqual([true, ["a@x.test"]]);
+    expect([flags.indeterminate, flags.redirect, flags.onGuess]).toEqual([true, [], []]);
     const files = exec('require ["foreverypart","mime","fileinto","copy"]; foreverypart { if header :mime :subtype "content-type" "pdf" { fileinto "Pdf"; } } redirect :copy "a@x.test";', m);
     expect([files.indeterminate, files.onGuess]).toEqual([true, []]);
   });
@@ -190,7 +190,9 @@ describe("an arm a definite test skipped over state a guess wrote", () => {
       `require ["variables","reject","fileinto"]; if ${U} { set "x" "1"; } if string :is "\${x}" "" { fileinto "A"; } elsif true { reject "no"; }`,
     ]) {
       const d = run1(script);
-      expect([script.slice(0, 40), d.rejected, d.rejectOnGuess]).toEqual([script.slice(0, 40), false, true]);
+      const guessedElsif = script.endsWith('elsif true { reject "no"; }');
+      expect([script.slice(0, 40), d.rejected, d.rejectOnGuess]).toEqual([script.slice(0, 40), guessedElsif, true]);
+      if (guessedElsif) expect(d.localDeliveryOnGuess).toBe(true);
     }
   });
 
@@ -215,9 +217,9 @@ describe("a stop or break that ran while a guess is in force", () => {
   };
   const STEER = `if ${U} { set "x" "1"; } if string :is "\${x}" "" { stop; }`;
 
-  it("may cut off a reject the whole input runs", () => {
+  it("a stop guarded by uncertain state is skipped; the later reject remains guessed", () => {
     const d = exec2(`require ["variables","reject"]; ${STEER} reject "No.";`);
-    expect([d.rejected, d.rejectOnGuess]).toEqual([false, true]);
+    expect([d.rejected, d.rejectOnGuess, d.localDeliveryOnGuess]).toEqual([true, true, true]);
   });
 
   it("may cut off a vacation that would replace the one recorded", () => {
@@ -225,10 +227,10 @@ describe("a stop or break that ran while a guess is in force", () => {
     expect(d.vacationOnGuess).toBe(true);
   });
 
-  it("a break does too", () => {
+  it("an uncertain break is skipped; the later reject remains guessed", () => {
     const m = "From: a@x\r\nTo: b@y\r\nSubject: " + "x".repeat(20_000) + "\r\nContent-Type: text/plain\r\n\r\nbody\r\n";
     const d = exec2(`require ["variables","reject","foreverypart"]; if ${U} { set "x" "1"; } foreverypart { if string :is "\${x}" "" { break; } reject "No."; }`, m);
-    expect([d.rejected, d.rejectOnGuess]).toEqual([false, true]);
+    expect([d.rejected, d.rejectOnGuess, d.localDeliveryOnGuess]).toEqual([true, true, true]);
   });
 
   it("one that ran with no guess in force cuts off nothing a guess decided", () => {

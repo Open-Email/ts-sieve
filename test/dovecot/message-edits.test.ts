@@ -58,7 +58,8 @@ describe("test_set message edit isolation (#95)", () => {
     const d = exec(`${'addheader "X-Fill" "x";'.repeat(1025)} ${NEXT} addheader "X-New" "accepted";`);
     expect(getHeader(d, "x-new")).toEqual(["accepted"]);
     expect(getHeader(d, "x-fill")).toEqual([]);
-    expect([d.headerEdits.length, d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([1, 1, true, true]);
+    expect([d.headerEdits.length, d.headerEditsDropped, d.indeterminate, d.guessAfter]).toEqual([1, 1, true, false]);
+    expect([d.uncertainHeaders.size, d.certainHeaders.size, d.allHeadersUncertain]).toEqual([0, 0, false]);
     expect(d.script.opts.maxExecSteps - d.budget.remaining).toBeGreaterThan(1025);
   });
 

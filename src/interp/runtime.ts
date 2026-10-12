@@ -275,10 +275,9 @@ export class RuntimeData {
   /**
    * True when an "unknown" (see Tri) DECIDED a branch — the condition's value
    * depended on bytes outside the evaluated window and the branch was not
-   * taken. The accumulated actions are then a best-effort reading, not a proven
-   * one: the host should refuse this execution's IRREVERSIBLE outcomes
-   * (discard, redirect-without-keep, reject) and let the recoverable ones
-   * stand.
+   * taken. This is a diagnostic for any uncertain effect. Hosts use
+   * localDeliveryOnGuess for a no-local-store outcome, redirectsOnGuess and
+   * vacationOnGuess for sends, and rejectConflict for conflicting rejects.
    * Unknowns a definite value absorbed inside allof/anyof never set this.
    * A value the engine could not hold whole is marked, not the run (see
    * Mark): this is set only where a command cannot weigh the mark and drops
@@ -288,6 +287,28 @@ export class RuntimeData {
    * redirects and fileintos dropped are counted (see redirectsDropped).
    */
   indeterminate = false;
+
+  /** A no-local-store outcome may differ over the whole input. Hosts consult
+   * this when keep/implicitKeep/mailboxes say to store nothing; indeterminate
+   * remains the wider diagnostic for any uncertain effect. */
+  get localDeliveryOnGuess(): boolean {
+    const rejectedOnProof = this.rejected && this.rejectConflict === "" && this.rejectExecutionProven && !this.rejectConflictUncertain;
+    return !this.implicitKeep && (this.localStoreUncertain || !(this.keepCancellationProven || rejectedOnProof));
+  }
+  /** An unobserved arm/iteration could have kept or filed the message. */
+  localStoreUncertain = false;
+  /** A non-reject action definitely cancelled implicit keep. */
+  keepCancellationProven = false;
+  /** The executed reject was reached on exact control flow. */
+  rejectExecutionProven = false;
+  /** An unobserved delivery/vacation could conflict with an executed reject. */
+  rejectConflictUncertain = false;
+
+  /** Root fields that an unobserved command may have added or removed. A
+   * definite delete-all restores a field, even after an unknown field name. */
+  uncertainHeaders = new Set<string>();
+  allHeadersUncertain = false;
+  certainHeaders = new Set<string>();
 
   /** RFC 5429 §2.4: the action a reject stood beside ("" for none), the first
    * of keep, fileinto, redirect, vacation when there are several. The run is
@@ -347,9 +368,9 @@ export class RuntimeData {
    * one recorded ran on a guess (see onGuess), or an arm an unknown decided
    * after it holds a vacation that could have replaced it. */
   vacationOnGuess = false;
-  /** A reject may have run over the whole input though none ran here: an
-   * arm or loop an unknown decided holds one. A host keeps from answering a
-   * sender the script may have meant to refuse. */
+  /** A reject ran on uncertain control flow, or may have run in a skipped
+   * arm/iteration. A host keeps from answering a sender the script may have
+   * meant to refuse. */
   rejectOnGuess = false;
   /** The redirect targets (by redirectKey) every redirect to which so far
    * ran on a guess (see onGuess, redirectsOnGuess). Empty in a run that
@@ -362,8 +383,8 @@ export class RuntimeData {
   redirectUnresolved = false;
   /** Arms being run that an unknown chose (see control.ts). */
   guessDepth = 0;
-  /** An unknown decided an arm, a loop or a header edit that could change
-   * what runs after it: everything after is on a guess (see control.ts). */
+  /** Uncertain control flow or action-limit interactions could change which
+   * later commands run. Ordinary writes instead mark their specific state. */
   guessAfter = false;
   /** An unknown decided a condition earlier in this if/elsif chain, so the
    * arm that runs may not be the one the whole input would choose. Threaded
@@ -472,6 +493,13 @@ export class RuntimeData {
     const c = new RuntimeData(scriptOverride ?? this.script, this.policy, this.envelope, this.msg, this.budget);
     c.ifResult = this.ifResult;
     c.indeterminate = this.indeterminate;
+    c.localStoreUncertain = this.localStoreUncertain;
+    c.keepCancellationProven = this.keepCancellationProven;
+    c.rejectExecutionProven = this.rejectExecutionProven;
+    c.rejectConflictUncertain = this.rejectConflictUncertain;
+    c.uncertainHeaders = new Set(this.uncertainHeaders);
+    c.allHeadersUncertain = this.allHeadersUncertain;
+    c.certainHeaders = new Set(this.certainHeaders);
     c.budgetExhausted = this.budgetExhausted;
     c.redirectsDropped = this.redirectsDropped;
     c.fileintosDropped = this.fileintosDropped;
@@ -535,8 +563,17 @@ export function onGuess(d: RuntimeData): boolean {
  */
 export function cutOffOnGuess(d: RuntimeData): void {
   if (!onGuess(d)) return;
+  if (d.script.hasLocalDelivery) d.localStoreUncertain = true;
+  if (d.script.hasRejectConflictAction) d.rejectConflictUncertain = true;
   if (d.script.hasReject) d.rejectOnGuess = true;
   if (d.script.hasVacation && d.vacationResponses.size > 0) d.vacationOnGuess = true;
+}
+
+/** Record cancellation separately from whether an uncertain arm could add a
+ * local destination. A later definite cancellation supersedes a guessed one. */
+export function cancelImplicitKeep(d: RuntimeData, proven = !onGuess(d)): void {
+  d.implicitKeep = false;
+  d.keepCancellationProven ||= proven;
 }
 
 export function newRuntimeData(

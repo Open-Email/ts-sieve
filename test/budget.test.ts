@@ -76,12 +76,15 @@ describe("a test that runs out of its share is unknown, not an error", () => {
       deleteheader :matches "x-big" "*casino*";
       if header :is "x-big" "casino-first" { fileinto "Still"; }
       if string :is "\${2}" "-first" { fileinto "Leaked"; }`;
-    expect(exec(script, `${values}\r\nSubject: hi\r\n\r\nbody\r\n`)).toEqual({
-      fileinto: ["Still"],
-      implicitKeep: false,
-      indeterminate: true,
-      budgetExhausted: true,
-    });
+    const s = load(script, { enabledExtensions: ALL_EXTENSIONS, ...CORE });
+    const { headers, size, body } = parseEml(`${values}\r\nSubject: hi\r\n\r\nbody\r\n`);
+    const d = newRuntimeData(s, new DummyPolicy(), new EnvelopeStatic(), new MessageStatic(size, headers, body));
+    s.execute(d);
+    expect(d.headerEdits).toEqual([]); // rollback remains atomic
+    expect(d.msg.headerGet("x-big")[0]).toBe("casino-first");
+    // Its whole-input deletion is uncertain, so the later header test cannot
+    // prove that the retained value would still be there.
+    expect([d.mailboxes, d.implicitKeep, d.indeterminate, d.budgetExhausted]).toEqual([[], true, true, true]);
   });
 });
 

@@ -113,6 +113,9 @@ export class Script {
    * a guess may have cut off (see cutOffOnGuess). True until analysed. */
   hasReject = true;
   hasVacation = true;
+  /** Used when a guessed stop/break could skip a local store or a conflict. */
+  hasLocalDelivery = true;
+  hasRejectConflictAction = true;
 
   constructor(opts: Options = {}) {
     this.opts = { ...defaultOptions(), ...opts };
