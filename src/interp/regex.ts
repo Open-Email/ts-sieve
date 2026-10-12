@@ -577,6 +577,8 @@ interface StepBudget {
 }
 
 export interface CompiledRegex {
+  /** Maximum VM states per input position, for advisory budget reservation. */
+  readonly programSize: number;
   /** Compile calls it took (see MAX_COMPILE_WORK). */
   readonly compileWork: number;
   /** `info.atEnd`, when given, is set to whether the match relied on an
@@ -587,6 +589,7 @@ export interface CompiledRegex {
 }
 
 class Program implements CompiledRegex {
+  get programSize(): number { return this.prog.length; }
   constructor(
     private readonly prog: Inst[],
     private readonly ncaps: number,

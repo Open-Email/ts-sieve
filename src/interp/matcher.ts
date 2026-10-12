@@ -5,6 +5,7 @@
 // linear regex engine (patterns without variable refs precompile at load);
 // `:value`/`:count` route through the relational kernel.
 
+import type { ValueProfile } from "./budget-reserve.js";
 import { SieveError } from "../errors.js";
 import {
   DefaultComparator,
@@ -159,6 +160,25 @@ export class MatcherTest {
     return spec;
   }
 
+  private reserveStates: number | undefined;
+
+  /** Conservative estimate for literal header matching. Dynamic patterns need
+   * the fallback: estimating must not expand variables or compile message data. */
+  reserveFor(values: ValueProfile, addresses = false): number | undefined {
+    const keys = this.key.length;
+    if (this.isCount()) return keys;
+    const count = addresses ? values.count + Math.floor(values.units / 3) : values.count;
+    if (this.match === "matches" || this.match === "regex") {
+      const states = this.reserveStates;
+      if (states === undefined) return undefined;
+      // Addresses may split one field into many independently capped inputs.
+      const units = addresses ? values.units + count : values.matchUnits;
+      return keys * count + states * units;
+    }
+    const folds = this.comparator === "i;octet" || this.comparator === "i;ascii-numeric" ? 0 : values.foldSteps;
+    return keys * count + folds + (this.match === "contains" ? keys * values.foldSteps : 0);
+  }
+
   setKey(s: Script, key: string[]): void {
     this.key = key;
 
@@ -219,6 +239,11 @@ export class MatcherTest {
       // escapes (`\W` → `\w` inverts the class).
       this.compiledKeys = this.key.map((k) => (k.includes("${") ? null : this.compileKey(k)));
     }
+    // This depends only on the uploaded script, not the message. Compute it
+    // once at load so estimating many header fields never rescans key lists.
+    this.reserveStates = this.compiledKeys.every((re) => re !== null)
+      ? this.compiledKeys.reduce((sum, re) => sum + re!.programSize, 0)
+      : undefined;
   }
 
   /** Compile a `:matches` glob or a `:regex` pattern; throws SieveError when it

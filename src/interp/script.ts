@@ -2,6 +2,7 @@
 // The single public entry point: load() lexes → parses → loads (require-gates)
 // a script; Script.execute() runs it against a RuntimeData.
 
+import type { BudgetShare } from "./budget-reserve.js";
 import { lex } from "../lexer/lex.js";
 import { Stream } from "../lexer/stream.js";
 import { parse } from "../parser/parse.js";
@@ -94,6 +95,8 @@ export class Script {
   /** Tests and deleteheader commands, numbered in script order: each spends a
    * share of the step budget (see withShare). */
   budgetedCount = 0;
+  /** Reservation metadata in the same order; loop entries span their body. */
+  budgetShares: BudgetShare[] = [];
   /** Load time: the names of the foreverypart loops being loaded, outermost
    * first ("" for an unnamed one), for break and the nesting cap. */
   loops: string[] = [];

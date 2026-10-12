@@ -8,8 +8,8 @@
 // the budget, and a test that runs out of its share answers "unknown": the
 // rule does not fire, `indeterminate` discloses the guess when it decides a
 // branch, and `budgetExhausted` records why. The total stays bounded. A test
-// may spend everything left except a reserve for each test after it, so one
-// expensive test cannot starve the rest of the script.
+// may spend everything left except estimated reserves for later tests. Those
+// improve fairness but cannot guarantee every test finishes (see #66).
 
 import { describe, expect, it } from "vitest";
 import { DummyPolicy, EnvelopeStatic, load, MessageStatic, newRuntimeData } from "../src/index.js";
