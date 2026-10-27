@@ -168,13 +168,22 @@ describe("RFC 5429 §2.4 conflicts, checked after the script runs", () => {
     expect([d.budgetExhausted, d.rejected, d.rejectReason, d.rejectExtended]).toEqual([true, true, "definite", false]);
   });
 
-  it("vacation conflicts even when it records no response", () => {
-    // A null envelope sender gets no auto-reply, but the action still ran.
-    expect(exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "").indeterminate).toBe(true);
-    expect(() => exec('require ["reject","vacation"]; vacation "away"; reject "a";', MSG, "", true)).toThrow(
-      /conflicts with the vacation action/,
-    );
-  });
+  // A null envelope sender, or one listed in :addresses, gets no auto-reply,
+  // but the action still ran, in either order (go-sieve 29d730a). The reject
+  // is refused and the implicit keep stays.
+  const sendsNothing: [string, string, string][] = [
+    ["null sender, vacation first", 'require ["reject","vacation"]; vacation "away"; reject "a";', ""],
+    ["null sender, reject first", 'require ["reject","vacation"]; reject "a"; vacation "away";', ""],
+    [":addresses sender, vacation first", 'require ["reject","vacation"]; vacation :addresses "sirius@example.org" "away"; reject "a";', "sirius@example.org"],
+    [":addresses sender, reject first", 'require ["reject","vacation"]; reject "a"; vacation :addresses "sirius@example.org" "away";', "sirius@example.org"],
+  ];
+  for (const [name, script, from] of sendsNothing) {
+    it(`vacation conflicts even when it records no response: ${name}`, () => {
+      const d = exec(script, MSG, from);
+      expect([d.rejected, d.rejectConflict, d.indeterminate, d.implicitKeep, d.vacationResponses.size]).toEqual([true, "vacation", true, true, 0]);
+      expect(() => exec(script, MSG, from, true)).toThrow(/conflicts with the vacation action/);
+    });
+  }
 
   for (const [name, script] of [
     ["a second reject", 'require "reject"; reject "a"; reject "b";'],
