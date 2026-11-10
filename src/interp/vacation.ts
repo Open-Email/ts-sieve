@@ -14,7 +14,10 @@
 // header only the host has.
 
 import { type Cmd, onGuess, type RuntimeData } from "./runtime.js";
+import { sha256Hex } from "./sha256.js";
 import { expandMarked } from "./variables.js";
+
+const encoder = new TextEncoder();
 
 export interface VacationResponse {
   from: string;
@@ -22,6 +25,21 @@ export interface VacationResponse {
   body: string;
   isMime: boolean;
   handle: string;
+  /**
+   * An opaque, stable key for RFC 5230 §4.2 response tracking: the host's
+   * "have I answered this sender with THIS response within :days?" record.
+   * It is the explicit `:handle`, or, when the script gives none, the
+   * `:subject`, `:from`, `:mime` and reason arguments, all as written in the
+   * script, before variable expansion: a response whose text names a variable
+   * is one response whatever the variable holds, and an explicit empty handle
+   * is a handle, distinct from an omitted one. `:days` and `:addresses` are
+   * not part of it. The fields above stay expanded, for sending.
+   *
+   * migadu/go-sieve computes the same key for the same script
+   * (`VacationResponse.ResponseIdentity`), so a mailbox moved between the two
+   * engines keeps its record.
+   */
+  responseIdentity: string;
   days: number;
   /**
    * The expanded `:addresses` list.
@@ -43,7 +61,10 @@ export class CmdVacation implements Cmd {
   addresses: string[] = [];
   mime = false;
   handle = "";
+  /** Whether the script gave `:handle` at all: `:handle ""` is a handle. */
+  handleSet = false;
   reason = "";
+  private identity: string | undefined;
 
   execute(d: RuntimeData): void {
     // "" = unset; the host applies the RFC 5230 §5.4 default it can compute.
@@ -110,8 +131,39 @@ export class CmdVacation implements Cmd {
       body: reason,
       isMime: this.mime,
       handle,
+      responseIdentity: this.responseIdentity(),
       days: this.days,
       addresses,
     });
+  }
+
+  /**
+   * VacationResponse.responseIdentity: SHA-256 over each argument's UTF-8
+   * bytes, each after its length as an 8-byte big-endian integer, so no two
+   * tuples run together ("ab","c" against "a","bc") and an empty argument
+   * still counts. "v1:h:" keys an explicit handle and "v1:r:" a synthesized
+   * one, so neither can name the other. A lone surrogate, which no UTF-8
+   * stored script holds, encodes as U+FFFD.
+   *
+   * Only the arguments as written go in, so it is computed once per command,
+   * whatever runs it: a vacation inside foreverypart hashes its reason once,
+   * not once per part.
+   */
+  responseIdentity(): string {
+    if (this.identity !== undefined) return this.identity;
+    const explicit = this.handleSet || this.handle !== "";
+    const fields = explicit ? [this.handle] : [this.subject, this.from, this.mime ? "1" : "0", this.reason];
+    const bytes = fields.map((f) => encoder.encode(f));
+    const buf = new Uint8Array(bytes.reduce((n, b) => n + 8 + b.length, 0));
+    const view = new DataView(buf.buffer);
+    let at = 0;
+    for (const b of bytes) {
+      view.setUint32(at, Math.floor(b.length / 0x100000000));
+      view.setUint32(at + 4, b.length >>> 0);
+      buf.set(b, at + 8);
+      at += 8 + b.length;
+    }
+    this.identity = `v1:${explicit ? "h" : "r"}:${sha256Hex(buf)}`;
+    return this.identity;
   }
 }

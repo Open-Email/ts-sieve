@@ -853,7 +853,15 @@ function loadVacation(s: Script, pcmd: PCmd): Cmd {
         from: { needsValue: true, minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.from = v[0]!) },
         addresses: { needsValue: true, minStrCount: 1, matchStr: (v) => (cmd.addresses = v) },
         mime: { matchBool: () => (cmd.mime = true) },
-        handle: { needsValue: true, minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.handle = v[0]!) },
+        handle: {
+          needsValue: true,
+          minStrCount: 1,
+          maxStrCount: 1,
+          matchStr: (v) => {
+            cmd.handle = v[0]!;
+            cmd.handleSet = true;
+          },
+        },
       },
       pos: [{ minStrCount: 1, maxStrCount: 1, matchStr: (v) => (cmd.reason = v[0]!) }],
     },
