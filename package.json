@@ -1,7 +1,7 @@
 {
   "name": "@openemail/sieve",
   "version": "0.0.0",
-  "description": "RFC 5228 Sieve interpreter for TypeScript, hardened for untrusted scripts and mail. Framework-agnostic: the consumer injects Message/Envelope/Policy. ReDoS-safe, dependency-free; runs in Cloudflare Workers, Node, Deno, and the browser.",
+  "description": "RFC 5228 Sieve interpreter for TypeScript, hardened for untrusted scripts and mail. Framework-agnostic: the consumer injects Message/Envelope/Policy. ReDoS-safe, no Node built-ins, one dependency (@noble/hashes); runs in Cloudflare Workers, Node, Deno, and the browser.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -35,5 +35,8 @@
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0"
   }
 }
