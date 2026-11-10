@@ -13,8 +13,9 @@
 // RFC 5230 §5.4 wants "Auto: <original subject>", and the original subject is a
 // header only the host has.
 
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { type Cmd, onGuess, type RuntimeData } from "./runtime.js";
-import { sha256Hex } from "./sha256.js";
 import { expandMarked } from "./variables.js";
 
 const encoder = new TextEncoder();
@@ -153,17 +154,16 @@ export class CmdVacation implements Cmd {
     if (this.identity !== undefined) return this.identity;
     const explicit = this.handleSet || this.handle !== "";
     const fields = explicit ? [this.handle] : [this.subject, this.from, this.mime ? "1" : "0", this.reason];
-    const bytes = fields.map((f) => encoder.encode(f));
-    const buf = new Uint8Array(bytes.reduce((n, b) => n + 8 + b.length, 0));
-    const view = new DataView(buf.buffer);
-    let at = 0;
-    for (const b of bytes) {
-      view.setUint32(at, Math.floor(b.length / 0x100000000));
-      view.setUint32(at + 4, b.length >>> 0);
-      buf.set(b, at + 8);
-      at += 8 + b.length;
+    const h = sha256.create();
+    for (const f of fields) {
+      const b = encoder.encode(f);
+      const size = new Uint8Array(8);
+      const view = new DataView(size.buffer);
+      view.setUint32(0, Math.floor(b.length / 0x100000000));
+      view.setUint32(4, b.length >>> 0);
+      h.update(size).update(b);
     }
-    this.identity = `v1:${explicit ? "h" : "r"}:${sha256Hex(buf)}`;
+    this.identity = `v1:${explicit ? "h" : "r"}:${bytesToHex(h.digest())}`;
     return this.identity;
   }
 }
